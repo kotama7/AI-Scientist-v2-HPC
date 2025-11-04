@@ -1083,6 +1083,10 @@ class ParallelAgent:
             "tried_hyperparams": set(),
         }
 
+    @property
+    def code_language(self) -> str:
+        return getattr(self.cfg.exec, "language", "python")
+
     def _define_global_metrics(self) -> str:
         """Define eval metric to be used across all experiments"""
 
