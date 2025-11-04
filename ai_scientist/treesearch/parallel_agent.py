@@ -719,10 +719,18 @@ class MinimalAgent:
         # Get plotting code from LLM
         plan, code = self.plan_and_code_query(plotting_prompt)
 
-        # Ensure the code starts with imports
-        if not code.strip().startswith("import"):
-            code = "import matplotlib.pyplot as plt\nimport numpy as np\n\n" + code
-
+        if self.code_language == "python":
+            if not code.strip().startswith("import"):
+                code = "import matplotlib.pyplot as plt\nimport numpy as np\n\n" + code
+        elif self.code_language == "cpp":
+            if not code.strip().startswith("#include"):
+                code = (
+                    "#include <vector>\n"
+                    "#include <string>\n"
+                    "#include <cnpy.h>\n"
+                    "#include <matplotlibcpp.h>\n\n"
+                    "namespace plt = matplotlibcpp;\n\n"
+                ) + code
         node.plot_code = code
         node.plot_plan = plan
 

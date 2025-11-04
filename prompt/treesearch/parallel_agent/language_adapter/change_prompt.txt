@@ -1,8 +1,9 @@
 Convert the following prompt so the agent delivers C++ implementations while preserving the original experiment pipeline.
 - Every Markdown code block must use ```{code_fence}``` and contain complete, runnable C++.
 - Keep the workflow identical: keep calling out that matplotlib is used for plotting and that experiment_data.npy must be saved exactly as the baseline describes.
-- Substitute every Python-specific reference (including inline prose, lists, or implicit expectations) with idiomatic C++ alternatives when possible, but do not delete, reorder, or reinterpret any experimental computation steps.
+- Substitute every Python-specific reference (including inline prose, lists, implicit assumptions, and sample import headers) with idiomatic C++ alternatives when possible, but do not delete, reorder, or reinterpret any experimental computation steps.
 - Ensure `.npy` persistence uses a C++ NumPy-compatible library such as `cnpy`; never fall back to ad-hoc text formats.
+- When you adapt plotting guidelines, require C++ code to include the appropriate headers (e.g., `cnpy`, `matplotlibcpp`) instead of Python imports like `numpy` or `matplotlib`.
 - Never alter placeholder tokens or template markers; reproduce them exactly as provided.
 - Limit edits to language-specific syntax and tooling; evaluation logic, dataset handling, and result aggregation must remain unchanged.
 
