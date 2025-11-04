@@ -10,3 +10,4 @@ torch
 OpenCV
 dlib
 libtorch
+cnpy
