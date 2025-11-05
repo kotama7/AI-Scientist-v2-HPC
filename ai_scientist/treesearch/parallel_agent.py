@@ -614,9 +614,12 @@ class MinimalAgent:
             ablation_name=ablation_idea.name,
         )
 
-    def plan_and_code_query(self, prompt, retries=3) -> tuple[str, str]:
+    def plan_and_code_query(
+        self, prompt, retries=3, code_language: str | None = None
+    ) -> tuple[str, str]:
         """Generate a natural language plan + code in the same LLM call and split them apart."""
         completion_text = None
+        target_language = code_language or self.code_language
         for _ in range(retries):
             completion_text = query(
                 system_message=prompt,
@@ -625,7 +628,7 @@ class MinimalAgent:
                 temperature=self.cfg.agent.code.temp,
             )
 
-            code = extract_code(completion_text, language=self.code_language)
+            code = extract_code(completion_text, language=target_language)
             nl_text = extract_text_up_to_code(completion_text)
 
             if code and nl_text:
@@ -634,7 +637,7 @@ class MinimalAgent:
 
             print("Plan + code extraction failed, retrying...")
             prompt["Parsing Feedback"] = (
-                f"The code extraction failed. Make sure to use the format ```{self.code_language} ... ``` for the code blocks."
+                f"The code extraction failed. Make sure to use the format ```{target_language} ... ``` for the code blocks."
             )
         print("Final plan + code extraction attempt failed, giving up...")
         return "", completion_text  # type: ignore
@@ -728,7 +731,9 @@ class MinimalAgent:
             )
 
         # Get plotting code from LLM
-        plan, code = self.plan_and_code_query(plotting_prompt)
+        plan, code = self.plan_and_code_query(
+            plotting_prompt, code_language="python"
+        )
 
         if self.code_language in ("python", "cpp"):
             imports_to_add: List[str] = []
@@ -1118,9 +1123,12 @@ class ParallelAgent:
         print(f"[green]Defined eval metrics:[/green] {response}")
         return response
 
-    def plan_and_code_query(self, prompt, retries=3) -> tuple[str, str]:
+    def plan_and_code_query(
+        self, prompt, retries=3, code_language: str | None = None
+    ) -> tuple[str, str]:
         """Generate a natural language plan + code in the same LLM call and split them apart."""
         completion_text = None
+        target_language = code_language or self.code_language
         for _ in range(retries):
             completion_text = query(
                 system_message=prompt,
@@ -1129,7 +1137,7 @@ class ParallelAgent:
                 temperature=self.cfg.agent.code.temp,
             )
 
-            code = extract_code(completion_text, language=self.code_language)
+            code = extract_code(completion_text, language=target_language)
             nl_text = extract_text_up_to_code(completion_text)
 
             if code and nl_text:
@@ -1137,7 +1145,7 @@ class ParallelAgent:
                 return nl_text, code
             print("Plan + code extraction failed, retrying...")
             prompt["Parsing Feedback"] = (
-                f"The code extraction failed. Make sure to use the format ```{self.code_language} ... ``` for the code blocks."
+                f"The code extraction failed. Make sure to use the format ```{target_language} ... ``` for the code blocks."
             )
         print("Final plan + code extraction attempt failed, giving up...")
         return "", completion_text
@@ -1638,6 +1646,7 @@ class ParallelAgent:
                         )
                         child_node.exp_results_dir = exp_results_dir
                         exp_results_dir.mkdir(parents=True, exist_ok=True)
+                        code_suffix = Path(cfg.exec.agent_file_name).suffix or ".py"
                         plot_code_path = exp_results_dir / "plotting_code.py"
                         with open(plot_code_path, "w") as f:
                             f.write(plotting_code)
@@ -2153,7 +2162,9 @@ class ParallelAgent:
                 f"{seed_nodes[2].exp_results_dir}/experiment_data.npy\n"
             ),
         }
-        plan, code = self.plan_and_code_query(plotting_prompt)
+        plan, code = self.plan_and_code_query(
+            plotting_prompt, code_language="python"
+        )
 
         print("[green]Plan:[/green]\n", plan)
         print(f"[green]Generated aggregated plotting code:[/green]\n{code}")
