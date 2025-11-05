@@ -12,7 +12,9 @@ namespace fs = std::filesystem;
 ```
 Define a reusable path handle at the top of your code:
 ```cpp
-fs::path working_dir = fs::current_path() / "working";
+fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
+fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
+fs::path working_dir = base_dir / "working";
 fs::create_directories(working_dir);
 ```
 Create standard visualizations of experiment results

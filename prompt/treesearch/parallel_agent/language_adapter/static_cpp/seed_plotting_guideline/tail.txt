@@ -26,9 +26,16 @@ std::vector<std::string> loadExperimentData(const std::vector<std::string>& expe
     return allExperimentData;
 }
 
-int main() {
-    fs::path working_dir = fs::current_path() / "working";
+fs::path resolve_working_dir() {
+    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
+    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
+    fs::path working_dir = base_dir / "working";
     fs::create_directories(working_dir);
+    return working_dir;
+}
+
+int main() {
+    fs::path working_dir = resolve_working_dir();
 
     try {
         std::vector<std::string> experimentDataPathList = { /* Make sure to use the correct experiment data path that's provided in the Experiment Data Path section */ };

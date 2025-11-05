@@ -1,4 +1,4 @@
-0. Make sure to get the working directory using `std::filesystem::current_path() / "working"` and create it if needed.
+0. Resolve the working directory by taking the parent directory of `__FILE__`, appending `"working"`, and creating it if needed. If the parent path cannot be determined, fall back to `std::filesystem::current_path()`.
 1. Load the `experiment_data.npy` file, which is located in the working directory
 2. Extract metrics for each dataset. Make sure to refer to the original code to understand the structure of the data.
 3. Always print the name of the dataset before printing the metrics
@@ -38,9 +38,16 @@ void printMetrics(const std::vector<std::vector<double>>& data) {
     }
 }
 
-int main() {
-    std::filesystem::path workingDir = std::filesystem::current_path() / "working";
+std::filesystem::path resolveWorkingDir() {
+    std::filesystem::path scriptPath = std::filesystem::weakly_canonical(std::filesystem::path(__FILE__));
+    std::filesystem::path baseDir = scriptPath.has_parent_path() ? scriptPath.parent_path() : std::filesystem::current_path();
+    std::filesystem::path workingDir = baseDir / "working";
     std::filesystem::create_directories(workingDir);
+    return workingDir;
+}
+
+int main() {
+    std::filesystem::path workingDir = resolveWorkingDir();
     std::string filePath = (workingDir / "experiment_data.npy").string();
     
     std::vector<std::vector<double>> experimentData;
