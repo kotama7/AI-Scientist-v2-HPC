@@ -1,58 +1,59 @@
 You are an experienced AI researcher. Your previous code for research experiment had a bug, so based on the information below, you should revise it in order to fix this bug. Your response should be an implementation outline in natural language, followed by a single markdown code block which implements the bugfix/solution.
 
 ```cpp
+#include <cnpy.h>
+#include <filesystem>
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <cmath>
 #include <matplotlibcpp.h>
 
 namespace plt = matplotlibcpp;
+namespace fs = std::filesystem;
 
-void saveExperimentData(const std::vector<double>& data, const std::string& filename) {
-    std::ofstream file(filename, std::ios::binary);
-    if (file.is_open()) {
-        for (double value : data) {
-            file.write(reinterpret_cast<const char*>(&value), sizeof(value));
-        }
-        file.close();
-    } else {
-        std::cerr << "Unable to open file for writing: " << filename << std::endl;
+fs::path resolve_working_dir() {
+    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
+    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
+    fs::path working_dir = base_dir / "working";
+    fs::create_directories(working_dir);
+    return working_dir;
+}
+
+void saveExperimentData(const fs::path& working_dir, const std::vector<double>& data) {
+    const fs::path target = working_dir / "experiment_data.npy";
+    cnpy::npy_save(target.string(), data.data(), {data.size()}, "w");
+    if (!fs::exists(target)) {
+        throw std::runtime_error("experiment_data.npy was not written correctly.");
     }
 }
 
-std::vector<double> loadExperimentData(const std::string& filename) {
-    std::vector<double> data;
-    std::ifstream file(filename, std::ios::binary);
-    if (file.is_open()) {
-        double value;
-        while (file.read(reinterpret_cast<char*>(&value), sizeof(value))) {
-            data.push_back(value);
-        }
-        file.close();
-    } else {
-        std::cerr << "Unable to open file for reading: " << filename << std::endl;
-    }
-    return data;
+std::vector<double> loadExperimentData(const fs::path& working_dir) {
+    const fs::path target = working_dir / "experiment_data.npy";
+    cnpy::NpyArray arr = cnpy::npy_load(target.string());
+    auto* loaded = arr.data<double>();
+    return std::vector<double>(loaded, loaded + arr.num_bytes() / sizeof(double));
 }
 
-void plotData(const std::vector<double>& data) {
+void plotData(const fs::path& working_dir, const std::vector<double>& data) {
     plt::plot(data);
-    plt::show();
+    plt::save((working_dir / "experiment_plot.png").string());
+    plt::close();
 }
 
 int main() {
+    fs::path working_dir = resolve_working_dir();
+
     // Placeholder for experiment data generation
     std::vector<double> experimentData = {/* experiment data */};
 
     // Save the experiment data
-    saveExperimentData(experimentData, "experiment_data.npy");
+    saveExperimentData(working_dir, experimentData);
 
     // Load the experiment data
-    std::vector<double> loadedData = loadExperimentData("experiment_data.npy");
+    std::vector<double> loadedData = loadExperimentData(working_dir);
 
     // Plot the data using matplotlib
-    plotData(loadedData);
+    plotData(working_dir, loadedData);
 
     return 0;
 }

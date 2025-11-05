@@ -1,5 +1,12 @@
 Always treat the directory that contains your generated source file as the only writable sandbox. Resolve it from `__FILE__` at runtime and derive the `working/` folder from there—never write to a parent path outside that tree.
 
+CRITICAL DATA PERSISTENCE REQUIREMENTS:
+- Maintain an `experiment_data` container that mirrors the Python baseline (nested per dataset).
+- After every training/evaluation pass, flush the updated structure to `working/experiment_data.npy` using `cnpy::npy_save` or `cnpy::npz_save`.
+- Always overwrite the file in place (`mode="w"`) so downstream stages (plotting, metrics parsing) can rely on the latest values.
+- If the file does not yet exist, create it immediately after the first metrics update—never leave the run without writing `experiment_data.npy`.
+- Use additional files (plots, logs, intermediates) under the same `working/` directory so nothing leaks outside the sandbox.
+
 ```cpp
 #include <cnpy.h>
 #include <filesystem>
@@ -45,6 +52,10 @@ int main() {
                    flat_metrics.data(),
                    {flat_metrics.size()},
                    "w");
+    if (!fs::exists(working_dir / "experiment_data.npy")) {
+        throw std::runtime_error("experiment_data.npy was not written—abort so the agent can fix it.");
+    }
+    std::cout << "Saved experiment data to " << (working_dir / "experiment_data.npy") << std::endl;
 
     fs::path plot_path = working_dir / "dataset_name_1_metrics.png";
     std::cout << "Save matplotlib output to " << plot_path << std::endl;

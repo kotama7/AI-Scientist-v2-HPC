@@ -6,11 +6,22 @@ You are an experienced AI researcher analyzing experimental results. You have be
 #include <string>
 #include <filesystem>
 
+namespace fs = std::filesystem;
+
+fs::path resolve_working_dir() {
+    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
+    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
+    fs::path working_dir = base_dir / "working";
+    fs::create_directories(working_dir);
+    return working_dir;
+}
+
 int main() {
+    fs::path working_dir = resolve_working_dir();
     std::vector<std::string> plotPaths;
     // Example: Add paths to your plots
-    plotPaths.push_back("/path/to/plot1.png");
-    plotPaths.push_back("/path/to/plot2.png");
+    plotPaths.push_back((working_dir / "plot1.png").string());
+    plotPaths.push_back((working_dir / "plot2.png").string());
     // Add more paths as needed
 
     // Output the selected plot paths
@@ -28,24 +39,33 @@ int main() {
 #include <vector>
 #include <string>
 #include <filesystem>
-#include <opencv2/opencv.hpp> // Assuming OpenCV is used for image handling
+#include <cnpy.h>
 
-void saveExperimentData(const std::string& filename, const std::vector<double>& data) {
-    std::ofstream file(filename, std::ios::binary);
-    if (file.is_open()) {
-        file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(double));
-        file.close();
-    } else {
-        std::cerr << "Unable to open file for writing: " << filename << std::endl;
+namespace fs = std::filesystem;
+
+fs::path resolve_working_dir() {
+    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
+    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
+    fs::path working_dir = base_dir / "working";
+    fs::create_directories(working_dir);
+    return working_dir;
+}
+
+void saveExperimentData(const fs::path& working_dir, const std::vector<double>& data) {
+    const fs::path target = working_dir / "experiment_data.npy";
+    cnpy::npy_save(target.string(), data.data(), {data.size()}, "w");
+    if (!fs::exists(target)) {
+        throw std::runtime_error("experiment_data.npy not written while selecting plots.");
     }
 }
 
 int main() {
+    fs::path working_dir = resolve_working_dir();
     std::vector<double> experimentData = { /* Your experiment data here */ };
-    saveExperimentData("experiment_data.npy", experimentData);
+    saveExperimentData(working_dir, experimentData);
 
     // Example: Plotting with matplotlib (conceptual, not actual C++ code)
-    std::cout << "Matplotlib is used for plotting." << std::endl;
+    std::cout << "Matplotlib is used for plotting into " << (working_dir / "plot.png") << std::endl;
 
     return 0;
 }

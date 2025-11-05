@@ -1,35 +1,46 @@
 Your solution can use any relevant machine learning packages such as: {pkg_str}. Feel free to use any other packages too (all packages are already installed!). For neural networks we suggest using PyTorch rather than TensorFlow.
 
 ```cpp
+#include <cnpy.h>
+#include <filesystem>
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <cmath>
-#include <cstdlib>
 
-// Placeholder for loading experiment_data.npy
-std::vector<double> loadExperimentData(const std::string &filename) {
-    // Implement loading logic here
-    std::vector<double> data;
-    // Load data from experiment_data.npy
-    return data;
+namespace fs = std::filesystem;
+
+fs::path resolve_working_dir() {
+    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
+    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
+    fs::path working_dir = base_dir / "working";
+    fs::create_directories(working_dir);
+    return working_dir;
 }
 
-// Placeholder for saving experiment_data.npy
-void saveExperimentData(const std::string &filename, const std::vector<double> &data) {
-    // Implement saving logic here
-    // Save data to experiment_data.npy
+std::vector<double> loadExperimentData(const fs::path& working_dir) {
+    cnpy::NpyArray arr = cnpy::npy_load((working_dir / "experiment_data.npy").string());
+    const double* buffer = arr.data<double>();
+    return std::vector<double>(buffer, buffer + arr.num_bytes() / sizeof(double));
+}
+
+void saveExperimentData(const fs::path& working_dir, const std::vector<double>& data) {
+    const fs::path target = working_dir / "experiment_data.npy";
+    cnpy::npy_save(target.string(), data.data(), {data.size()}, "w");
+    if (!fs::exists(target)) {
+        throw std::runtime_error("experiment_data.npy not written correctly.");
+    }
 }
 
 int main() {
-    std::vector<double> data = loadExperimentData("experiment_data.npy");
+    fs::path working_dir = resolve_working_dir();
+    std::vector<double> data = loadExperimentData(working_dir);
 
     // Perform computations as per the experiment pipeline
     for (double &value : data) {
         value = std::sqrt(value); // Example computation
     }
 
-    saveExperimentData("experiment_data.npy", data);
+    saveExperimentData(working_dir, data);
 
     // Use matplotlib for plotting (assumed to be called externally)
     std::cout << "Plotting with matplotlib..." << std::endl;
