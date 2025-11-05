@@ -16,11 +16,17 @@ Important code structure requirements:
 #include <fstream>
 #include <vector>
 #include <string>
-#include <npy.hpp> // Assume a library for handling .npy files
+#include <cnpy.h>
 
 void loadExperimentData(const std::string& filePath, std::vector<std::vector<double>>& data) {
     // Load the .npy file into the data vector
-    npy::LoadArrayFromNumpy(filePath, data);
+    cnpy::NpyArray arr = cnpy::npy_load(filePath);
+    auto* loaded = arr.data<double>();
+    if (!loaded) {
+        throw std::runtime_error("Failed to load experiment data with cnpy");
+    }
+    std::vector<double> flat(loaded, loaded + arr.num_bytes() / sizeof(double));
+    data.push_back(flat);
 }
 
 void printMetrics(const std::vector<std::vector<double>>& data) {
