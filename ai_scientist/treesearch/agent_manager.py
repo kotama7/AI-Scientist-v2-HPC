@@ -169,7 +169,7 @@ class AgentManager:
             3: "creative_research",
             4: "ablation_studies",
         }
-        self.main_stage_goals: Dict[int, str] = STAGE_GOALS
+        self.main_stage_goals: Dict[int, str] = self._load_stage_goals()
 
         # Create initial stage
         self._create_initial_stage()
@@ -198,6 +198,22 @@ class AgentManager:
         if "Code" in self.task_desc:
             task_desc += "Code To Use:\n" + self.task_desc["Code"] + "\n"
         return task_desc
+
+    def _load_stage_goals(self) -> Dict[int, str]:
+        dataset_source = getattr(getattr(self.cfg, "experiment", None), "dataset_source", "huggingface")
+        dataset_source_key = str(dataset_source).lower()
+        stage_goals: Dict[int, str] = {}
+        for stage_number, prompt_name in STAGE_GOAL_PROMPTS.items():
+            template = load_prompt(prompt_name)
+            dataset_requirement = ""
+            stage_specific_goals = _STAGE_DATASET_GOALS.get(stage_number)
+            if stage_specific_goals:
+                dataset_requirement = stage_specific_goals.get(
+                    dataset_source_key,
+                    stage_specific_goals.get("huggingface", ""),
+                )
+            stage_goals[stage_number] = template.format(dataset_requirement=dataset_requirement)
+        return stage_goals
 
     def _create_initial_stage(self):
         """Create the initial stage configuration"""
