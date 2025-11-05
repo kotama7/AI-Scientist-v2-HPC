@@ -17,9 +17,10 @@ std::map<std::string, double> load_experiment_data(const std::string& filepath) 
 }
 
 int main() {
-    std::string current_path = fs::current_path().string();
-    std::string data_path = current_path + "/experiment_data.npy"; // Ensure this file is available as JSON
-    std::map<std::string, double> experiment_data = load_experiment_data(data_path);
+    fs::path working_dir = fs::current_path() / "working";
+    fs::create_directories(working_dir);
+    fs::path data_path = working_dir / "experiment_data.npy"; // Ensure this file is available as JSON
+    std::map<std::string, double> experiment_data = load_experiment_data(data_path.string());
 
     // Placeholder for further processing and plotting with matplotlib
     // Use matplotlib for plotting as described in the original experiment pipeline

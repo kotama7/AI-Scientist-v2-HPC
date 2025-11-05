@@ -1,81 +1,46 @@
+Always treat the current working directory as the only writable sandbox. All artifacts (including `experiment_data.npy`, intermediate checkpoints, and plots) must stay inside this directory—never write to a parent path or another absolute location.
+
 ```cpp
-#include <iostream>
-#include <fstream>
+#include <cnpy.h>
 #include <filesystem>
-#include <vector>
-#include <string>
+#include <iostream>
 #include <map>
-#include <chrono>
-#include <iomanip>
-#include <sstream>
+#include <string>
+#include <vector>
 
-// Placeholder for matplotlib usage in C++
-void plotData(const std::string& filename) {
-    // Use matplotlib to plot data
-    std::cout << "Plotting data and saving to " << filename << std::endl;
-}
-
-// Function to save data as a binary file
-template <typename T>
-void saveData(const std::string& filename, const T& data) {
-    std::ofstream file(filename, std::ios::binary);
-    if (file.is_open()) {
-        file.write(reinterpret_cast<const char*>(&data), sizeof(T));
-        file.close();
-    } else {
-        std::cerr << "Unable to open file for saving: " << filename << std::endl;
-    }
-}
-
-// Function to generate a unique filename based on dataset
-std::string generateFilename(const std::string& datasetName) {
-    auto now = std::chrono::system_clock::now();
-    auto in_time_t = std::chrono::system_clock::to_time_t(now);
-    std::stringstream ss;
-    ss << std::put_time(std::localtime(&in_time_t), "%Y%m%d%H%M%S");
-    return datasetName + "_" + ss.str() + ".png";
-}
+namespace fs = std::filesystem;
 
 int main() {
-    std::filesystem::path working_dir = std::filesystem::current_path() / "working";
-    std::filesystem::create_directories(working_dir);
+    fs::path working_dir = fs::current_path() / "working";
+    fs::create_directories(working_dir);
 
-    // Experiment data structure
-    std::map<std::string, std::map<std::string, std::map<std::string, std::vector<double>>>> experiment_data = {
-        {"dataset_name_1", {
-            {"metrics", {{"train", {}}, {"val", {}}}},
-            {"losses", {{"train", {}}, {"val", {}}}},
-            {"predictions", {}},
-            {"ground_truth", {}}
-        }},
-        {"dataset_name_2", {
-            {"metrics", {{"train", {}}, {"val", {}}}},
-            {"losses", {{"train", {}}, {"val", {}}}},
-            {"predictions", {}},
-            {"ground_truth", {}}
-        }}
+    using MetricStore = std::map<std::string, std::vector<double>>;
+    using DatasetStore = std::map<std::string, std::map<std::string, MetricStore>>;
+    std::map<std::string, DatasetStore> experiment_data = {
+        {"dataset_name_1",
+         {{"metrics", {{"train", {}}, {"val", {}}}},
+          {"losses", {{"train", {}}, {"val", {}}}},
+          {"predictions", {}},
+          {"ground_truth", {}}}},
     };
 
-    // Simulate training/evaluation process
-    for (int epoch = 0; epoch < 10; ++epoch) {
-        double train_metric = static_cast<double>(epoch) * 0.1; // Placeholder for actual computation
-        double val_loss = static_cast<double>(epoch) * 0.2; // Placeholder for actual computation
-
+    for (int epoch = 0; epoch < 3; ++epoch) {
+        double train_metric = 0.1 * epoch;
+        double val_loss = 0.2 * epoch;
         experiment_data["dataset_name_1"]["metrics"]["train"].push_back(train_metric);
-
-        // Print validation loss
+        experiment_data["dataset_name_1"]["losses"]["val"].push_back(val_loss);
         std::cout << "Epoch " << epoch << ": validation_loss = " << val_loss << std::endl;
     }
 
-    // Save experiment data
-    std::string data_filename = (working_dir / "experiment_data.bin").string();
-    saveData(data_filename, experiment_data);
+    std::vector<double> flat_metrics =
+        experiment_data["dataset_name_1"]["metrics"]["train"];
+    cnpy::npy_save((working_dir / "experiment_data.npy").string(),
+                   flat_metrics.data(),
+                   {flat_metrics.size()},
+                   "w");
 
-    // Plot and save figures
-    for (const auto& dataset : experiment_data) {
-        std::string plot_filename = (working_dir / generateFilename(dataset.first)).string();
-        plotData(plot_filename);
-    }
+    fs::path plot_path = working_dir / "dataset_name_1_metrics.png";
+    std::cout << "Save matplotlib output to " << plot_path << std::endl;
 
     return 0;
 }

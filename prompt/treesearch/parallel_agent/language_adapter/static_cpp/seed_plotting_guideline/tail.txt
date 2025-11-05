@@ -7,6 +7,8 @@
 #include <filesystem>
 #include <cstdlib>
 
+namespace fs = std::filesystem;
+
 // Placeholder for loading .npy files in C++
 std::vector<std::string> loadExperimentData(const std::vector<std::string>& experimentDataPathList) {
     std::vector<std::string> allExperimentData;
@@ -25,6 +27,9 @@ std::vector<std::string> loadExperimentData(const std::vector<std::string>& expe
 }
 
 int main() {
+    fs::path working_dir = fs::current_path() / "working";
+    fs::create_directories(working_dir);
+
     try {
         std::vector<std::string> experimentDataPathList = { /* Make sure to use the correct experiment data path that's provided in the Experiment Data Path section */ };
         std::vector<std::string> allExperimentData = loadExperimentData(experimentDataPathList);
@@ -36,7 +41,7 @@ int main() {
         // First plot
         // Use matplotlib for plotting
         // ... plotting code ...
-        std::cout << "Plot saved as working_dir/[plot_name_1].png" << std::endl;
+        std::cout << "Plot saved as " << (working_dir / "[plot_name_1].png") << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Error creating plot1: " << e.what() << std::endl;
     }
@@ -45,7 +50,7 @@ int main() {
         // Second plot
         // Use matplotlib for plotting
         // ... plotting code ...
-        std::cout << "Plot saved as working_dir/[plot_name_2].png" << std::endl;
+        std::cout << "Plot saved as " << (working_dir / "[plot_name_2].png") << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Error creating plot2: " << e.what() << std::endl;
     }

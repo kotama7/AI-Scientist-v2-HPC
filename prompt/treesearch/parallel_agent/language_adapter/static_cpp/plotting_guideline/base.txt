@@ -10,8 +10,13 @@ The code should start with:
 #include <filesystem>
 namespace fs = std::filesystem;
 ```
+Define a reusable path handle at the top of your code:
+```cpp
+fs::path working_dir = fs::current_path() / "working";
+fs::create_directories(working_dir);
+```
 Create standard visualizations of experiment results
-Save all plots to working_dir
+Save all plots to paths derived from `working_dir` (e.g., `(working_dir / "val_curve.png").string()`)
 Include training/validation curves if available
 ONLY plot data that exists in experiment_data.npy - DO NOT make up or simulate any values
 Use basic matplotlib without custom styles

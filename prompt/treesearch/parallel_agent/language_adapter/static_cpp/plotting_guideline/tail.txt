@@ -5,21 +5,27 @@ Example data loading and plot saving code:
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <filesystem>
 #include <map>
 #include <vector>
 #include <stdexcept>
 
+namespace fs = std::filesystem;
+
 // Placeholder for matplotlib usage
-void plotAndSave(const std::string& plotName) {
+void plotAndSave(const fs::path& plot_path) {
     // ... plotting code using matplotlib ...
-    std::cout << "Plot saved as " << plotName << std::endl;
+    std::cout << "Plot saved as " << plot_path << std::endl;
 }
 
 int main() {
+    fs::path working_dir = fs::current_path() / "working";
+    fs::create_directories(working_dir);
+
     std::map<std::string, std::map<std::string, std::map<std::string, std::vector<double>>>> experiment_data;
     
     try {
-        std::ifstream file("working_dir/experiment_data.npy", std::ios::binary);
+        std::ifstream file((working_dir / "experiment_data.npy").string(), std::ios::binary);
         if (!file) {
             throw std::runtime_error("Error loading experiment data");
         }
@@ -31,14 +37,14 @@ int main() {
 
     try {
         // First plot
-        plotAndSave("working_dir/[plot_name_1].png");
+        plotAndSave(working_dir / "[plot_name_1].png");
     } catch (const std::exception& e) {
         std::cerr << "Error creating plot1: " << e.what() << std::endl;
     }
 
     try {
         // Second plot
-        plotAndSave("working_dir/[plot_name_2].png");
+        plotAndSave(working_dir / "[plot_name_2].png");
     } catch (const std::exception& e) {
         std::cerr << "Error creating plot2: " << e.what() << std::endl;
     }

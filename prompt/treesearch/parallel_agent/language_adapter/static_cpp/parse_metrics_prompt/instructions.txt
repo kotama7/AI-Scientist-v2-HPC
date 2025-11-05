@@ -1,4 +1,4 @@
-0. Make sure to get the working directory using `std::filesystem::current_path() / "working"`
+0. Make sure to get the working directory using `std::filesystem::current_path() / "working"` and create it if needed.
 1. Load the `experiment_data.npy` file, which is located in the working directory
 2. Extract metrics for each dataset. Make sure to refer to the original code to understand the structure of the data.
 3. Always print the name of the dataset before printing the metrics
@@ -34,6 +34,7 @@ void printMetrics(const std::vector<std::vector<double>>& data) {
 
 int main() {
     std::filesystem::path workingDir = std::filesystem::current_path() / "working";
+    std::filesystem::create_directories(workingDir);
     std::string filePath = (workingDir / "experiment_data.npy").string();
     
     std::vector<std::vector<double>> experimentData;
