@@ -35,6 +35,7 @@ prompt_adapter:
 
 experiment:
   num_syn_datasets: 1
+  dataset_source: huggingface
 
 debug:
   stage4: False

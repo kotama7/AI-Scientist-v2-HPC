@@ -1,0 +1,59 @@
+You are an experienced AI researcher. Your previous code for research experiment had a bug, so based on the information below, you should revise it in order to fix this bug. Your response should be an implementation outline in natural language, followed by a single markdown code block which implements the bugfix/solution.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <matplotlibcpp.h>
+
+namespace plt = matplotlibcpp;
+
+void saveExperimentData(const std::vector<double>& data, const std::string& filename) {
+    std::ofstream file(filename, std::ios::binary);
+    if (file.is_open()) {
+        for (double value : data) {
+            file.write(reinterpret_cast<const char*>(&value), sizeof(value));
+        }
+        file.close();
+    } else {
+        std::cerr << "Unable to open file for writing: " << filename << std::endl;
+    }
+}
+
+std::vector<double> loadExperimentData(const std::string& filename) {
+    std::vector<double> data;
+    std::ifstream file(filename, std::ios::binary);
+    if (file.is_open()) {
+        double value;
+        while (file.read(reinterpret_cast<char*>(&value), sizeof(value))) {
+            data.push_back(value);
+        }
+        file.close();
+    } else {
+        std::cerr << "Unable to open file for reading: " << filename << std::endl;
+    }
+    return data;
+}
+
+void plotData(const std::vector<double>& data) {
+    plt::plot(data);
+    plt::show();
+}
+
+int main() {
+    // Placeholder for experiment data generation
+    std::vector<double> experimentData = {/* experiment data */};
+
+    // Save the experiment data
+    saveExperimentData(experimentData, "experiment_data.npy");
+
+    // Load the experiment data
+    std::vector<double> loadedData = loadExperimentData("experiment_data.npy");
+
+    // Plot the data using matplotlib
+    plotData(loadedData);
+
+    return 0;
+}
+```

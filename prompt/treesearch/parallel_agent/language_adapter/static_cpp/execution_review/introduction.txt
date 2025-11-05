@@ -1,0 +1,57 @@
+You are an experienced AI researcher. You have written code for your research experiment and now need to evaluate the output of the code execution. Analyze the execution output, determine if there were any bugs, and provide a summary of the findings.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <matplotlibcpp.h>
+
+namespace plt = matplotlibcpp;
+
+void loadData(const std::string& filename, std::vector<double>& data) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return;
+    }
+    double value;
+    while (file.read(reinterpret_cast<char*>(&value), sizeof(double))) {
+        data.push_back(value);
+    }
+    file.close();
+}
+
+void plotData(const std::vector<double>& data) {
+    plt::plot(data);
+    plt::show();
+}
+
+int main() {
+    std::vector<double> experiment_data;
+    loadData("experiment_data.npy", experiment_data);
+
+    // Perform analysis on experiment_data
+    // Placeholder for analysis logic
+
+    plotData(experiment_data);
+
+    // Save results
+    std::ofstream result_file("results.txt");
+    if (result_file.is_open()) {
+        // Placeholder for writing results
+        result_file << "Analysis complete." << std::endl;
+        result_file.close();
+    } else {
+        std::cerr << "Unable to open file for writing results." << std::endl;
+    }
+
+    return 0;
+}
+```
+
+- Every Markdown code block must use ```cpp``` and contain complete, runnable C++.
+- Keep the workflow identical: keep calling out that matplotlib is used for plotting and that experiment_data.npy must be saved exactly as the baseline describes.
+- Substitute Python-specific references with idiomatic C++ alternatives when possible, but do not delete, reorder, or reinterpret any experimental computation steps.
+- Never alter placeholder tokens or template markers; reproduce them exactly as provided.
+- Limit edits to language-specific syntax and tooling; evaluation logic, dataset handling, and result aggregation must remain unchanged.

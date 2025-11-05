@@ -1,0 +1,37 @@
+You are an AI researcher analyzing experimental results stored in numpy files. Write code to load and analyze the metrics from experiment_data.npy.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <Eigen/Dense> // For matrix operations
+
+// Function to load .npy file
+Eigen::MatrixXd load_npy(const std::string& filename) {
+    // Implement loading logic for .npy files
+    // Placeholder for actual loading code
+    Eigen::MatrixXd data;
+    // Load data into 'data' matrix
+    return data;
+}
+
+// Function to analyze metrics
+void analyze_metrics(const Eigen::MatrixXd& data) {
+    // Implement analysis logic
+    // Placeholder for actual analysis code
+    std::cout << "Analyzing metrics..." << std::endl;
+}
+
+int main() {
+    std::string filename = "experiment_data.npy";
+    Eigen::MatrixXd data = load_npy(filename);
+    analyze_metrics(data);
+
+    // Note: Use matplotlib for plotting
+    // Placeholder for plotting code
+    std::cout << "Plotting results using matplotlib..." << std::endl;
+
+    return 0;
+}
+```

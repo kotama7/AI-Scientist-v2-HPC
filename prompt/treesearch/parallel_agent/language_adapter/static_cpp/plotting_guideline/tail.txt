@@ -1,0 +1,48 @@
+Example to extract data from experiment_data: experiment_data["dataset_name_1"]["metrics"]["train"]
+Example data loading and plot saving code:
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <map>
+#include <vector>
+#include <stdexcept>
+
+// Placeholder for matplotlib usage
+void plotAndSave(const std::string& plotName) {
+    // ... plotting code using matplotlib ...
+    std::cout << "Plot saved as " << plotName << std::endl;
+}
+
+int main() {
+    std::map<std::string, std::map<std::string, std::map<std::string, std::vector<double>>>> experiment_data;
+    
+    try {
+        std::ifstream file("working_dir/experiment_data.npy", std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("Error loading experiment data");
+        }
+        // Load data into experiment_data (pseudo-code, replace with actual deserialization logic)
+        // experiment_data = loadNpyFile(file);
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading experiment data: " << e.what() << std::endl;
+    }
+
+    try {
+        // First plot
+        plotAndSave("working_dir/[plot_name_1].png");
+    } catch (const std::exception& e) {
+        std::cerr << "Error creating plot1: " << e.what() << std::endl;
+    }
+
+    try {
+        // Second plot
+        plotAndSave("working_dir/[plot_name_2].png");
+    } catch (const std::exception& e) {
+        std::cerr << "Error creating plot2: " << e.what() << std::endl;
+    }
+
+    return 0;
+}
+```

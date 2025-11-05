@@ -1,0 +1,54 @@
+You are an expert in data visualization and plotting. You are given a set of evaluation results and the code that was used to plot them. Your task is to write a new plotting code that aggregate the results e.g. for example, by adding mean values and standard error bars to the plots.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <matplotlibcpp.h>
+
+namespace plt = matplotlibcpp;
+
+std::vector<double> load_data(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    std::vector<double> data;
+    double value;
+    while (file.read(reinterpret_cast<char*>(&value), sizeof(double))) {
+        data.push_back(value);
+    }
+    return data;
+}
+
+double calculate_mean(const std::vector<double>& data) {
+    double sum = 0.0;
+    for (double value : data) {
+        sum += value;
+    }
+    return sum / data.size();
+}
+
+double calculate_standard_error(const std::vector<double>& data, double mean) {
+    double sum_squared_diff = 0.0;
+    for (double value : data) {
+        sum_squared_diff += (value - mean) * (value - mean);
+    }
+    return std::sqrt(sum_squared_diff / data.size());
+}
+
+int main() {
+    std::vector<double> data = load_data("experiment_data.npy");
+
+    double mean = calculate_mean(data);
+    double standard_error = calculate_standard_error(data, mean);
+
+    plt::errorbar(data, mean, standard_error);
+    plt::title("Evaluation Results with Mean and Standard Error");
+    plt::xlabel("Sample Index");
+    plt::ylabel("Value");
+    plt::show();
+
+    return 0;
+}
+```
+
+Ensure that `experiment_data.npy` is saved exactly as the baseline describes.

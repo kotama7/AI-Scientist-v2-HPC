@@ -39,6 +39,10 @@ IMPLEMENTATION_GUIDELINE_POST = tuple(
 IMPLEMENTATION_GUIDELINE_DATASET = tuple(
     load_prompt_lines(PROMPT_BASE + "implementation_guideline/dataset")
 )
+DATA_SOURCE_GUIDELINES = {
+    "huggingface": tuple(load_prompt_lines(PROMPT_BASE + "data_source/huggingface")),
+    "local": tuple(load_prompt_lines(PROMPT_BASE + "data_source/local")),
+}
 
 RESPONSE_FORMAT_DEFAULT = load_prompt(
     PROMPT_BASE + "response_format/default"
@@ -449,6 +453,13 @@ class MinimalAgent:
                     for line in IMPLEMENTATION_GUIDELINE_DATASET
                 ]
                 impl_guideline.extend(formatted_dataset_guideline)
+
+        dataset_source = getattr(self.cfg.experiment, "dataset_source", "huggingface")
+        dataset_source_key = dataset_source.lower()
+        dataset_guidance = DATA_SOURCE_GUIDELINES.get(dataset_source_key)
+        if dataset_guidance is None:
+            dataset_guidance = DATA_SOURCE_GUIDELINES["huggingface"]
+        impl_guideline.extend(dataset_guidance)
 
         impl_guideline.extend(IMPLEMENTATION_GUIDELINE_POST)
 
@@ -1166,11 +1177,27 @@ class ParallelAgent:
                         f"Could not acquire GPU for seed {seed}: {e}. Running on CPU"
                     )
 
-            # Add seed to node code
-            node_data["code"] = (
-                f"# Set random seed\nimport random\nimport numpy as np\nimport torch\n\nseed = {seed}\nrandom.seed(seed)\nnp.random.seed(seed)\ntorch.manual_seed(seed)\nif torch.cuda.is_available():\n    torch.cuda.manual_seed(seed)\n\n"
-                + node_code
-            )
+            if self.code_language == "python":
+                seed_prefix = (
+                    f"# Set random seed\n"
+                    f"import random\n"
+                    f"import numpy as np\n"
+                    f"import torch\n\n"
+                    f"seed = {seed}\n"
+                    "random.seed(seed)\n"
+                    "np.random.seed(seed)\n"
+                    "torch.manual_seed(seed)\n"
+                    "if torch.cuda.is_available():\n"
+                    "    torch.cuda.manual_seed(seed)\n\n"
+                )
+            else:
+                seed_prefix = (
+                    "// Set random seed\n"
+                    "#include <random>\n\n"
+                    f"std::mt19937 rng({seed}u);\n\n"
+                )
+
+            node_data["code"] = seed_prefix + node_code
 
             new_ablation_idea = None
             new_hyperparam_idea = None

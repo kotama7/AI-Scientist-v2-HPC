@@ -86,6 +86,7 @@ class ExecConfig:
 @dataclass
 class ExperimentConfig:
     num_syn_datasets: int
+    dataset_source: str = "huggingface"
 
 
 @dataclass

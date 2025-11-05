@@ -1,4 +1,4 @@
 - Explore novel improvements
 - Come up with experiments to reveal new insights
 - Be creative and think outside the box
-- MAKE SURE you use THREE HuggingFace dataset in total to test your models
+- {dataset_requirement}

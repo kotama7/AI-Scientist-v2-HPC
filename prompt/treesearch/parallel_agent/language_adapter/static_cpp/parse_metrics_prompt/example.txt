@@ -1,0 +1,29 @@
+```cpp
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <map>
+#include <filesystem>
+#include <nlohmann/json.hpp> // For JSON parsing, assuming experiment_data.npy is converted to JSON
+
+namespace fs = std::filesystem;
+
+std::map<std::string, double> load_experiment_data(const std::string& filepath) {
+    std::ifstream file(filepath);
+    nlohmann::json json_data;
+    file >> json_data;
+    std::map<std::string, double> experiment_data = json_data.get<std::map<std::string, double>>();
+    return experiment_data;
+}
+
+int main() {
+    std::string current_path = fs::current_path().string();
+    std::string data_path = current_path + "/experiment_data.npy"; // Ensure this file is available as JSON
+    std::map<std::string, double> experiment_data = load_experiment_data(data_path);
+
+    // Placeholder for further processing and plotting with matplotlib
+    // Use matplotlib for plotting as described in the original experiment pipeline
+
+    return 0;
+}
+```

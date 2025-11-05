@@ -18,11 +18,23 @@ from ai_scientist.prompt_loader import load_prompt
 TASK_DESCRIPTION_TEMPLATE = load_prompt(
     "treesearch/agent_manager/task_description"
 )
-STAGE_GOALS = {
-    1: load_prompt("treesearch/agent_manager/stage1_goals"),
-    2: load_prompt("treesearch/agent_manager/stage2_goals"),
-    3: load_prompt("treesearch/agent_manager/stage3_goals"),
-    4: load_prompt("treesearch/agent_manager/stage4_goals"),
+
+STAGE_GOAL_PROMPTS = {
+    1: "treesearch/agent_manager/stage1_goals",
+    2: "treesearch/agent_manager/stage2_goals",
+    3: "treesearch/agent_manager/stage3_goals",
+    4: "treesearch/agent_manager/stage4_goals",
+}
+
+_STAGE_DATASET_GOALS = {
+    2: {
+        "huggingface": "Introduce TWO additional datasets sourced from Hugging Face to evaluate the model, and justify each choice.",
+        "local": "Introduce TWO additional datasets that can be generated or loaded from local resources without relying on external downloads, and justify each choice.",
+    },
+    3: {
+        "huggingface": "Ensure the research plan evaluates the model on at least THREE Hugging Face datasets overall, summarizing the insights each dataset provides.",
+        "local": "Ensure the research plan evaluates the model on at least THREE locally available or synthetically generated datasets overall, summarizing the insights each dataset provides.",
+    },
 }
 
 

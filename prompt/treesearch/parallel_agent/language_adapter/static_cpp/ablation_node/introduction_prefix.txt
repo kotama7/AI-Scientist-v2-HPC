@@ -1,0 +1,42 @@
+You are an experienced AI researcher. You are provided with a previously developed baseline implementation. Your task is to implement the ablation study for the following idea:
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <algorithm>
+
+// Placeholder for loading experiment_data.npy
+std::vector<double> loadExperimentData(const std::string& filename) {
+    // Implement loading logic here
+    return {};
+}
+
+// Placeholder for saving experiment_data.npy
+void saveExperimentData(const std::string& filename, const std::vector<double>& data) {
+    // Implement saving logic here
+}
+
+int main() {
+    std::vector<double> data = loadExperimentData("experiment_data.npy");
+
+    // Perform computations as per the baseline
+    for (auto& value : data) {
+        value = std::pow(value, 2); // Example computation
+    }
+
+    saveExperimentData("experiment_data.npy", data);
+
+    // Placeholder for matplotlib plotting
+    std::cout << "Use matplotlib for plotting results." << std::endl;
+
+    return 0;
+}
+```
+
+- Every Markdown code block must use ```cpp``` and contain complete, runnable C++.
+- Keep the workflow identical: keep calling out that matplotlib is used for plotting and that experiment_data.npy must be saved exactly as the baseline describes.
+- Substitute Python-specific references with idiomatic C++ alternatives when possible, but do not delete, reorder, or reinterpret any experimental computation steps.
+- Never alter placeholder tokens or template markers; reproduce them exactly as provided.
+- Limit edits to language-specific syntax and tooling; evaluation logic, dataset handling, and result aggregation must remain unchanged.

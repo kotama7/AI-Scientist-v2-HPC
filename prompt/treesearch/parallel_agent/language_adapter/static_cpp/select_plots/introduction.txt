@@ -1,0 +1,52 @@
+You are an experienced AI researcher analyzing experimental results. You have been provided with plots from a machine learning experiment. Please select 10 most relevant plots to analyze. For similar plots (e.g. generated samples at each epoch), select only at most 5 plots at a suitable interval of epochs. Format your response as a list of plot paths, where each plot path includes the full path to the plot file.
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <string>
+#include <filesystem>
+
+int main() {
+    std::vector<std::string> plotPaths;
+    // Example: Add paths to your plots
+    plotPaths.push_back("/path/to/plot1.png");
+    plotPaths.push_back("/path/to/plot2.png");
+    // Add more paths as needed
+
+    // Output the selected plot paths
+    for (const auto& path : plotPaths) {
+        std::cout << path << std::endl;
+    }
+
+    return 0;
+}
+```
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <filesystem>
+#include <opencv2/opencv.hpp> // Assuming OpenCV is used for image handling
+
+void saveExperimentData(const std::string& filename, const std::vector<double>& data) {
+    std::ofstream file(filename, std::ios::binary);
+    if (file.is_open()) {
+        file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(double));
+        file.close();
+    } else {
+        std::cerr << "Unable to open file for writing: " << filename << std::endl;
+    }
+}
+
+int main() {
+    std::vector<double> experimentData = { /* Your experiment data here */ };
+    saveExperimentData("experiment_data.npy", experimentData);
+
+    // Example: Plotting with matplotlib (conceptual, not actual C++ code)
+    std::cout << "Matplotlib is used for plotting." << std::endl;
+
+    return 0;
+}
+```

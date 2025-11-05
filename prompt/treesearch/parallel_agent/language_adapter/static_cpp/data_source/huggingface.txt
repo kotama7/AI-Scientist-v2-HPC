@@ -1,0 +1,4 @@
+Keep Hugging Face as the default source when describing how data is acquired.
+- Outline how to download each required dataset from the Hugging Face Hub (for example, by invoking helper Python scripts or HTTP downloads) before compiling the C++ pipeline.
+- Describe how the downloaded artifacts are converted into `.npy` files that can be loaded with `cnpy` inside the experiment.
+- If a dataset cannot be retrieved, justify the issue and propose another Hugging Face dataset rather than switching to ad-hoc local collections.

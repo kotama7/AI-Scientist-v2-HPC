@@ -270,59 +270,24 @@ def _detect_target_language(
     return _infer_language_from_idea(idea, adapter_settings)
 
 
-def _adapt_parallel_agent_prompts(
-    prompt_root: Path,
-    language_label: str,
-    code_fence: str,
-    adapter_settings: Dict[str, Any],
-) -> None:
+def _apply_parallel_agent_language_override(prompt_root: Path, language_key: str) -> bool:
+    """Overlay language-specific prompt overrides if they have been prepared."""
     parallel_dir = prompt_root / "treesearch" / "parallel_agent"
     if not parallel_dir.exists():
-        return
+        return False
 
-    adapter_dir = parallel_dir / "language_adapter"
-    change_prompt_path = adapter_dir / "change_prompt.txt"
+    override_dir = parallel_dir / "language_adapter" / f"static_{language_key}"
+    if not override_dir.exists():
+        return False
 
-    if not adapter_settings:
-        raise ValueError("C++ prompt adaptation requested but prompt_adapter config is missing.")
-
-    change_text: Optional[str] = None
-    if change_prompt_path.exists():
-        rel_change_path = str(change_prompt_path.relative_to(prompt_root))
-        template = prompt_loader.load_prompt_from_dir(rel_change_path, prompt_root)
-        change_text = (
-            template.format(
-                language_label=language_label,
-                code_fence=code_fence,
-                language_lower=language_label.lower(),
-            )
-            .strip()
-        )
-        if change_text:
-            change_text = change_text + "\n"
-
-    client, client_model = create_client(adapter_settings["model"])
-    temperature = adapter_settings.get("temp", 0.0)
-
-    for path in parallel_dir.rglob("*.txt"):
-        if path == change_prompt_path:
+    for source_path in override_dir.rglob("*"):
+        if not source_path.is_file():
             continue
-        if adapter_dir in path.parents:
-            continue
-        rel_path = str(path.relative_to(prompt_root))
-        content = prompt_loader.load_prompt_from_dir(rel_path, prompt_root)
-        prompt_input = content
-        if change_text:
-            prompt_input = f"{change_text}{content}"
-        rewritten, _ = get_response_from_llm(
-            prompt_input,
-            client,
-            client_model,
-            PROMPT_ADAPTER_SYSTEM_MESSAGE,
-            temperature=temperature,
-        )
-        rewritten = rewritten.strip("\n") + "\n"
-        prompt_loader.write_prompt(rel_path, rewritten, base_dir=prompt_root)
+        relative_path = source_path.relative_to(override_dir)
+        destination_path = parallel_dir / relative_path
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination_path)
+    return True
 
 
 def _snapshot_and_prepare_prompts(
@@ -331,16 +296,19 @@ def _snapshot_and_prepare_prompts(
     language_label: str,
     code_fence: str,
     adapt_to_cpp: bool,
-    adapter_settings: Optional[Dict[str, Any]],
 ) -> Path:
     src_prompt_dir = repo_root / "prompt"
     dst_prompt_dir = idea_dir / "prompt"
     shutil.copytree(src_prompt_dir, dst_prompt_dir, dirs_exist_ok=True)
     if adapt_to_cpp:
-        _adapt_parallel_agent_prompts(dst_prompt_dir, language_label, code_fence, adapter_settings)
-        print(
-            f"Copied prompts to {dst_prompt_dir} and adapted parallel agent prompts for {language_label}."
-        )
+        if _apply_parallel_agent_language_override(dst_prompt_dir, "cpp"):
+            print(
+                f"Copied prompts to {dst_prompt_dir} and applied static parallel agent prompts for {language_label}."
+            )
+        else:
+            raise FileNotFoundError(
+                f"Static C++ prompt overrides not found under {dst_prompt_dir / 'treesearch/parallel_agent/language_adapter/static_cpp'}"
+            )
     else:
         print(f"Copied prompts to {dst_prompt_dir} without language adaptation.")
     return dst_prompt_dir
@@ -431,7 +399,6 @@ if __name__ == "__main__":
         language_label,
         code_fence,
         adapt_to_cpp,
-        prompt_adapter_settings,
     )
     os.environ["AI_SCIENTIST_PROMPT_DIR"] = str(prompt_dir)
     prompt_loader.PROMPT_DIR = Path(prompt_dir)
