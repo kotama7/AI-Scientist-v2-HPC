@@ -149,6 +149,9 @@ class Interpreter:
             event_outq.put(("state:ready",))
             try:
                 if self.language == "python":
+                    global_scope.setdefault(
+                        "__file__", str(Path(self.working_dir) / self.agent_file_name)
+                    )
                     exec(compile(code, self.agent_file_name, "exec"), global_scope)
                     event_outq.put(("state:finished", None, None, None))
                 elif self.language == "cpp":
