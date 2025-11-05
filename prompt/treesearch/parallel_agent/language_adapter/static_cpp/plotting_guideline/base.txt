@@ -1,29 +1,22 @@
-AVAILABLE DATA: 
+AVAILABLE DATA:
 Experiment Data: experiment_data.npy
-REQUIREMENTS: 
+REQUIREMENTS:
+The plotting script must be written in Python even when the experiment implementation is in C++.
 The code should start with:
-```cpp
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <string>
-#include <filesystem>
-namespace fs = std::filesystem;
-```
-Define a reusable path handle at the top of your code:
-```cpp
-fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
-fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
-fs::path working_dir = base_dir / "working";
-fs::create_directories(working_dir);
-```
-Create standard visualizations of experiment results
-Save all plots to paths derived from `working_dir` (e.g., `(working_dir / "val_curve.png").string()`)
-Include training/validation curves if available
-ONLY plot data that exists in experiment_data.npy - DO NOT make up or simulate any values
-Use basic matplotlib without custom styles
-Each plot should be in a separate try-except block
-Always close figures after saving
+  from pathlib import Path
+  import numpy as np
+  import matplotlib.pyplot as plt
+  import os
+  base_dir = Path(__file__).resolve().parent
+  working_dir = base_dir / "working"
+  working_dir.mkdir(exist_ok=True)
+Create standard visualizations of the experiment results.
+Save all plots to working_dir (e.g., `(working_dir / "val_curve.png")`).
+Include training/validation curves if available.
+ONLY plot data that exists in experiment_data.npy - DO NOT make up or simulate any values.
+Use basic matplotlib without custom styles.
+Each plot should be in a separate try-except block.
+Always close figures after saving.
 Always include a title for each plot, and be sure to use clear subtitles—such as 'Left: Ground Truth, Right: Generated Samples'—while also specifying the type of dataset being used.
-Make sure to use descriptive names for figures when saving e.g. always include the dataset name and the type of plot in the name
+Make sure to use descriptive names for figures when saving e.g. always include the dataset name and the type of plot in the name.
 When there are many similar figures to plot (e.g. generated samples at each epoch), make sure to plot only at a suitable interval of epochs so that you only plot at most 5 figures.

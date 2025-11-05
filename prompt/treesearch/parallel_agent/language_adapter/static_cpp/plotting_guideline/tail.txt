@@ -1,61 +1,37 @@
 Example to extract data from experiment_data: experiment_data["dataset_name_1"]["metrics"]["train"]
 Example data loading and plot saving code:
 
-```cpp
-#include <iostream>
-#include <fstream>
-#include <string>
-#include <filesystem>
-#include <map>
-#include <vector>
-#include <stdexcept>
+```python
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
 
-namespace fs = std::filesystem;
+base_dir = Path(__file__).resolve().parent
+working_dir = base_dir / "working"
+working_dir.mkdir(exist_ok=True)
 
-// Placeholder for matplotlib usage
-void plotAndSave(const fs::path& plot_path) {
-    // ... plotting code using matplotlib ...
-    std::cout << "Plot saved as " << plot_path << std::endl;
-}
+try:
+    experiment_data = np.load(working_dir / "experiment_data.npy", allow_pickle=True).item()
+except Exception as e:
+    print(f"Error loading experiment data: {e}")
 
-fs::path resolve_working_dir() {
-    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
-    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
-    fs::path working_dir = base_dir / "working";
-    fs::create_directories(working_dir);
-    return working_dir;
-}
+try:
+    # First plot
+    plt.figure()
+    # ... plotting code ...
+    plt.savefig(working_dir / "[plot_name_1].png", dpi=300, bbox_inches="tight")
+    plt.close()
+except Exception as e:
+    print(f"Error creating plot1: {e}")
+    plt.close()
 
-int main() {
-    fs::path working_dir = resolve_working_dir();
-
-    std::map<std::string, std::map<std::string, std::map<std::string, std::vector<double>>>> experiment_data;
-    
-    try {
-        std::ifstream file((working_dir / "experiment_data.npy").string(), std::ios::binary);
-        if (!file) {
-            throw std::runtime_error("Error loading experiment data");
-        }
-        // Load data into experiment_data (pseudo-code, replace with actual deserialization logic)
-        // experiment_data = loadNpyFile(file);
-    } catch (const std::exception& e) {
-        std::cerr << "Error loading experiment data: " << e.what() << std::endl;
-    }
-
-    try {
-        // First plot
-        plotAndSave(working_dir / "[plot_name_1].png");
-    } catch (const std::exception& e) {
-        std::cerr << "Error creating plot1: " << e.what() << std::endl;
-    }
-
-    try {
-        // Second plot
-        plotAndSave(working_dir / "[plot_name_2].png");
-    } catch (const std::exception& e) {
-        std::cerr << "Error creating plot2: " << e.what() << std::endl;
-    }
-
-    return 0;
-}
+try:
+    # Second plot
+    plt.figure()
+    # ... plotting code ...
+    plt.savefig(working_dir / "[plot_name_2].png", dpi=300, bbox_inches="tight")
+    plt.close()
+except Exception as e:
+    print(f"Error creating plot2: {e}")
+    plt.close()
 ```

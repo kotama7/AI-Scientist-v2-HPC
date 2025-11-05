@@ -1,67 +1,42 @@
-```cpp
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <string>
-#include <stdexcept>
-#include <filesystem>
-#include <cstdlib>
+```python
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+import os
 
-namespace fs = std::filesystem;
+base_dir = Path(__file__).resolve().parent
+working_dir = base_dir / "working"
+working_dir.mkdir(exist_ok=True)
 
-// Placeholder for loading .npy files in C++
-std::vector<std::string> loadExperimentData(const std::vector<std::string>& experimentDataPathList) {
-    std::vector<std::string> allExperimentData;
-    for (const auto& experimentDataPath : experimentDataPathList) {
-        try {
-            std::string fullPath = std::getenv("AI_SCIENTIST_ROOT") + std::string("/") + experimentDataPath;
-            // Load the .npy file here (requires a library or custom implementation)
-            // Placeholder for actual data loading
-            std::string experimentData = "Loaded data from " + fullPath;
-            allExperimentData.push_back(experimentData);
-        } catch (const std::exception& e) {
-            std::cerr << "Error loading experiment data: " << e.what() << std::endl;
-        }
-    }
-    return allExperimentData;
-}
+try:
+    experiment_data_path_list = [
+        # Make sure to use the correct experiment data path that's provided in the Experiment Data Path section
+    ]
+    all_experiment_data = []
+    for experiment_data_path in experiment_data_path_list:
+        full_path = Path(os.getenv("AI_SCIENTIST_ROOT", ".")) / experiment_data_path
+        experiment_data = np.load(full_path, allow_pickle=True).item()
+        all_experiment_data.append(experiment_data)
+except Exception as e:
+    print(f"Error loading experiment data: {e}")
 
-fs::path resolve_working_dir() {
-    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
-    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
-    fs::path working_dir = base_dir / "working";
-    fs::create_directories(working_dir);
-    return working_dir;
-}
+try:
+    # First plot
+    plt.figure()
+    # ... plotting code ...
+    plt.savefig(working_dir / "[plot_name_1].png", dpi=300, bbox_inches="tight")
+    plt.close()
+except Exception as e:
+    print(f"Error creating plot1: {e}")
+    plt.close()
 
-int main() {
-    fs::path working_dir = resolve_working_dir();
-
-    try {
-        std::vector<std::string> experimentDataPathList = { /* Make sure to use the correct experiment data path that's provided in the Experiment Data Path section */ };
-        std::vector<std::string> allExperimentData = loadExperimentData(experimentDataPathList);
-    } catch (const std::exception& e) {
-        std::cerr << "Error loading experiment data: " << e.what() << std::endl;
-    }
-
-    try {
-        // First plot
-        // Use matplotlib for plotting
-        // ... plotting code ...
-        std::cout << "Plot saved as " << (working_dir / "[plot_name_1].png") << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Error creating plot1: " << e.what() << std::endl;
-    }
-
-    try {
-        // Second plot
-        // Use matplotlib for plotting
-        // ... plotting code ...
-        std::cout << "Plot saved as " << (working_dir / "[plot_name_2].png") << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Error creating plot2: " << e.what() << std::endl;
-    }
-
-    return 0;
-}
+try:
+    # Second plot
+    plt.figure()
+    # ... plotting code ...
+    plt.savefig(working_dir / "[plot_name_2].png", dpi=300, bbox_inches="tight")
+    plt.close()
+except Exception as e:
+    print(f"Error creating plot2: {e}")
+    plt.close()
 ```

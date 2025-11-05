@@ -730,18 +730,19 @@ class MinimalAgent:
         # Get plotting code from LLM
         plan, code = self.plan_and_code_query(plotting_prompt)
 
-        if self.code_language == "python":
-            if not code.strip().startswith("import"):
-                code = "import matplotlib.pyplot as plt\nimport numpy as np\n\n" + code
-        elif self.code_language == "cpp":
-            if not code.strip().startswith("#include"):
-                code = (
-                    "#include <vector>\n"
-                    "#include <string>\n"
-                    "#include <cnpy.h>\n"
-                    "#include <matplotlibcpp.h>\n\n"
-                    "namespace plt = matplotlibcpp;\n\n"
-                ) + code
+        if self.code_language in ("python", "cpp"):
+            imports_to_add: List[str] = []
+            if "import matplotlib.pyplot as plt" not in code:
+                imports_to_add.append("import matplotlib.pyplot as plt")
+            if "import numpy as np" not in code:
+                imports_to_add.append("import numpy as np")
+            if "import os" not in code:
+                imports_to_add.append("import os")
+            if "from pathlib import Path" not in code:
+                imports_to_add.append("from pathlib import Path")
+
+            if imports_to_add:
+                code = "\n".join(imports_to_add) + "\n\n" + code
         node.plot_code = code
         node.plot_plan = plan
 
@@ -1258,21 +1259,25 @@ class ParallelAgent:
 
                 # Execute aggregation plotting code
                 print("[blue]Creating Interpreter for seed node aggregation[/blue]")
-                process_interpreter = Interpreter(
+                plot_interpreter = None
+                plot_agent_file_name = (
+                    f"{Path(self.cfg.exec.agent_file_name).stem}_plot.py"
+                )
+                plot_interpreter = Interpreter(
                     working_dir=self.cfg.workspace_dir,
                     timeout=self.cfg.exec.timeout,
                     format_tb_ipython=self.cfg.exec.format_tb_ipython,
-                    agent_file_name=self.cfg.exec.agent_file_name,
+                    agent_file_name=plot_agent_file_name,
                     env_vars={"AI_SCIENTIST_ROOT": os.getenv("AI_SCIENTIST_ROOT")},
-                    language=self.cfg.exec.language,
-                    cpp_compile_flags=self.cfg.exec.cpp_compile_flags,
+                    language="python",
                 )
 
                 try:
-                    working_dir = process_interpreter.working_dir
-                    plot_exec_result = process_interpreter.run(agg_plotting_code, True)
+                    working_dir = plot_interpreter.working_dir
+                    plot_exec_result = plot_interpreter.run(agg_plotting_code, True)
+                    agg_node.absorb_plot_exec_result(plot_exec_result)
                     print(plot_exec_result)
-                    process_interpreter.cleanup_session()
+                    plot_interpreter.cleanup_session()
                     # Save aggregated plots
                     plots_dir = Path(working_dir) / "working"
                     print("[red]plots_dir[/red]", plots_dir)
@@ -1290,12 +1295,9 @@ class ParallelAgent:
                         exp_results_dir.mkdir(parents=True, exist_ok=True)
 
                         # Save plotting code
-                        code_suffix = (
-                            Path(self.cfg.exec.agent_file_name).suffix or ".py"
-                        )
                         with open(
                             exp_results_dir
-                            / f"aggregation_plotting_code{code_suffix}",
+                            / "aggregation_plotting_code.py",
                             "w",
                         ) as f:
                             f.write(agg_plotting_code)
@@ -1319,8 +1321,8 @@ class ParallelAgent:
                     # Add aggregation node to journal
                     self.journal.append(agg_node_new)
                 finally:
-                    if process_interpreter:
-                        process_interpreter.cleanup_session()
+                    if plot_interpreter:
+                        plot_interpreter.cleanup_session()
 
             except Exception as e:
                 print(f"Error in seed result aggregation: {str(e)}")
@@ -1384,6 +1386,15 @@ class ParallelAgent:
             agent_file_name=cfg.exec.agent_file_name,
             language=cfg.exec.language,
             cpp_compile_flags=cfg.exec.cpp_compile_flags,
+        )
+        plot_interpreter: Optional[Interpreter] = None
+        plot_agent_file_name = f"{Path(cfg.exec.agent_file_name).stem}_plot.py"
+        plot_interpreter = Interpreter(
+            working_dir=workspace,
+            timeout=cfg.exec.timeout,
+            format_tb_ipython=cfg.exec.format_tb_ipython,
+            agent_file_name=plot_agent_file_name,
+            language="python",
         )
 
         try:
@@ -1591,8 +1602,9 @@ class ParallelAgent:
                             plotting_code = worker_agent._generate_plotting_code(
                                 child_node, working_dir, plot_code_from_prev_stage
                             )
-                        plot_exec_result = process_interpreter.run(plotting_code, True)
-                        process_interpreter.cleanup_session()
+                        plot_exec_result = plot_interpreter.run(plotting_code, True)
+                        plot_interpreter.cleanup_session()
+                        child_node.absorb_plot_exec_result(plot_exec_result)
                         child_node.plot_exec_result = plot_exec_result
                         if child_node.plot_exc_type and retry_count < 3:
                             print(
@@ -1626,10 +1638,7 @@ class ParallelAgent:
                         )
                         child_node.exp_results_dir = exp_results_dir
                         exp_results_dir.mkdir(parents=True, exist_ok=True)
-                        code_suffix = (
-                            Path(cfg.exec.agent_file_name).suffix or ".py"
-                        )
-                        plot_code_path = exp_results_dir / f"plotting_code{code_suffix}"
+                        plot_code_path = exp_results_dir / "plotting_code.py"
                         with open(plot_code_path, "w") as f:
                             f.write(plotting_code)
                         logger.info(f"Saved plotting code to {plot_code_path}")
@@ -1696,6 +1705,11 @@ class ParallelAgent:
 
             traceback.print_exc()
             raise
+        finally:
+            if plot_interpreter:
+                plot_interpreter.cleanup_session()
+            if process_interpreter:
+                process_interpreter.cleanup_session()
 
     def _generate_hyperparam_tuning_idea(self) -> Optional[HyperparamTuningIdea]:
         """Generate the next hyperparam tuning idea based on what's been done.

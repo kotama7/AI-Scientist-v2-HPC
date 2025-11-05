@@ -1,50 +1,23 @@
-REQUIREMENTS: 
+REQUIREMENTS:
+The plotting script must be written in Python even when the experiment implementation is in C++.
 The code should start with:
-```cpp
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <string>
-#include <filesystem>
-#include <matplotlibcpp.h>
-
-namespace plt = matplotlibcpp;
-namespace fs = std::filesystem;
-fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
-fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
-fs::path working_dir = base_dir / "working";
-fs::create_directories(working_dir);
-```
-Create standard visualizations of experiment results
-Save all plots to `(working_dir / "filename.png")`
-Include training/validation curves if available
-ONLY plot data that exists in experiment_data.npy - DO NOT make up or simulate any values
-Use basic matplotlib without custom styles
-Each plot should be in a separate try-except block
-Always close figures after saving
+  from pathlib import Path
+  import numpy as np
+  import matplotlib.pyplot as plt
+  import os
+  base_dir = Path(__file__).resolve().parent
+  working_dir = base_dir / "working"
+  working_dir.mkdir(exist_ok=True)
+Create standard visualizations of experiment results.
+Save all plots to `(working_dir / "filename.png")`.
+Include training/validation curves if available.
+ONLY plot data that exists in experiment_data.npy - DO NOT make up or simulate any values.
+Use basic matplotlib without custom styles.
+Each plot should be in a separate try-except block.
+Always close figures after saving.
 Always include a title for each plot, and be sure to use clear subtitles—such as 'Left: Ground Truth, Right: Generated Samples'—while also specifying the type of dataset being used.
-Make sure to use descriptive names for figures when saving e.g. always include the dataset name and the type of plot in the name
+Make sure to use descriptive names for figures when saving e.g. always include the dataset name and the type of plot in the name.
 When there are many similar figures to plot (e.g. generated samples at each epoch), make sure to plot only at a suitable interval of epochs so that you only plot at most 5 figures.
 Example to extract data from experiment_data: experiment_data['dataset_name_1']['metrics']['train']
-Make sure to add legend for standard error bars and means if applicable
-Example data loading and plot saving code: 
-```cpp
-std::ifstream file((working_dir / "experiment_data.npy").string(), std::ios::binary);
-if (!file) {
-    std::cerr << "Error opening file" << std::endl;
-    return;
-}
-
-// Load data from file
-// Assume data is loaded into a suitable C++ structure
-
-try {
-    plt::figure();
-    // Plotting logic here
-    plt::title("Example Plot");
-    plt::save((working_dir / "example_plot.png").string());
-    plt::close();
-} catch (const std::exception& e) {
-    std::cerr << "Plotting error: " << e.what() << std::endl;
-}
-```
+Make sure to add legend for standard error bars and means if applicable.
+Example data loading and plot saving code:

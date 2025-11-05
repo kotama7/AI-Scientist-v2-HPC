@@ -7,8 +7,8 @@
 6. DO NOT CREATE ANY PLOTS
 Important code structure requirements:
   - Do NOT put any execution code inside 'if __name__ == "__main__":' block. Do not use 'if __name__ == "__main__":' at all.
-  - All code should be at the global scope or in functions that are called from the global scope
-  - The script should execute immediately when run, without requiring any special entry point
+  - Define helper functions at file scope, but wrap all execution logic inside a single `int main()` function (no top-level statements).
+  - The program should execute immediately when run; avoid relying on globals that execute before `main`.
 
 ```cpp
 #include <iostream>
