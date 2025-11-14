@@ -184,10 +184,10 @@ class Interpreter:
         default_flags = self.cpp_compile_flags or ["-std=c++17", "-O2"]
         compile_cmd = [
             "g++",
-            *default_flags,
             str(source_path),
             "-o",
             str(binary_path),
+            *default_flags
         ]
 
         try:
