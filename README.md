@@ -32,9 +32,10 @@ This system autonomously generates hypotheses, runs experiments, analyzes data, 
     *   [Supported Models and API Keys](#supported-models-and-api-keys)
 2.  [Generate Research Ideas](#generate-research-ideas)
 3.  [Run AI Scientist-v2 Paper Generation Experiments](#run-ai-scientist-v2-paper-generation-experiments)
-4.  [Citing The AI Scientist-v2](#citing-the-ai-scientist-v2)
-5.  [Frequently Asked Questions](#frequently-asked-questions)
-6.  [Acknowledgement](#acknowledgement)
+4.  [Run on HPC Clusters](#run-on-hpc-clusters)
+5.  [Citing The AI Scientist-v2](#citing-the-ai-scientist-v2)
+6.  [Frequently Asked Questions](#frequently-asked-questions)
+7.  [Acknowledgement](#acknowledgement)
 
 ## Requirements
 
@@ -156,6 +157,50 @@ Once the initial experimental stage is complete, you will find a timestamped log
 After all experiment stages are complete, the writeup stage begins. The writeup stage typically takes about 20 to 30 minutes in total. Once it finishes, you should see `timestamp_ideaname.pdf` in the `timestamp_ideaname` folder.
 For this example run, all stages typically finish within several hours.
 
+## Run on HPC Clusters
+
+Everything required to orchestrate a cluster run lives in this directory. The steps below mirror the workflow used to automate production runs and can be executed manually or wrapped in your preferred scheduler.
+
+1. **Activate the environment**  
+   ```bash
+   source ~/miniconda3/bin/activate
+   conda activate ai_scientist
+   export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
+   ```
+   Adjust the conda path if you installed the environment elsewhere.
+
+2. **Capture hardware information**  
+   ```bash
+   bash hard.sh > suppliment_information.txt
+   ```
+   The `hard.sh` script (located next to this README) records CPU layout, memory, accelerators, BLAS configuration, compiler flags, and package versions. The generated `suppliment_information.txt` feeds into the write-up phase via `--additional-information`.
+
+3. **Provide credentials**  
+   Export the API keys needed for your models:
+   ```bash
+   export OPENAI_API_KEY="..."
+   export S2_API_KEY="..."
+   # add other keys such as AWS credentials if required
+   ```
+   Replace these with your secure values or rely on your cluster’s secret-injection tooling.
+
+4. **Launch AI Scientist-v2 from this directory**  
+   ```bash
+   python launch_scientist_bfts.py \
+     --writeup-type normal \
+     --load_ideas ai_scientist/ideas/i_cant_believe_its_not_better.json \
+     --model_writeup ollama/deepseek-r1:32b \
+     --model_writeup_small ollama/qwen2.5vl:32b \
+     --model_citation ollama/gpt-oss:120b \
+     --model_review ollama/qwen2.5vl:32b \
+     --model_agg_plots ollama/deepseek-r1:70b \
+     --model_agg_plots_ref 20 \
+     --num_cite_rounds 20 \
+     --additional-information "$(pwd)/suppliment_information.txt"
+   ```
+   Replace the idea file, models, and additional flags according to your experiment. If you use a scheduler, wrap this command sequence in your site-specific submission script.
+
+
 ## Citing The AI Scientist-v2
 
 If you use **The AI Scientist-v2** in your research, please cite our work as follows:
@@ -199,4 +244,3 @@ The tree search component implemented within the `ai_scientist` directory is bui
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=SakanaAI/AI-Scientist-v2&type=Date)](https://star-history.com/#SakanaAI/AI-Scientist-v2&Date)
-
