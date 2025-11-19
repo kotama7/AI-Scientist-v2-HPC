@@ -15,10 +15,6 @@ from .utils.serialize import parse_markdown_to_dict
 from .utils.metric import WorstMetricValue
 from ai_scientist.prompt_loader import load_prompt
 
-TASK_DESCRIPTION_TEMPLATE = load_prompt(
-    "treesearch/agent_manager/task_description"
-)
-
 STAGE_GOAL_PROMPTS = {
     1: "treesearch/agent_manager/stage1_goals",
     2: "treesearch/agent_manager/stage2_goals",
@@ -183,7 +179,7 @@ class AgentManager:
         )
 
     def _get_task_desc_str(self):
-        task_desc = TASK_DESCRIPTION_TEMPLATE
+        task_desc = load_prompt("treesearch/agent_manager/task_description")
         task_desc += (
             "Title:\n"
             + self.task_desc["Title"]

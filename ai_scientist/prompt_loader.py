@@ -4,6 +4,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
+from ai_scientist.persona import apply_persona_override, get_persona_role
+
 
 class PromptNotFoundError(FileNotFoundError):
     """Raised when a requested prompt file is missing."""
@@ -21,6 +23,11 @@ def _resolve_prompt_dir() -> Path:
 PROMPT_DIR = _resolve_prompt_dir()
 
 
+def _resolve_base_dir(base_dir: Optional[Path] = None) -> Path:
+    """Return the effective base directory for prompt resolution."""
+    return (base_dir or PROMPT_DIR).expanduser().resolve()
+
+
 def _resolve_prompt_path(name: str, base_dir: Optional[Path] = None) -> Path:
     """Resolve a prompt path relative to the configured prompt directory or a custom base."""
     rel_path = Path(name)
@@ -29,11 +36,22 @@ def _resolve_prompt_path(name: str, base_dir: Optional[Path] = None) -> Path:
     else:
         prompt_path = rel_path.with_suffix(".txt")
 
-    base = (base_dir or PROMPT_DIR).expanduser().resolve()
+    base = _resolve_base_dir(base_dir)
     return base / prompt_path
 
 
 @lru_cache(maxsize=None)
+def _load_prompt_cached(name: str, base_dir_str: str, persona_key: str) -> str:
+    """Cached loader that accounts for prompt root and persona overrides."""
+    prompt_path = _resolve_prompt_path(name, base_dir=Path(base_dir_str))
+
+    if not prompt_path.exists():
+        raise PromptNotFoundError(f"Prompt file not found: {prompt_path}")
+
+    content = prompt_path.read_text(encoding="utf-8")
+    return apply_persona_override(content)
+
+
 def load_prompt(name: str) -> str:
     """
     Load a prompt template by name.
@@ -45,13 +63,16 @@ def load_prompt(name: str) -> str:
     Returns:
         The prompt text with trailing whitespace preserved.
     """
+    base_dir_str = str(_resolve_base_dir())
+    persona_key = get_persona_role() or ""
+    return _load_prompt_cached(name, base_dir_str, persona_key)
 
-    prompt_path = _resolve_prompt_path(name)
 
-    if not prompt_path.exists():
-        raise PromptNotFoundError(f"Prompt file not found: {prompt_path}")
+def _clear_load_prompt_cache():
+    _load_prompt_cached.cache_clear()
 
-    return prompt_path.read_text(encoding="utf-8")
+
+load_prompt.cache_clear = _clear_load_prompt_cache  # type: ignore[attr-defined]
 
 
 def format_prompt(name: str, **kwargs) -> str:
@@ -108,10 +129,9 @@ def load_prompt_from_dir(name: str, base_dir: Path) -> str:
         base_dir: Directory that should be treated as the prompt root.
     """
 
-    prompt_path = _resolve_prompt_path(name, base_dir=base_dir)
-    if not prompt_path.exists():
-        raise PromptNotFoundError(f"Prompt file not found: {prompt_path}")
-    return prompt_path.read_text(encoding="utf-8")
+    resolved_dir = _resolve_base_dir(base_dir)
+    persona_key = get_persona_role() or ""
+    return _load_prompt_cached(name, str(resolved_dir), persona_key)
 
 
 def write_prompt(

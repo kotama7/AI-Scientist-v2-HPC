@@ -18,6 +18,7 @@ You should:
   - Suggest any potential improvements or issues in the figure itself (e.g., missing legend, unclear labeling, no meaningful conclusion, mismatch with what the caption claims).
   - Critique the caption: does it accurately describe the figure? Is it too long/short? Does it include a concise takeaway?
   - Review how well the main text references (figrefs) explain the figure: are they missing? Do they adequately describe the figure's content, context, or purpose?
+  - Confirm that the figure, caption, or figrefs explicitly mention the data source path(s) used to build the plot. If they do not, or if the paths do not match what appears on the figure, call this out.
 
 Finally, respond in the following format:
 

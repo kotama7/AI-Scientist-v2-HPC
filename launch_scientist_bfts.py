@@ -32,6 +32,7 @@ from ai_scientist.treesearch.bfts_utils import (
     edit_bfts_config_file,
 )
 from ai_scientist.utils.token_tracker import token_tracker
+from ai_scientist.persona import set_persona_role
 
 
 def print_time():
@@ -75,6 +76,12 @@ def parse_arguments():
         "--add_dataset_ref",
         action="store_true",
         help="If set, add a HF dataset reference to the idea",
+    )
+    parser.add_argument(
+        "--additional-information",
+        type=str,
+        default=None,
+        help="Path to a text file with supplementary information to append to the idea",
     )
     parser.add_argument(
         "--writeup-retries",
@@ -314,17 +321,32 @@ def _snapshot_and_prepare_prompts(
     return dst_prompt_dir
 
 
-def _load_prompt_adapter_settings(config_path: Path) -> Optional[Dict[str, Any]]:
+def _load_base_config(config_path: Path) -> Dict[str, Any]:
     if not config_path.exists():
-        return None
+        raise FileNotFoundError(f"Config file not found: {config_path}")
     with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+        config = yaml.safe_load(f) or {}
+    return config
+
+
+def _load_prompt_adapter_settings(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     adapter_cfg = config.get("prompt_adapter")
     if adapter_cfg is None:
         return None
     if "model" not in adapter_cfg:
         raise ValueError("prompt_adapter section must include a 'model' entry.")
     return adapter_cfg
+
+
+def _extract_role_description(config: Dict[str, Any]) -> Optional[str]:
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        role = agent_cfg.get("role_description")
+        if role is None:
+            return None
+        role_str = str(role).strip()
+        return role_str or None
+    return None
 
 
 if __name__ == "__main__":
@@ -342,6 +364,15 @@ if __name__ == "__main__":
         print(f"Loaded {len(ideas)} pregenerated ideas from {args.load_ideas}")
 
     idea = ideas[args.idea_idx]
+    if args.additional_information:
+        additional_info_path = Path(args.additional_information)
+        if not additional_info_path.is_file():
+            raise FileNotFoundError(
+                f"Additional information file {additional_info_path} not found"
+            )
+        additional_information = additional_info_path.read_text(encoding="utf-8")
+        idea["Additional Information"] = additional_information
+        print(f"Attached supplemental information from {additional_info_path}")
 
     date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     idea_dir = f"experiments/{date}_{idea['Name']}_attempt_{args.attempt_id}"
@@ -372,11 +403,14 @@ if __name__ == "__main__":
             fallback_code_path = idea_json_path.with_suffix(".py")
             print(f"Warning: Code file {fallback_code_path} not found")
 
-    prompt_adapter_settings = _load_prompt_adapter_settings(repo_root / "bfts_config.yaml")
+    base_config_path = repo_root / "bfts_config.yaml"
+    base_config = _load_base_config(base_config_path)
+    prompt_adapter_settings = _load_prompt_adapter_settings(base_config)
     if prompt_adapter_settings is None:
         raise ValueError(
             "prompt_adapter configuration is required for language inference."
         )
+    set_persona_role(_extract_role_description(base_config))
 
     language_label, code_fence, adapt_to_cpp = _detect_target_language(
         idea, code_path, prompt_adapter_settings

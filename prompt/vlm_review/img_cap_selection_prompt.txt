@@ -21,6 +21,7 @@ You should:
   - Examine the figure in detail: conclude elements in figures (e.g. name of axis) and describe what information is shown (e.g. the line of loss decreases monotonically but plateaus after X epochs)
   - Critique the caption: does it accurately describe the figure? Is it too long/short? Does it include a concise takeaway?
   - Review how well the main text references (figrefs) explain the figure: are they missing? Do they adequately describe the figure's content, context, or purpose?
+  - Check whether the figure, caption, or figrefs clearly cite the data source path(s) for the plotted results. Highlight missing or ambiguous paths as an issue.
 
 After considering all of the above, you should carefully evaluate:
   - Given the current page limit, does this image and its relevant text add significant value to the paper's scientific argument?

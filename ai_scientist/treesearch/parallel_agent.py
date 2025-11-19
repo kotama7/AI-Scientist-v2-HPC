@@ -126,6 +126,7 @@ PARSE_METRICS_INSTRUCTIONS = tuple(
 PARSE_METRICS_EXAMPLE = load_prompt(
     PROMPT_BASE + "parse_metrics_prompt/example"
 ).rstrip("\n")
+MAX_METRIC_PARSE_RETRIES = 3
 
 METRICS_PROMPT_INTRO = load_prompt(
     PROMPT_BASE + "metrics_prompt/introduction"
@@ -1404,6 +1405,15 @@ class ParallelAgent:
             agent_file_name=plot_agent_file_name,
             language="python",
         )
+        parse_interpreter: Optional[Interpreter] = None
+        parse_agent_file_name = f"{Path(cfg.exec.agent_file_name).stem}_parse_metrics.py"
+        parse_interpreter = Interpreter(
+            working_dir=workspace,
+            timeout=cfg.exec.timeout,
+            format_tb_ipython=cfg.exec.format_tb_ipython,
+            agent_file_name=parse_agent_file_name,
+            language="python",
+        )
 
         try:
             print(f"stage_name: {stage_name}")
@@ -1478,109 +1488,138 @@ class ParallelAgent:
                     "No .npy files found in working directory. Data may not have been saved properly."
                 )
             else:
-                if seed_eval:
-                    # Use the parent node's parse code to parse the same data files again
-                    parse_metrics_code = parent_node.parse_metrics_code
-                    parse_metrics_plan = parent_node.parse_metrics_plan
-                    print(
-                        f"[blue]SEED EVAL: Parse metrics plan:[/blue] {parse_metrics_plan}"
-                    )
-                    print(
-                        f"[blue]SEED EVAL: Parse metrics code:[/blue] {parse_metrics_code}"
-                    )
-                    child_node.parse_metrics_code = parse_metrics_code
-                    child_node.parse_metrics_plan = parse_metrics_plan
-                else:
-                    # Call LLM to parse data files and extract metrics
-                    parse_metrics_prompt = {
-                        "Introduction": PARSE_METRICS_INTRO,
-                        "Context": ["Original Code: " + child_node.code],
-                        "Instructions": list(PARSE_METRICS_INSTRUCTIONS),
-                        "Example data loading code": [
-                            PARSE_METRICS_EXAMPLE
-                        ],
-                        "Response format": worker_agent._prompt_metricparse_resp_fmt(),
-                    }
-
-                    (
-                        parse_metrics_plan,
-                        parse_metrics_code,
-                    ) = worker_agent.plan_and_code_query(parse_metrics_prompt)
-                    print(f"[blue]Parse metrics plan:[/blue] {parse_metrics_plan}")
-                    print(f"[blue]Parse metrics code:[/blue] {parse_metrics_code}")
-                    child_node.parse_metrics_plan = parse_metrics_plan
-                    child_node.parse_metrics_code = parse_metrics_code
-                try:
-                    # Execute the parsing code
-                    metrics_exec_result = process_interpreter.run(
-                        parse_metrics_code, True
-                    )
-                    process_interpreter.cleanup_session()
-                    child_node.parse_term_out = metrics_exec_result.term_out
-                    child_node.parse_exc_type = metrics_exec_result.exc_type
-                    child_node.parse_exc_info = metrics_exec_result.exc_info
-                    child_node.parse_exc_stack = metrics_exec_result.exc_stack
-
-                    if metrics_exec_result.exc_type is None:
-                        # Extract metrics from the execution output
-                        metrics_prompt = {
-                            "Introduction": METRICS_PROMPT_INTRO,
-                            "Execution Output": metrics_exec_result.term_out,
-                        }
+                parse_success = False
+                parse_attempt = 0
+                last_error_message = ""
+                previous_error_message: Optional[str] = None
+                previous_error_code: Optional[str] = None
+                while (
+                    parse_attempt < MAX_METRIC_PARSE_RETRIES and not parse_success
+                ):
+                    parse_attempt += 1
+                    if seed_eval:
+                        # Use the parent node's parse code to parse the same data files again
+                        parse_metrics_code = parent_node.parse_metrics_code
+                        parse_metrics_plan = parent_node.parse_metrics_plan
                         print(
-                            f"[blue]Metrics_exec_result.term_out: {metrics_exec_result.term_out}[/blue]"
+                            f"[blue]SEED EVAL: Parse metrics plan:[/blue] {parse_metrics_plan}"
                         )
                         print(
-                            f"[blue]Metrics Parsing Execution Result:\n[/blue] {metrics_exec_result}"
+                            f"[blue]SEED EVAL: Parse metrics code:[/blue] {parse_metrics_code}"
                         )
-
-                        metrics_response = cast(
-                            dict,
-                            query(
-                                system_message=metrics_prompt,
-                                user_message=None,
-                                func_spec=metric_parse_spec,
-                                model=cfg.agent.feedback.model,
-                                temperature=cfg.agent.feedback.temp,
-                            ),
-                        )
-                        # If there is any None value, child_node.metric should be set to WorstMetricValue.
-                        # This is achieved by raising an error in the MetricValue class,
-                        # which sets child_node.is_buggy to True, thereby
-                        # causing child_node.metric to be assigned WorstMetricValue.
-                        print(f"[blue]Metrics:[/blue] {metrics_response}")
-                        if metrics_response["valid_metrics_received"]:
-                            child_node.metric = MetricValue(
-                                value={"metric_names": metrics_response["metric_names"]}
-                            )
-                            logger.info(
-                                f"Successfully extracted metrics for node {child_node.id}"
-                            )
-                        else:
-                            child_node.metric = WorstMetricValue()
-                            child_node.is_buggy = True
-                            logger.error(
-                                f"No valid metrics received for node {child_node.id}"
-                            )
                     else:
-                        logger.error(
-                            f"Error executing metrics parsing code: {metrics_exec_result.exc_info}"
-                        )
-                        child_node.metric = WorstMetricValue()
-                        child_node.is_buggy = True
+                        # Call LLM to parse data files and extract metrics
+                        context_blocks = ["Original Code: " + child_node.code]
+                        if previous_error_message:
+                            context_blocks.append(
+                                "Previous parsing attempt failed with the following error. "
+                                "Revise your plan and code to specifically address this issue:\n"
+                                f"{previous_error_message}"
+                            )
+                        if previous_error_code:
+                            context_blocks.append(
+                                "Below is the last parsing code that failed. Use this as reference and fix the issues:\n"
+                                f"{previous_error_code}"
+                            )
+                        parse_metrics_prompt = {
+                            "Introduction": PARSE_METRICS_INTRO,
+                            "Context": context_blocks,
+                            "Instructions": list(PARSE_METRICS_INSTRUCTIONS),
+                            "Example data loading code": [
+                                PARSE_METRICS_EXAMPLE
+                            ],
+                            "Response format": worker_agent._prompt_metricparse_resp_fmt(),
+                        }
 
-                except Exception as e:
-                    logger.error(
-                        f"Error parsing metrics for node {child_node.id}: {str(e)}"
-                    )
+                        (
+                            parse_metrics_plan,
+                            parse_metrics_code,
+                        ) = worker_agent.plan_and_code_query(parse_metrics_prompt, retries=3, code_language="python")
+                        print(f"[blue]Parse metrics plan:[/blue] {parse_metrics_plan}")
+                        print(f"[blue]Parse metrics code:[/blue] {parse_metrics_code}")
+
+                    child_node.parse_metrics_plan = parse_metrics_plan
+                    child_node.parse_metrics_code = parse_metrics_code
+
+                    try:
+                        # Execute the parsing code
+                        metrics_exec_result = parse_interpreter.run(
+                            parse_metrics_code, True
+                        )
+                        parse_interpreter.cleanup_session()
+                        child_node.parse_term_out = metrics_exec_result.term_out
+                        child_node.parse_exc_type = metrics_exec_result.exc_type
+                        child_node.parse_exc_info = metrics_exec_result.exc_info
+                        child_node.parse_exc_stack = metrics_exec_result.exc_stack
+
+                        if metrics_exec_result.exc_type is None:
+                            # Extract metrics from the execution output
+                            metrics_prompt = {
+                                "Introduction": METRICS_PROMPT_INTRO,
+                                "Execution Output": metrics_exec_result.term_out,
+                            }
+                            print(
+                                f"[blue]Metrics_exec_result.term_out: {metrics_exec_result.term_out}[/blue]"
+                            )
+                            print(
+                                f"[blue]Metrics Parsing Execution Result:\n[/blue] {metrics_exec_result}"
+                            )
+
+                            metrics_response = cast(
+                                dict,
+                                query(
+                                    system_message=metrics_prompt,
+                                    user_message=None,
+                                    func_spec=metric_parse_spec,
+                                    model=cfg.agent.feedback.model,
+                                    temperature=cfg.agent.feedback.temp,
+                                ),
+                            )
+                            print(f"[blue]Metrics:[/blue] {metrics_response}")
+                            if metrics_response["valid_metrics_received"]:
+                                child_node.metric = MetricValue(
+                                    value={
+                                        "metric_names": metrics_response["metric_names"]
+                                    }
+                                )
+                                logger.info(
+                                    f"Successfully extracted metrics for node {child_node.id}"
+                                )
+                                parse_success = True
+                            else:
+                                last_error_message = (
+                                    "Metrics parser did not return valid metrics."
+                                )
+                        else:
+                            last_error_message = str(metrics_exec_result.exc_info)
+
+                    except Exception as e:
+                        last_error_message = str(e)
+                        logger.error(
+                            f"Error parsing metrics for node {child_node.id}: {last_error_message}"
+                        )
+                        child_node.parse_exc_type = str(e)
+                        child_node.parse_exc_info = None
+                        child_node.parse_exc_stack = None
+                        child_node.parse_term_out = (
+                            "Error parsing metrics. There was an error in the parsing code: "
+                            + str(e)
+                        )
+
+                    if not parse_success:
+                        logger.warning(
+                            f"Metrics parsing attempt {parse_attempt} failed for node {child_node.id}: {last_error_message}"
+                        )
+                        if parse_attempt < MAX_METRIC_PARSE_RETRIES:
+                            logger.info("Retrying metrics parsing with a new attempt.")
+                        previous_error_message = last_error_message
+                        previous_error_code = parse_metrics_code
+
+                if not parse_success:
                     child_node.metric = WorstMetricValue()
                     child_node.is_buggy = True
-                    child_node.parse_exc_type = str(e)
-                    child_node.parse_exc_info = None
-                    child_node.parse_exc_stack = None
-                    child_node.parse_term_out = (
-                        "Error parsing metrics. There was an error in the parsing code: "
-                        + str(e)
+                    logger.error(
+                        f"No valid metrics received for node {child_node.id} after {MAX_METRIC_PARSE_RETRIES} attempts."
                     )
 
             # if experiment was successful, generate and run plotting code
@@ -1719,6 +1758,8 @@ class ParallelAgent:
                 plot_interpreter.cleanup_session()
             if process_interpreter:
                 process_interpreter.cleanup_session()
+            if parse_interpreter:
+                parse_interpreter.cleanup_session()
 
     def _generate_hyperparam_tuning_idea(self) -> Optional[HyperparamTuningIdea]:
         """Generate the next hyperparam tuning idea based on what's been done.

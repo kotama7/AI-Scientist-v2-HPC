@@ -14,6 +14,7 @@ import logging
 
 from . import tree_export
 from . import copytree, preproc_data, serialize
+from ai_scientist.persona import set_persona_role
 
 shutup.mute_warnings()
 logging.basicConfig(
@@ -60,7 +61,6 @@ class AgentConfig:
     k_fold_validation: int
     expose_prediction: bool
     data_preview: bool
-
     code: StageConfig
     feedback: StageConfig
     vlm_feedback: StageConfig
@@ -69,6 +69,8 @@ class AgentConfig:
     num_workers: int
     type: str
     multi_seed_eval: dict[str, int]
+
+    role_description: str = "AI researcher"
 
     summary: Optional[StageConfig] = None
     select_node: Optional[StageConfig] = None
@@ -184,6 +186,8 @@ def prep_cfg(cfg: Config):
 
     if cfg.agent.type not in ["parallel", "sequential"]:
         raise ValueError("agent.type must be either 'parallel' or 'sequential'")
+
+    set_persona_role(getattr(cfg.agent, "role_description", None))
 
     return cast(Config, cfg)
 
