@@ -1,0 +1,29 @@
+
+try:
+    experiment_data_path_list = # Make sure to use the correct experiment data path that's provided in the Experiment Data Path section
+    all_experiment_data = []
+    for experiment_data_path in experiment_data_path_list:
+        experiment_data = np.load(os.path.join(os.getenv("AI_SCIENTIST_ROOT"), experiment_data_path), allow_pickle=True).item()
+        all_experiment_data.append(experiment_data)
+except Exception as e:
+    print(f'Error loading experiment data: {e}')
+
+try:
+    # First plot
+    plt.figure()
+    # ... plotting code ...
+    plt.savefig('working_dir/[plot_name_1].png')
+    plt.close()
+except Exception as e:
+    print(f"Error creating plot1: {e}")
+    plt.close()  # Always close figure even if error occurs
+
+try:
+    # Second plot
+    plt.figure()
+    # ... plotting code ...
+    plt.savefig('working_dir/[plot_name_2].png')
+    plt.close()
+except Exception as e:
+    print(f"Error creating plot2: {e}")
+    plt.close()

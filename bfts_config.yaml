@@ -19,15 +19,41 @@ exec:
   timeout: 3600
   agent_file_name: runfile.py
   format_tb_ipython: False
+  language: cpp
+  cpp_compile_flags: [
+    "-O2",
+    "-std=c++20",
+    "-I$CONDA_PREFIX/include",
+    "-I$CONDA_PREFIX/include/python3.11",
+    "-I$CONDA_PREFIX/include/eigen3",
+    "-L$CONDA_PREFIX/lib",
+    "-lpython3.11",
+    "-lcnpy",
+    "-lcudart",
+    "-lblas",
+    "-lfmt",
+    "-fopenmp",
+    "-larmadillo",
+    "-lmkl_intel_lp64", "-lmkl_core", "-lmkl_sequential",
+    "-lpthread", "-lm", "-ldl",
+    "-lopenblas",
+    "-Wl,-rpath,$CONDA_PREFIX/lib/python3.11/site-packages/torch/lib"
+  ]
 
 generate_report: True
 # LLM settings for final report from journal
 report:
-  model: gpt-4o-2024-11-20
+  model: gpt-4o
   temp: 1.0
+
+prompt_adapter:
+  model: gpt-4o
+  temp: 0.2
+  max_tokens: 4096
 
 experiment:
   num_syn_datasets: 1
+  dataset_source: local
 
 debug:
   stage4: False
@@ -37,10 +63,10 @@ agent:
   type: parallel
   num_workers: 4
   stages:
-    stage1_max_iters: 20
-    stage2_max_iters: 12
-    stage3_max_iters: 12
-    stage4_max_iters: 18
+    stage1_max_iters: 40
+    stage2_max_iters: 24
+    stage3_max_iters: 24
+    stage4_max_iters: 36
   # how many improvement iterations to run
   steps: 5 # if stage-specific max_iters are not provided, the agent will use this value for all stages
   # whether to instruct the agent to use CV (set to 1 to disable)
@@ -51,22 +77,24 @@ agent:
   expose_prediction: False
   # whether to provide the agent with a preview of the data
   data_preview: False
+  # persona that is injected into prompts (replace occurrences of "AI researcher")
+  role_description: "HPC researcher"
 
   # LLM settings for coding
   code:
-    model: anthropic.claude-3-5-sonnet-20241022-v2:0
+    model: gpt-4o
     temp: 1.0
-    max_tokens: 12000
+    max_tokens: null
 
   # LLM settings for evaluating program output / tracebacks
   feedback:
-    model: gpt-4o-2024-11-20
+    model: gpt-4o
     # gpt-4o
     temp: 0.5
-    max_tokens: 8192
+    max_tokens: null
 
   vlm_feedback:
-    model: gpt-4o-2024-11-20
+    model: gpt-4o
     temp: 0.5
     max_tokens: null
 
@@ -78,10 +106,10 @@ agent:
   # Options for summarizing findings and selecting the best node
   # If not specified, the default behavior will be used.
 
-  # summary:
-  #   model: gpt-4o
-  #   temp: 0.3
+  summary:
+    model: gpt-4o
+    temp: 0.3
 
-  # select_node:
-  #   model: gpt-4o
-  #   temp: 0.3
+  select_node:
+    model: gpt-4o
+    temp: 0.3

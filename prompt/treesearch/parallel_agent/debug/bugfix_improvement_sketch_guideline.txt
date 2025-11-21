@@ -1,0 +1,2 @@
+You should write a brief natural language description (3-5 sentences) of how the issue in the previous implementation can be fixed.
+Don't suggest to do EDA.

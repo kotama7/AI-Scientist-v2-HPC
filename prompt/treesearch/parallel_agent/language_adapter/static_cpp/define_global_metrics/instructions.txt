@@ -1,0 +1,30 @@
+Propose a single evaluation metric that would be useful for analyzing the performance of solutions for this research task. Note: Validation loss will be tracked separately so you don't need to include it in your response. Format your response as a list containing: - name: The name of the metric - maximize: Whether higher values are better (true/false) - description: A brief explanation of what the metric measures Your list should contain only one metric.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <algorithm>
+
+// Placeholder for experiment_data.npy loading
+std::vector<double> loadExperimentData(const std::string& filename) {
+    // Implement data loading logic here
+    return {};
+}
+
+// Placeholder for matplotlib plotting
+void plotWithMatplotlib(const std::vector<double>& data) {
+    // Implement plotting logic here
+}
+
+int main() {
+    std::vector<double> data = loadExperimentData("experiment_data.npy");
+
+    // Implement experiment pipeline here
+
+    plotWithMatplotlib(data);
+
+    return 0;
+}
+```

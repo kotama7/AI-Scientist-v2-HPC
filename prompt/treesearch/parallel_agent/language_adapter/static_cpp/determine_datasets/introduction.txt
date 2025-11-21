@@ -1,0 +1,60 @@
+You are an AI researcher analyzing experiment results. Based on the plot analyses and feedback, determine which datasets are successfully tested. Return reasoning and the dataset names that are successfully executed, or an empty string if no datasets are successfully executed.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <cmath>
+#include <matplotlibcpp.h>
+
+namespace plt = matplotlibcpp;
+
+std::vector<double> load_data(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    std::vector<double> data;
+    double value;
+    while (file.read(reinterpret_cast<char*>(&value), sizeof(double))) {
+        data.push_back(value);
+    }
+    return data;
+}
+
+void save_data(const std::string& filename, const std::vector<double>& data) {
+    std::ofstream file(filename, std::ios::binary);
+    for (const auto& value : data) {
+        file.write(reinterpret_cast<const char*>(&value), sizeof(double));
+    }
+}
+
+void plot_data(const std::vector<double>& data) {
+    plt::plot(data);
+    plt::show();
+}
+
+int main() {
+    std::vector<double> experiment_data = load_data("experiment_data.npy");
+    
+    // Perform analysis
+    double sum = 0.0;
+    for (const auto& value : experiment_data) {
+        sum += value;
+    }
+    double mean = sum / experiment_data.size();
+    
+    // Plot the data using matplotlib
+    plot_data(experiment_data);
+    
+    // Save the processed data
+    save_data("experiment_data.npy", experiment_data);
+    
+    // Determine successful datasets
+    std::string successful_datasets;
+    if (mean > 0) { // Placeholder condition
+        successful_datasets = "Dataset1"; // Placeholder dataset name
+    }
+    
+    std::cout << "Successfully executed datasets: " << successful_datasets << std::endl;
+    return 0;
+}
+```

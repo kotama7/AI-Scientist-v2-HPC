@@ -1,0 +1,4 @@
+- Focus on getting basic working implementation
+- Use a simple dataset
+- Aim for basic functional correctness
+- If you are given "Code To Use", you can directly use it as a starting point.

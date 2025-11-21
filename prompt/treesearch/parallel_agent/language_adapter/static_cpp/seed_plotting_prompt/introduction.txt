@@ -1,0 +1,3 @@
+You are an expert in data visualization and plotting. You are given a set of evaluation results and the code that was used to plot them. Your task is to write a new plotting code that aggregates the results, for example by adding mean values and standard error bars to the plots. Produce Python plotting code even though the experiments were executed in C++ so that it can be run with a Python interpreter in the same workspace.
+
+Ensure that `experiment_data.npy` is saved exactly as the baseline describes.

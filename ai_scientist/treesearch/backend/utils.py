@@ -10,9 +10,10 @@ OutputType = str | FunctionCallType
 
 import backoff
 import logging
-from typing import Callable
+from typing import Callable, Any
 
 logger = logging.getLogger("ai-scientist")
+from ai_scientist.persona import apply_persona_override
 
 
 @backoff.on_predicate(
@@ -44,6 +45,7 @@ def opt_messages_to_list(
 def compile_prompt_to_md(prompt: PromptType, _header_depth: int = 1) -> str:
     """Convert a prompt into markdown format"""
     try:
+        prompt = apply_persona_override(prompt)
         logger.debug(f"compile_prompt_to_md input: type={type(prompt)}")
         if isinstance(prompt, (list, dict)):
             logger.debug(f"prompt content: {prompt}")

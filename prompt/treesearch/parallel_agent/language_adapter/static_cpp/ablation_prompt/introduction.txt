@@ -1,0 +1,56 @@
+You are an AI researcher conducting ablation studies. Based on the current implementation and previous ablations (if any), propose ONE new ablation study that tests a different aspect of the model.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <cmath>
+#include <matplotlibcpp.h>
+
+namespace plt = matplotlibcpp;
+
+void loadData(const std::string& filename, std::vector<double>& data) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return;
+    }
+    double value;
+    while (file.read(reinterpret_cast<char*>(&value), sizeof(double))) {
+        data.push_back(value);
+    }
+    file.close();
+}
+
+void saveData(const std::string& filename, const std::vector<double>& data) {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return;
+    }
+    for (const double& value : data) {
+        file.write(reinterpret_cast<const char*>(&value), sizeof(double));
+    }
+    file.close();
+}
+
+void plotData(const std::vector<double>& data) {
+    plt::plot(data);
+    plt::show();
+}
+
+int main() {
+    std::vector<double> experiment_data;
+    loadData("experiment_data.npy", experiment_data);
+
+    // Perform computations and ablation study here
+
+    saveData("experiment_data.npy", experiment_data);
+    plotData(experiment_data);
+
+    return 0;
+}
+```
+
+Make sure to use matplotlib for plotting and ensure that experiment_data.npy is saved exactly as the baseline describes.

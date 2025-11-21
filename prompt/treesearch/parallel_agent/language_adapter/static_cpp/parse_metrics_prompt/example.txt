@@ -1,0 +1,6 @@
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+experiment_data = np.load(os.path.join(os.getcwd(), 'experiment_data.npy'), allow_pickle=True).item()
+

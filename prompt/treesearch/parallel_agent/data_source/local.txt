@@ -1,0 +1,4 @@
+Plan every experiment so it can run without remote downloads.
+- Prefer datasets that are already present under the provided working or data directories, documenting the expected file layout.
+- When external data would normally be fetched, outline how to synthesize equivalent samples using local computation libraries (NumPy, PyTorch, SciPy, etc.).
+- Record the generation or preprocessing steps so the workflow stays fully reproducible in an offline environment.

@@ -1,0 +1,4 @@
+When planning your experiments, treat Hugging Face as the primary data source.
+- Load benchmark datasets directly from the Hugging Face Hub (e.g., via the `datasets` or `huggingface_hub` libraries) and spell out the splits you rely on.
+- Document every download or caching step so collaborators can reproduce the pipeline without ambiguity.
+- Only fall back to alternative sources after confirming the Hugging Face dataset is unavailable and recording the justification.

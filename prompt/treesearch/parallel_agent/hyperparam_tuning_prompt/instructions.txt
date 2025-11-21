@@ -1,0 +1,2 @@
+1. Identify ONE specific hyperparameter to tune
+2. Ensure the hyperparameter is different from previous attempts

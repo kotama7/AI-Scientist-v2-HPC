@@ -1,0 +1,3 @@
+- Change hyperparameters such as learning rate, number of epochs, batch size, etc. to improve the performance
+- DO NOT change the model architecture from the previous stage
+- {dataset_requirement}

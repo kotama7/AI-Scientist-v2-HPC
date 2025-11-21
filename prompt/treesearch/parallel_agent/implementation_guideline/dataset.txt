@@ -1,0 +1,5 @@
+You MUST evaluate your solution on at least {num_syn_datasets} different synthetic datasets to ensure robustness:
+  - Use standard benchmark datasets when available
+  - If using synthetic data, generate at least {num_syn_datasets} variants with different characteristics
+  - Report metrics separately for each dataset
+  - Compute and report the average metric across all datasets

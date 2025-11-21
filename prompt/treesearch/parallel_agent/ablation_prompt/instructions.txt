@@ -1,0 +1,4 @@
+1. Identify ONE specific component/feature to ablate
+2. Ensure the ablation is different from previous completed or running attempts
+3. The ablation should be a new idea, not a variation of previous ideas
+4. If you have only used a single synthetic dataset throughout the experiment, one of your ablations should be to use multiple synthetic datasets (at least 3 different datasets)

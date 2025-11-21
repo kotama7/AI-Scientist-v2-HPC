@@ -1,0 +1,1 @@
+Your response should start with 'ABLATION NAME: <ablation name>' on the first line to represent the name of the ablation.The second line should start with 'ABLATION DESCRIPTION: <description>', a brief description of what component is being ablated and why (3-5 sentences), 

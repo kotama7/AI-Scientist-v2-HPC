@@ -1,0 +1,7 @@
+Propose a single evaluation metric that would be useful for analyzing the performance of solutions for this research task.
+Note: Validation loss will be tracked separately so you don't need to include it in your response.
+Format your response as a list containing:
+- name: The name of the metric
+- maximize: Whether higher values are better (true/false)
+- description: A brief explanation of what the metric measures
+Your list should contain only one metric.

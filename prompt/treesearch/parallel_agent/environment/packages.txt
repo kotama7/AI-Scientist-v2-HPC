@@ -1,0 +1,12 @@
+numpy
+pandas
+scikit-learn
+statsmodels
+xgboost
+lightGBM
+torch
+torchvision
+torch-geometric
+bayesian-optimization
+timm
+albumentations

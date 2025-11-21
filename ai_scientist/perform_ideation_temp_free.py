@@ -16,6 +16,11 @@ from ai_scientist.llm import (
 
 from ai_scientist.tools.semantic_scholar import SemanticScholarSearchTool
 from ai_scientist.tools.base_tool import BaseTool
+from ai_scientist.prompt_loader import load_prompt
+
+IDEATION_SYSTEM_PROMPT_TEMPLATE = load_prompt("ideation/system_prompt")
+IDEA_GENERATION_PROMPT_TEMPLATE = load_prompt("ideation/idea_generation_prompt")
+IDEA_REFLECTION_PROMPT_TEMPLATE = load_prompt("ideation/idea_reflection_prompt")
 
 # Create tool instances
 semantic_scholar_tool = SemanticScholarSearchTool()
@@ -58,71 +63,9 @@ tool_names = [
 ]
 tool_names_str = ", ".join(tool_names)
 
-system_prompt = f"""You are an experienced AI researcher who aims to propose high-impact research ideas resembling exciting grant proposals. Feel free to propose any novel ideas or experiments; make sure they are novel. Be very creative and think out of the box. Each proposal should stem from a simple and elegant question, observation, or hypothesis about the topic. For example, they could involve very interesting and simple interventions or investigations that explore new possibilities or challenge existing assumptions. Clearly clarify how the proposal distinguishes from the existing literature.
-
-Ensure that the proposal does not require resources beyond what an academic lab could afford. These proposals should lead to papers that are publishable at top ML conferences.
-
-You have access to the following tools:
-
-{tool_descriptions}
-
-Respond in the following format:
-
-ACTION:
-<The action to take, exactly one of {tool_names_str}>
-
-ARGUMENTS:
-<If ACTION is "SearchSemanticScholar", provide the search query as {{"query": "your search query"}}. If ACTION is "FinalizeIdea", provide the idea details as {{"idea": {{ ... }}}} with the IDEA JSON specified below.>
-
-If you choose to finalize your idea, provide the IDEA JSON in the arguments:
-
-IDEA JSON:
-```json
-{{
-  "idea": {{
-    "Name": "...",
-    "Title": "...",
-    "Short Hypothesis": "...",
-    "Related Work": "...",
-    "Abstract": "...",
-    "Experiments": "...",
-    "Risk Factors and Limitations": "..."
-  }}
-}}
-```
-
-Ensure the JSON is properly formatted for automatic parsing.
-
-Note: You should perform at least one literature search before finalizing your idea to ensure it is well-informed by existing research."""
-
-# Define the initial idea generation prompt
-idea_generation_prompt = """{workshop_description}
-
-Here are the proposals that you have already generated:
-
-'''
-{prev_ideas_string}
-'''
-
-Begin by generating an interestingly new high-level research proposal that differs from what you have previously proposed.
-"""
-
-# Define the reflection prompt
-idea_reflection_prompt = """Round {current_round}/{num_reflections}.
-
-In your thoughts, first carefully consider the quality, novelty, and feasibility of the proposal you just created.
-Include any other factors that you think are important in evaluating the proposal.
-Ensure the proposal is clear and concise, and the JSON is in the correct format.
-Do not make things overly complicated.
-In the next attempt, try to refine and improve your proposal.
-Stick to the spirit of the original idea unless there are glaring issues.
-
-If you have new information from tools, such as literature search results, incorporate them into your reflection and refine your proposal accordingly.
-
-Results from your last action (if any):
-
-{last_tool_results}
-"""
+system_prompt = IDEATION_SYSTEM_PROMPT_TEMPLATE.format(
+    tool_descriptions=tool_descriptions, tool_names_str=tool_names_str
+)
 
 
 def generate_temp_free_idea(
@@ -158,13 +101,13 @@ def generate_temp_free_idea(
             for reflection_round in range(num_reflections):
                 if reflection_round == 0:
                     # Use the initial idea generation prompt
-                    prompt_text = idea_generation_prompt.format(
+                    prompt_text = IDEA_GENERATION_PROMPT_TEMPLATE.format(
                         workshop_description=workshop_description,
                         prev_ideas_string=prev_ideas_string,
                     )
                 else:
                     # Use the reflection prompt, including tool results if any
-                    prompt_text = idea_reflection_prompt.format(
+                    prompt_text = IDEA_REFLECTION_PROMPT_TEMPLATE.format(
                         current_round=reflection_round + 1,
                         num_reflections=num_reflections,
                         last_tool_results=last_tool_results or "No new results.",

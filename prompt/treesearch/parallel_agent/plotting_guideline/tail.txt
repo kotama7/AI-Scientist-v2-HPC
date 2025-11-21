@@ -1,0 +1,27 @@
+Example to extract data from experiment_data: experiment_data['dataset_name_1']['metrics']['train']
+Example data loading and plot saving code: 
+
+                try:
+                    experiment_data = np.load(os.path.join(working_dir, 'experiment_data.npy'), allow_pickle=True).item()
+                except Exception as e:
+                    print(f'Error loading experiment data: {e}')
+
+                try:
+                    # First plot
+                    plt.figure()
+                    # ... plotting code ...
+                    plt.savefig('working_dir/[plot_name_1].png')
+                    plt.close()
+                except Exception as e:
+                    print(f"Error creating plot1: {e}")
+                    plt.close()  # Always close figure even if error occurs
+
+                try:
+                    # Second plot
+                    plt.figure()
+                    # ... plotting code ...
+                    plt.savefig('working_dir/[plot_name_2].png')
+                    plt.close()
+                except Exception as e:
+                    print(f"Error creating plot2: {e}")
+                    plt.close()

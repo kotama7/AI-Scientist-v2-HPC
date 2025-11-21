@@ -1,0 +1,11 @@
+0. Make sure to get the working directory from os.path.join(os.getcwd(), 'working')
+1. Load the experiment_data.npy file, which is located in the working directory
+2. Extract metrics for each dataset. Make sure to refer to the original code to understand the structure of the data.
+3. Always print the name of the dataset before printing the metrics
+4. Always print the name of the metric before printing the value by specifying the metric name clearly. Avoid vague terms like 'train,' 'val,' or 'test.' Instead, use precise labels such as 'train accuracy,' 'validation loss,' or 'test F1 score,' etc.
+5. You only need to print the best or final value for each metric for each dataset
+6. DO NOT CREATE ANY PLOTS
+Important code structure requirements:
+  - Do NOT put any execution code inside 'if __name__ == "__main__":' block. Do not use 'if __name__ == "__main__":' at all.
+  - All code should be at the global scope or in functions that are called from the global scope
+  - The script should execute immediately when run, without requiring any special entry point

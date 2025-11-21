@@ -1,0 +1,65 @@
+Always treat the directory that contains your generated source file as the only writable sandbox. Resolve it from `__FILE__` at runtime and derive the `working/` folder from there—never write to a parent path outside that tree.
+
+CRITICAL DATA PERSISTENCE REQUIREMENTS:
+- Maintain an `experiment_data` container that mirrors the Python baseline (nested per dataset).
+- After every training/evaluation pass, flush the updated structure to `working/experiment_data.npy` using `cnpy::npy_save` or `cnpy::npz_save`.
+- Always overwrite the file in place (`mode="w"`) so downstream stages (plotting, metrics parsing) can rely on the latest values.
+- If the file does not yet exist, create it immediately after the first metrics update—never leave the run without writing `experiment_data.npy`.
+- Use additional files (plots, logs, intermediates) under the same `working/` directory so nothing leaks outside the sandbox.
+
+```cpp
+#include <cnpy.h>
+#include <filesystem>
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+fs::path resolve_working_dir() {
+    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
+    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
+    fs::path working_dir = base_dir / "working";
+    fs::create_directories(working_dir);
+    return working_dir;
+}
+
+int main() {
+    fs::path working_dir = resolve_working_dir();
+
+    using MetricStore = std::map<std::string, std::vector<double>>;
+    using DatasetStore = std::map<std::string, std::map<std::string, MetricStore>>;
+    std::map<std::string, DatasetStore> experiment_data = {
+        {"dataset_name_1",
+         {{"metrics", {{"train", {}}, {"val", {}}}},
+          {"losses", {{"train", {}}, {"val", {}}}},
+          {"predictions", {}},
+          {"ground_truth", {}}}},
+    };
+
+    for (int epoch = 0; epoch < 3; ++epoch) {
+        double train_metric = 0.1 * epoch;
+        double val_loss = 0.2 * epoch;
+        experiment_data["dataset_name_1"]["metrics"]["train"].push_back(train_metric);
+        experiment_data["dataset_name_1"]["losses"]["val"].push_back(val_loss);
+        std::cout << "Epoch " << epoch << ": validation_loss = " << val_loss << std::endl;
+    }
+
+    std::vector<double> flat_metrics =
+        experiment_data["dataset_name_1"]["metrics"]["train"];
+    cnpy::npy_save((working_dir / "experiment_data.npy").string(),
+                   flat_metrics.data(),
+                   {flat_metrics.size()},
+                   "w");
+    if (!fs::exists(working_dir / "experiment_data.npy")) {
+        throw std::runtime_error("experiment_data.npy was not written—abort so the agent can fix it.");
+    }
+    std::cout << "Saved experiment data to " << (working_dir / "experiment_data.npy") << std::endl;
+
+    fs::path plot_path = working_dir / "dataset_name_1_metrics.png";
+    std::cout << "Save matplotlib output to " << plot_path << std::endl;
+
+    return 0;
+}
+```

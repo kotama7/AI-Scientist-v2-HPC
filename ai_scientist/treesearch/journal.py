@@ -12,6 +12,7 @@ from .interpreter import ExecutionResult
 from .utils.metric import MetricValue, WorstMetricValue
 from .utils.response import trim_long_string
 from .backend import FunctionSpec, query
+from ai_scientist.prompt_loader import load_prompt
 
 from rich import print
 
@@ -19,6 +20,17 @@ import logging
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+BEST_NODE_INTRO = load_prompt("treesearch/journal/best_node_intro").strip()
+BEST_NODE_TASK = load_prompt("treesearch/journal/best_node_task").strip()
+SUMMARY_INTRO = load_prompt("treesearch/journal/summary_intro").strip()
+SUMMARY_USER_MESSAGE = load_prompt(
+    "treesearch/journal/summary_user_message"
+).strip()
+STAGE_NOTES_INTRO = load_prompt("treesearch/journal/stage_notes_intro").strip()
+STAGE_NOTES_USER_MESSAGE = load_prompt(
+    "treesearch/journal/stage_notes_user_message"
+).strip()
 
 node_selection_spec = FunctionSpec(
     name="select_best_implementation",
@@ -434,18 +446,8 @@ class Journal:
 
         # Create evaluation prompt for LLM
         prompt = {
-            "Introduction": (
-                "You are an experienced AI researcher evaluating different implementations "
-                "of an experiment to select the best one. You should consider all aspects "
-                "including performance metrics, training dynamics, generated plots quality."
-            ),
-            "Task": (
-                "Select the best implementation from the candidates below, considering all available evidence."
-                "Avoid relying too heavily on the validation loss alone, because "
-                "it may not be directly comparable across different objective functions or training details. "
-                "If there are multiple validation losses (e.g., when evaluating multiple datasets), "
-                "consider all of them and select the implementation that performs best overall."
-            ),
+            "Introduction": BEST_NODE_INTRO,
+            "Task": BEST_NODE_TASK,
             "Candidates": "",
         }
         # Gather info about each node
@@ -507,11 +509,7 @@ class Journal:
             return "No experiments conducted yet."
 
         prompt = {
-            "Introduction": (
-                "You are an AI researcher summarizing experimental progress. "
-                "Please analyze both successful and failed experiments to provide insights "
-                "for future improvements."
-            ),
+            "Introduction": SUMMARY_INTRO,
             "Successful Experiments": "",
             "Failed Experiments": "",
         }
@@ -535,12 +533,7 @@ class Journal:
 
         summary = query(
             system_message=prompt,
-            user_message=(
-                "Please provide a comprehensive summary of the experimental progress that includes:\n"
-                "1. Key patterns of success across working experiments\n"
-                "2. Common failure patterns and pitfalls to avoid\n"
-                "3. Specific recommendations for future experiments based on both successes and failures"
-            ),
+            user_message=SUMMARY_USER_MESSAGE,
             model=model_kwargs.get("model", "gpt-4o"),
             temperature=model_kwargs.get("temp", 0.3)
         )
@@ -589,7 +582,7 @@ class Journal:
                     json.dump(summary, f, indent=2)
 
         summary_prompt = {
-            "Introduction": "Synthesize the experimental findings from this stage",
+            "Introduction": STAGE_NOTES_INTRO,
             "Node Summaries": node_summaries,
             "Best Node": (
                 {
@@ -603,7 +596,7 @@ class Journal:
 
         stage_summary = query(
             system_message=summary_prompt,
-            user_message="Generate a comprehensive summary of the experimental findings in this stage",
+            user_message=STAGE_NOTES_USER_MESSAGE,
             model=cfg.agent.summary.model if cfg.agent.get("summary", None) else "gpt-4o",
             temperature=cfg.agent.summary.temp if cfg.agent.get("summary", None) else 0.3
         )

@@ -1,0 +1,1 @@
+Parse the metrics from the execution output. You only need the final or best value of a metric for each dataset, not the entire list during training.

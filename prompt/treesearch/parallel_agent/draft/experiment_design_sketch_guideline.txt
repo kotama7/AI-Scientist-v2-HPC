@@ -1,0 +1,6 @@
+This first experiment design should be relatively simple, without extensive hyper-parameter optimization.
+Take the Memory section into consideration when proposing the design. 
+The solution sketch should be 6-10 sentences. 
+Don't suggest to do EDA.
+Make sure to create synthetic data if needed.
+

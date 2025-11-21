@@ -14,6 +14,7 @@ import logging
 
 from . import tree_export
 from . import copytree, preproc_data, serialize
+from ai_scientist.persona import set_persona_role
 
 shutup.mute_warnings()
 logging.basicConfig(
@@ -60,7 +61,6 @@ class AgentConfig:
     k_fold_validation: int
     expose_prediction: bool
     data_preview: bool
-
     code: StageConfig
     feedback: StageConfig
     vlm_feedback: StageConfig
@@ -70,6 +70,8 @@ class AgentConfig:
     type: str
     multi_seed_eval: dict[str, int]
 
+    role_description: str = "AI researcher"
+
     summary: Optional[StageConfig] = None
     select_node: Optional[StageConfig] = None
 
@@ -78,11 +80,22 @@ class ExecConfig:
     timeout: int
     agent_file_name: str
     format_tb_ipython: bool
+    language: str = "python"
+    env_packages_template: str | None = None
+    cpp_compile_flags: list[str] | None = None
 
 
 @dataclass
 class ExperimentConfig:
     num_syn_datasets: int
+    dataset_source: str = "huggingface"
+
+
+@dataclass
+class PromptAdapterConfig:
+    model: str
+    temp: float
+    max_tokens: Optional[int] = None
 
 
 @dataclass
@@ -107,6 +120,7 @@ class Config(Hashable):
     agent: AgentConfig
     experiment: ExperimentConfig
     debug: DebugConfig
+    prompt_adapter: Optional[PromptAdapterConfig] = None
 
 
 def _get_next_logindex(dir: Path) -> int:
@@ -172,6 +186,8 @@ def prep_cfg(cfg: Config):
 
     if cfg.agent.type not in ["parallel", "sequential"]:
         raise ValueError("agent.type must be either 'parallel' or 'sequential'")
+
+    set_persona_role(getattr(cfg.agent, "role_description", None))
 
     return cast(Config, cfg)
 
@@ -244,10 +260,11 @@ def save_run(cfg: Config, journal, stage_name: str = None):
     try:
         best_node = journal.get_best_node(only_good=False, cfg=cfg)
         if best_node is not None:
-            for existing_file in save_dir.glob("best_solution_*.py"):
+            suffix = Path(cfg.exec.agent_file_name).suffix or ".py"
+            for existing_file in save_dir.glob(f"best_solution_*.{suffix.lstrip('.')}"):
                 existing_file.unlink()
             # Create new best solution file
-            filename = f"best_solution_{best_node.id}.py"
+            filename = f"best_solution_{best_node.id}{suffix}"
             with open(save_dir / filename, "w") as f:
                 f.write(best_node.code)
             # save best_node.id to a text file

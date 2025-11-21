@@ -80,7 +80,9 @@ AVAILABLE_LLMS = [
         openai.RateLimitError,
         openai.APITimeoutError,
         openai.InternalServerError,
+        openai.APIConnectionError,
         anthropic.RateLimitError,
+        anthropic.APIConnectionError,
     ),
 )
 @track_token_usage
@@ -261,7 +263,9 @@ def make_llm_call(client, model, temperature, system_message, prompt):
         openai.RateLimitError,
         openai.APITimeoutError,
         openai.InternalServerError,
+        openai.APIConnectionError,
         anthropic.RateLimitError,
+        anthropic.APIConnectionError,
     ),
 )
 def get_response_from_llm(

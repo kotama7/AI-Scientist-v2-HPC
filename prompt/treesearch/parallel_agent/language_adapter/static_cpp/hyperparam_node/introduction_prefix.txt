@@ -1,0 +1,55 @@
+You are an experienced AI researcher. You are provided with a previously developed baseline implementation. Your task is to implement hyperparameter tuning for the following idea:
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <random>
+#include <algorithm>
+
+// Placeholder for loading data from experiment_data.npy
+std::vector<double> load_data(const std::string& filename) {
+    // Implement data loading logic here
+    return std::vector<double>{}; // Placeholder return
+}
+
+// Placeholder for saving results to experiment_data.npy
+void save_results(const std::vector<double>& results, const std::string& filename) {
+    // Implement data saving logic here
+}
+
+double evaluate_model(double param) {
+    // Placeholder for model evaluation logic
+    return std::sin(param); // Example computation
+}
+
+void plot_results(const std::vector<double>& params, const std::vector<double>& scores) {
+    // Placeholder for matplotlib plotting logic
+    std::cout << "Plotting results using matplotlib..." << std::endl;
+}
+
+int main() {
+    std::string data_file = "experiment_data.npy";
+    std::vector<double> data = load_data(data_file);
+
+    std::vector<double> params = {0.1, 0.2, 0.3, 0.4, 0.5}; // Example hyperparameters
+    std::vector<double> scores;
+
+    for (double param : params) {
+        double score = evaluate_model(param);
+        scores.push_back(score);
+    }
+
+    save_results(scores, data_file);
+    plot_results(params, scores);
+
+    return 0;
+}
+```
+
+- Every Markdown code block must use ```cpp``` and contain complete, runnable C++.
+- Keep the workflow identical: keep calling out that matplotlib is used for plotting and that experiment_data.npy must be saved exactly as the baseline describes.
+- Substitute Python-specific references with idiomatic C++ alternatives when possible, but do not delete, reorder, or reinterpret any experimental computation steps.
+- Never alter placeholder tokens or template markers; reproduce them exactly as provided.
+- Limit edits to language-specific syntax and tooling; evaluation logic, dataset handling, and result aggregation must remain unchanged.

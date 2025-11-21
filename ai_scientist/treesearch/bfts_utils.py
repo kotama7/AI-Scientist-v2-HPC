@@ -1,10 +1,14 @@
 import os
 import os.path as osp
 import shutil
+from typing import Sequence
+
 import yaml
 
 
-def idea_to_markdown(data: dict, output_path: str, load_code: str) -> None:
+def idea_to_markdown(
+    data: dict, output_path: str, load_code: str, code_fence: str = "python"
+) -> None:
     """
     Convert a dictionary into a markdown file.
 
@@ -39,10 +43,19 @@ def idea_to_markdown(data: dict, output_path: str, load_code: str) -> None:
             f.write(f"Use the following code as context for your experiments:\n\n")
             with open(load_code, "r") as code_file:
                 code = code_file.read()
-                f.write(f"```python\n{code}\n```\n\n")
+                f.write(f"```{code_fence}\n{code}\n```\n\n")
 
 
-def edit_bfts_config_file(config_path: str, idea_dir: str, idea_path: str) -> str:
+def edit_bfts_config_file(
+    config_path: str,
+    idea_dir: str,
+    idea_path: str,
+    *,
+    language: str | None = None,
+    agent_file_name: str | None = None,
+    env_packages_template: str | None = None,
+    cpp_compile_flags: Sequence[str] | None = None,
+) -> str:
     """
     Edit the bfts_config.yaml file to point to the idea.md file
 
@@ -70,6 +83,16 @@ def edit_bfts_config_file(config_path: str, idea_dir: str, idea_path: str) -> st
     log_dir = osp.join(idea_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
     config["log_dir"] = log_dir
+
+    exec_cfg = config.setdefault("exec", {})
+    if language is not None:
+        exec_cfg["language"] = language
+    if agent_file_name is not None:
+        exec_cfg["agent_file_name"] = agent_file_name
+    if env_packages_template is not None:
+        exec_cfg["env_packages_template"] = env_packages_template
+    if cpp_compile_flags is not None:
+        exec_cfg["cpp_compile_flags"] = list(cpp_compile_flags)
 
     with open(run_config_path, "w") as f:
         yaml.dump(config, f)

@@ -1,0 +1,46 @@
+You should write a brief natural language description (3-5 sentences) of how the issue in the previous implementation can be fixed. Don't suggest to do EDA.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <matplotlibcpp.h>
+
+namespace plt = matplotlibcpp;
+
+std::vector<double> load_data(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    std::vector<double> data;
+    double value;
+    while (file.read(reinterpret_cast<char*>(&value), sizeof(double))) {
+        data.push_back(value);
+    }
+    return data;
+}
+
+void save_data(const std::string& filename, const std::vector<double>& data) {
+    std::ofstream file(filename, std::ios::binary);
+    for (const auto& value : data) {
+        file.write(reinterpret_cast<const char*>(&value), sizeof(double));
+    }
+}
+
+void plot_data(const std::vector<double>& data) {
+    plt::plot(data);
+    plt::show();
+}
+
+int main() {
+    std::vector<double> experiment_data = load_data("experiment_data.npy");
+
+    // Perform computations as per the original experiment pipeline
+    // Placeholder for computation logic
+
+    save_data("experiment_data.npy", experiment_data);
+
+    plot_data(experiment_data);
+
+    return 0;
+}
+```

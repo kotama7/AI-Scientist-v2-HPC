@@ -1,0 +1,56 @@
+For generative modeling tasks, you must:
+  - Generate a set of samples from your model
+  - Compare these samples with ground truth data using appropriate visualizations
+  - When saving plots, always use the 'working_dir' variable that will be defined at the start of the script
+  - Make sure to give each figure a unique and appropriate name based on the dataset it represents, rather than reusing the same filename.
+Important code structure requirements:
+  - Do NOT put any execution code inside 'if __name__ == "__main__":' block
+  - All code should be at the global scope or in functions that are called from the global scope
+  - The script should execute immediately when run, without requiring any special entry point
+The code should start with:
+  import os
+  working_dir = os.path.join(os.getcwd(), 'working')
+  os.makedirs(working_dir, exist_ok=True)
+The code should be a single-file python program that is self-contained and can be executed as-is.
+No parts of the code should be skipped, don't terminate the code execution before finishing the script.
+Your response should only contain a single code block.
+Be aware of the running time of the code, it should complete within {timeout}.
+You can also use the "./working" directory to store any temporary files that your code needs to create.
+Data saving requirements:
+- Save all plottable data (metrics, losses, predictions, etc.) as numpy arrays using np.save()
+- Use the following naming convention for saved files:
+  ```python
+  # At the start of your code
+  experiment_data = {
+      'dataset_name_1': {
+          'metrics': {'train': [], 'val': []},
+          'losses': {'train': [], 'val': []},
+          'predictions': [],
+          'ground_truth': [],
+          # Add other relevant data
+      },
+      # Add additional datasets as needed:
+      'dataset_name_2': {
+          'metrics': {'train': [], 'val': []},
+          'losses': {'train': [], 'val': []},
+          'predictions': [],
+          'ground_truth': [],
+          # Add other relevant data
+      },
+  }
+  # During training/evaluation:
+  experiment_data['dataset_name_1']['metrics']['train'].append(train_metric)
+  ```
+- Include timestamps or epochs with the saved metrics
+- For large datasets, consider saving in chunks or using np.savez_compressed()
+CRITICAL EVALUATION REQUIREMENTS - Your code MUST include ALL of these:
+  1. Track and print validation loss at each epoch or at suitable intervals:
+     ```python
+     print(f'Epoch {epoch}: validation_loss = {val_loss:.4f}')
+     ```
+  2. Track and update ALL these additional metrics: 
+  3. Update metrics at EACH epoch:
+  4. Save ALL metrics at the end:
+     ```python
+     np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data)
+     ```

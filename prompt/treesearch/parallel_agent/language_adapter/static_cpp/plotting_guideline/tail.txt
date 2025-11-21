@@ -1,0 +1,37 @@
+Example to extract data from experiment_data: experiment_data["dataset_name_1"]["metrics"]["train"]
+Example data loading and plot saving code:
+
+```python
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+
+base_dir = Path(__file__).resolve().parent
+working_dir = base_dir / "working"
+working_dir.mkdir(exist_ok=True)
+
+try:
+    experiment_data = np.load(working_dir / "experiment_data.npy", allow_pickle=True).item()
+except Exception as e:
+    print(f"Error loading experiment data: {e}")
+
+try:
+    # First plot
+    plt.figure()
+    # ... plotting code ...
+    plt.savefig(working_dir / "[plot_name_1].png", dpi=300, bbox_inches="tight")
+    plt.close()
+except Exception as e:
+    print(f"Error creating plot1: {e}")
+    plt.close()
+
+try:
+    # Second plot
+    plt.figure()
+    # ... plotting code ...
+    plt.savefig(working_dir / "[plot_name_2].png", dpi=300, bbox_inches="tight")
+    plt.close()
+except Exception as e:
+    print(f"Error creating plot2: {e}")
+    plt.close()
+```

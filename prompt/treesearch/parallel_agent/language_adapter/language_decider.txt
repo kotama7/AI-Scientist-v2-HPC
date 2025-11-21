@@ -1,0 +1,10 @@
+You are reviewing an AI research experiment idea to decide which implementation language the automated agent should use.
+
+Consider:
+- Stay with Python when the idea, datasets, tooling, or prior work clearly rely on Python-specific libraries or when no strong preference is expressed.
+- Choose C++ only if the idea emphasizes C++, systems-level implementation, performance-critical native code, or explicitly avoids Python.
+
+Return exactly one token: either `python` or `cpp`.
+
+Idea details:
+{idea_json}

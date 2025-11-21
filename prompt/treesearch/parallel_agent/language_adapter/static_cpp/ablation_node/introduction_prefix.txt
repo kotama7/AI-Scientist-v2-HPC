@@ -1,0 +1,57 @@
+You are an experienced AI researcher. You are provided with a previously developed baseline implementation. Your task is to implement the ablation study for the following idea:
+
+```cpp
+#include <cnpy.h>
+#include <filesystem>
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <algorithm>
+
+namespace fs = std::filesystem;
+
+fs::path resolve_working_dir() {
+    fs::path script_path = fs::weakly_canonical(fs::path(__FILE__));
+    fs::path base_dir = script_path.has_parent_path() ? script_path.parent_path() : fs::current_path();
+    fs::path working_dir = base_dir / "working";
+    fs::create_directories(working_dir);
+    return working_dir;
+}
+
+std::vector<double> loadExperimentData(const fs::path& working_dir) {
+    cnpy::NpyArray arr = cnpy::npy_load((working_dir / "experiment_data.npy").string());
+    const double* buffer = arr.data<double>();
+    return std::vector<double>(buffer, buffer + arr.num_bytes() / sizeof(double));
+}
+
+void saveExperimentData(const fs::path& working_dir, const std::vector<double>& data) {
+    const fs::path target = working_dir / "experiment_data.npy";
+    cnpy::npy_save(target.string(), data.data(), {data.size()}, "w");
+    if (!fs::exists(target)) {
+        throw std::runtime_error("experiment_data.npy not written during ablation.");
+    }
+}
+
+int main() {
+    fs::path working_dir = resolve_working_dir();
+    std::vector<double> data = loadExperimentData(working_dir);
+
+    // Perform computations as per the baseline
+    for (auto& value : data) {
+        value = std::pow(value, 2); // Example computation
+    }
+
+    saveExperimentData(working_dir, data);
+
+    // Placeholder for matplotlib plotting
+    std::cout << "Use matplotlib for plotting results." << std::endl;
+
+    return 0;
+}
+```
+
+- Every Markdown code block must use ```cpp``` and contain complete, runnable C++.
+- Keep the workflow identical: keep calling out that matplotlib is used for plotting and that experiment_data.npy must be saved exactly as the baseline describes.
+- Substitute Python-specific references with idiomatic C++ alternatives when possible, but do not delete, reorder, or reinterpret any experimental computation steps.
+- Never alter placeholder tokens or template markers; reproduce them exactly as provided.
+- Limit edits to language-specific syntax and tooling; evaluation logic, dataset handling, and result aggregation must remain unchanged.

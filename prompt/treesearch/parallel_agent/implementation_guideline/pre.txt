@@ -1,0 +1,14 @@
+CRITICAL GPU REQUIREMENTS - Your code MUST include ALL of these:
+  - At the start of your code, add these lines to handle GPU/CPU:
+    ```python
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Using device: {device}')
+    ```
+  - ALWAYS move models to device using the `.to(device)` method
+  - ALWAYS move input tensors to device using the `.to(device)` method
+  - ALWAYS move model related tensors to device using the `.to(device)` method
+  - For optimizers, create them AFTER moving model to device
+  - When using DataLoader, move batch tensors to device in training loop: `batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}`
+CRITICAL MODEL INPUT GUIDELINES:
+  - Always pay extra attention to the input to the model being properly normalized
+  - This is extremely important because the input to the model's forward pass directly affects the output, and the loss function is computed based on the output

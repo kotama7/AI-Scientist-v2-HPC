@@ -1,0 +1,43 @@
+You are an experienced AI researcher. You are provided with a previously developed implementation. Your task is to improve it based on the current experimental stage.
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <algorithm>
+
+// Placeholder for loading experiment_data.npy
+std::vector<double> load_data(const std::string& filename) {
+    // Implement data loading logic
+    std::vector<double> data;
+    // Load data from filename
+    return data;
+}
+
+// Placeholder for saving experiment_data.npy
+void save_data(const std::vector<double>& data, const std::string& filename) {
+    // Implement data saving logic
+}
+
+// Placeholder for computation logic
+std::vector<double> compute_results(const std::vector<double>& data) {
+    std::vector<double> results;
+    // Implement computation logic
+    return results;
+}
+
+int main() {
+    std::string filename = "experiment_data.npy";
+    std::vector<double> data = load_data(filename);
+
+    std::vector<double> results = compute_results(data);
+
+    save_data(results, filename);
+
+    // Note: matplotlib is used for plotting
+    std::cout << "Results computed and saved." << std::endl;
+
+    return 0;
+}
+```
