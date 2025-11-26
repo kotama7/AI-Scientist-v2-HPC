@@ -6,9 +6,6 @@ DESCRIPTION: <description>
 #include <fstream>
 #include <vector>
 #include <cmath>
-#include <matplotlibcpp.h>
-
-namespace plt = matplotlibcpp;
 
 std::vector<double> load_data(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary);
@@ -35,9 +32,13 @@ std::vector<double> process_data(const std::vector<double>& data) {
     return processed_data;
 }
 
-void plot_data(const std::vector<double>& data) {
-    plt::plot(data);
-    plt::show();
+void print_summary(const std::vector<double>& data) {
+    double sum = 0.0;
+    for (double value : data) {
+        sum += value;
+    }
+    double mean = data.empty() ? 0.0 : sum / data.size();
+    std::cout << "Samples: " << data.size() << ", Mean: " << mean << std::endl;
 }
 
 int main() {
@@ -45,7 +46,7 @@ int main() {
     std::vector<double> data = load_data(filename);
     std::vector<double> processed_data = process_data(data);
     save_data(processed_data, filename);
-    plot_data(processed_data);
+    print_summary(processed_data);
     return 0;
 }
 ```

@@ -1,62 +1,367 @@
 [
     {
-        "Name": "compositional_regularization_nn",
-        "Title": "Enhancing Compositional Generalization in Neural Networks via Compositional Regularization",
-        "Short Hypothesis": "Introducing a compositional regularization term during training can encourage neural networks to develop compositional representations, thereby improving their ability to generalize to novel combinations of known components.",
-        "Related Work": "Previous work has highlighted the challenges neural networks face in achieving compositional generalization. Studies such as 'Compositional Generalization through Abstract Representations in Human and Artificial Neural Networks' (Ito et al., NeurIPS 2022) have explored abstract representations to tackle this issue. However, limited research focuses on directly incorporating explicit regularization terms into the training objective to enforce compositional structures. Our proposal distinguishes itself by introducing a novel regularization approach that penalizes deviations from predefined compositional patterns during training, encouraging the network to internalize compositional rules.",
-        "Abstract": "Neural networks excel in many tasks but often struggle with compositional generalization\u2014the ability to understand and generate novel combinations of familiar components. This limitation hampers their performance on tasks requiring systematic generalization beyond the training data. In this proposal, we introduce a novel training method that incorporates an explicit compositional regularization term into the loss function of neural networks. This regularization term is designed to encourage the formation of compositional representations by penalizing the network when its internal representations deviate from expected compositional structures. We hypothesize that this approach will enhance the network's ability to generalize to unseen combinations, mimicking human-like compositional reasoning. We will test our method on synthetic benchmarks like the SCAN and COGS datasets, which are specifically designed to evaluate compositional generalization, as well as on real-world tasks such as machine translation and semantic parsing. By comparing our method to baseline models and existing approaches, we aim to demonstrate significant improvements in generalization performance. This work offers a new avenue for enforcing compositionality in neural networks through regularization, potentially bridging the gap between neural network capabilities and human cognitive flexibility.",
+        "Name": "dynamic_kernel_adaptation_openblas",
+        "Title": "Dynamic Kernel Adaptation for OpenBLAS on HPC Systems: Mitigating Performance Variability through Real-Time System Feedback",
+        "Short Hypothesis": "Real-time adaptation of OpenBLAS parameters based on system metrics can reduce performance variability on heterogeneous HPC hardware.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for other HPC applications. This proposal uniquely combines real-time system feedback (CPU frequency, NUMA domain utilization, memory bandwidth) with adaptive kernel selection to address previously unexplored interactions between hardware dynamics and BLAS performance.",
+        "Abstract": "OpenBLAS, a widely used BLAS library in HPC, often underperforms on modern heterogeneous systems due to static kernel configurations and hardware variability. This work proposes a dynamic adaptation framework that leverages real-time system metrics (CPU frequency, NUMA domain utilization, memory bandwidth) to adjust OpenBLAS parameters (thread count, cache sizes, kernel selection). By creating a feedback loop between hardware monitoring and library configuration, we aim to mitigate performance degradation caused by dynamic workload shifts and microarchitectural differences. Our experiments will evaluate this approach across diverse HPC architectures, demonstrating how adaptive tuning can reduce performance variability while maintaining portability. This work addresses critical gaps in open-source numerical kernels' ability to adapt to rapidly evolving hardware.",
         "Experiments": [
-            "Implement the compositional regularization term and integrate it into the loss function of standard sequence-to-sequence neural network architectures with attention mechanisms.",
-            "Train models on synthetic datasets like SCAN and COGS, evaluating performance on compositional generalization tasks with and without the regularization term.",
-            "Apply the method to real-world tasks such as machine translation using the IWSLT dataset and semantic parsing with the GeoQuery dataset, assessing improvements in generalization to new language constructs.",
-            "Analyze the learned representations by visualizing embedding spaces and utilizing compositionality metrics to assess how the regularization affects internal representations.",
-            "Conduct ablation studies to determine the impact of different strengths of the regularization term, identifying the optimal balance between enforcing compositionality and maintaining overall performance.",
-            "Compare the proposed method against other approaches aimed at improving compositional generalization, such as meta-learning techniques and specialized architectures."
+            "Implement a real-time monitoring module to track CPU frequency, NUMA domain utilization, and memory bandwidth during BLAS workloads",
+            "Modify OpenBLAS to include dynamic parameter adjustment based on monitored metrics (e.g., switching between AVX2/AVX-512 kernels based on frequency thresholds)",
+            "Compare static vs. dynamic configurations across 3 CPU architectures (Intel Xeon, AMD EPYC, ARM Neoverse) with varying NUMA domains",
+            "Evaluate performance using GFLOPS, execution time, and energy efficiency metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration"
         ],
         "Risk Factors and Limitations": [
-            "The effectiveness of the compositional regularization may vary across different datasets and tasks, potentially limiting its generalizability.",
-            "An improperly balanced regularization term could negatively impact model performance on the primary task, leading to lower accuracy.",
-            "Additional computational overhead from calculating the regularization term may increase training time and resource requirements.",
-            "Defining appropriate compositional structures for complex or less-understood domains may be challenging, affecting the applicability of the method.",
-            "The approach may face scalability issues when applied to very large models or datasets common in industrial applications."
+            "Real-time adaptation may introduce latency overhead",
+            "Hardware-specific heuristics could limit cross-architecture generality",
+            "Compiler optimizations might override manual parameter adjustments",
+            "Dynamic tuning could inadvertently expose security vulnerabilities in kernel selection"
         ]
     },
     {
-        "Name": "interpretability_failure_modes",
-        "Title": "When Interpretability Fails: Investigating the Limitations of Explanation Methods in Deep Learning",
-        "Short Hypothesis": "Explanation methods for deep learning models may not always provide accurate or reliable interpretations of model behavior; identifying when these methods fail can inform better application and development of interpretability techniques.",
-        "Related Work": "Previous studies, such as 'Sanity Checks for Saliency Maps' (Adebayo et al., 2018) and 'The (Un)reliability of Saliency Methods' (Kindermans et al., 2017), have highlighted issues with the reliability of certain interpretability methods. However, there is a lack of systematic investigation into the failure modes of explanation techniques across different models and tasks, especially in practical, real-world settings. Our proposal distinguishes itself by providing a comprehensive analysis of when and why interpretability methods fail, and how they may mislead users.",
-        "Abstract": "Interpretability methods are essential for understanding and trusting deep learning models, especially in critical applications where insight into model decisions is necessary. However, these methods may not always provide accurate or meaningful explanations of a model's behavior, and can sometimes be misleading. This proposal aims to investigate the limitations and failure modes of popular interpretability techniques in deep learning, such as saliency maps, attribution methods, and concept activation vectors. We hypothesize that these methods can fail due to factors like model architecture, data biases, or adversarial manipulations, leading to explanations that do not reflect the true decision-making processes of the models. Through systematic experiments across various tasks and models, we will analyze the reliability of interpretability methods, identify conditions under which they fail, and propose metrics to assess explanation fidelity. The findings will inform practitioners about the potential pitfalls of relying on current interpretability techniques and guide the development of more robust methods to enhance the trustworthiness of AI systems.",
+        "Name": "memory_hierarchy_aware_openblas",
+        "Title": "Memory Hierarchy-Aware Optimization for OpenBLAS on HPC Systems",
+        "Short Hypothesis": "Tailoring OpenBLAS memory access patterns to the specific memory hierarchy of HPC systems can reduce performance variability and improve reproducibility across architectures.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for other HPC applications. This proposal uniquely combines memory hierarchy-aware profiling (via PMUs) with adaptive memory access patterns for BLAS kernels, addressing gaps in how OpenBLAS interacts with heterogeneous memory subsystems. Unlike MaPHeA (heap allocation) or DROPLET (prefetching), this work targets low-level memory access patterns in BLAS operations rather than application-level data placement.",
+        "Abstract": "OpenBLAS, a widely used BLAS library in HPC, often underperforms on modern heterogeneous systems due to static memory access patterns and hardware variability. This work proposes a memory hierarchy-aware optimization framework that dynamically adjusts memory access patterns in OpenBLAS based on real-time hardware profiling (via PMUs) to align with the target system's memory hierarchy. By leveraging hardware-specific characteristics such as cache sizes, memory bandwidth, and NUMA domain latency, we aim to reduce performance variability and improve reproducibility across architectures. Our approach involves profiling OpenBLAS's memory access patterns, modifying the library to prioritize memory-friendly operations (e.g., cache-blocking, data locality), and validating results across diverse HPC architectures. This work addresses critical gaps in open-source numerical kernels' ability to adapt to rapidly evolving memory hierarchies while maintaining portability.",
         "Experiments": [
-            "Select a diverse set of pretrained models across different domains (e.g., image classification models like ResNet, NLP models like BERT).",
-            "Apply various interpretability methods (e.g., Grad-CAM, Integrated Gradients, LIME, SHAP) to these models on standard benchmarks.",
-            "Design controlled experiments where we introduce factors that may cause interpretability methods to fail, such as adding irrelevant but salient features, using adversarial examples, or modifying model architectures.",
-            "Evaluate the explanations generated by interpretability methods for accuracy and consistency, comparing them to known model behaviors or ground truth where available.",
-            "Develop quantitative metrics to assess the fidelity and reliability of explanations, such as explanation invariance and sensitivity.",
-            "Conduct user studies to understand how misleading or unreliable explanations impact human trust and decision-making.",
-            "Propose guidelines or improvements for the application of interpretability methods based on the findings."
+            "Profile OpenBLAS memory access patterns using PMUs to identify bottlenecks in cache and memory hierarchy utilization",
+            "Modify OpenBLAS to implement cache-aware algorithms (e.g., cache-blocking, data tiling) and NUMA-aware memory allocation",
+            "Compare static vs. memory hierarchy-aware configurations across 3 CPU architectures (Intel Xeon, AMD EPYC, ARM Neoverse) with varying memory hierarchies",
+            "Evaluate performance using GFLOPS, memory bandwidth utilization, and latency metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration"
         ],
         "Risk Factors and Limitations": [
-            "Defining ground truth for explanations is challenging due to the complexity of deep models.",
-            "Findings may be specific to the selected models or tasks, limiting generalizability.",
-            "Evaluating interpretability is inherently subjective, and metrics may not capture all aspects of explanation quality.",
-            "User studies require careful design and sufficient participants to yield meaningful results.",
-            "Computational resource constraints may limit the scale of experiments."
+            "Memory hierarchy-aware modifications may reduce portability across architectures",
+            "Hardware-specific heuristics could limit cross-architecture generality",
+            "Compiler optimizations might override manual memory access adjustments",
+            "Profiling overhead could impact real-time performance in latency-sensitive workloads"
         ]
     },
     {
-        "Name": "real_world_pest_detection",
-        "Title": "Real-World Challenges in Pest Detection Using Deep Learning: An Investigation into Failures and Solutions",
-        "Short Hypothesis": "Deep learning models for pest detection often fail to generalize in real-world agricultural settings due to data quality issues, environmental variability, and model limitations. Investigating these failures can lead to more robust solutions.",
-        "Related Work": "Several studies, such as those by Agarwal et al. (2023) and Dong et al. (2024), have explored deep learning for pest detection in agriculture. These studies generally report high accuracy in controlled settings but often do not address real-world deployment challenges. Our proposal distinguishes itself by focusing on the negative outcomes and the underlying reasons behind these failures.",
-        "Abstract": "Accurate pest detection is vital for protecting crops and ensuring food security. While deep learning models have shown promise in controlled environments, their performance often degrades in real-world applications. This proposal aims to investigate the reasons behind these failures. We hypothesize that data quality issues, environmental variability, and model limitations are significant factors. By conducting a series of experiments, we will explore these challenges in depth and propose robust solutions to improve the generalizability of deep learning models for pest detection. Our research will provide valuable insights for the agricultural community and contribute to the development of more reliable AI tools for precision farming.",
+        "Name": "hybrid_core_scheduling_openblas",
+        "Title": "Hybrid Core Scheduling Optimization for OpenBLAS on Next-Gen HPC Systems",
+        "Short Hypothesis": "Dynamic task scheduling across hybrid core architectures (e.g., high-performance cores vs. efficiency cores) can reduce performance variability in OpenBLAS workloads while maintaining portability.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for other HPC applications. This proposal uniquely addresses hybrid core scheduling for BLAS libraries, which has not been explored in OpenBLAS. Unlike GACO or hybrid meta-heuristics for cloud scheduling, this work targets low-level BLAS kernel execution on heterogeneous core architectures, leveraging hybrid core capabilities rather than abstracting them.",
+        "Abstract": "Modern HPC systems increasingly feature hybrid core architectures that combine high-performance cores (e.g., AVX-512) with efficiency cores (e.g., Cortex-A78). OpenBLAS, a widely used BLAS library, lacks native support for dynamic task scheduling across these core types, leading to suboptimal performance and variability. This work proposes a hybrid core scheduling framework for OpenBLAS that dynamically allocates computational tasks to different core types based on workload characteristics (e.g., compute intensity, memory bandwidth requirements). By integrating lightweight core-aware scheduling with existing BLAS kernels, we aim to reduce performance variability while maintaining compatibility with diverse HPC architectures. Our experiments will evaluate this approach across hybrid core systems, demonstrating how task scheduling optimization can improve both performance and energy efficiency without requiring code changes to numerical kernels.",
         "Experiments": [
-            "1. **Data Quality Analysis**: Collect a diverse dataset of pest images from different agricultural environments and analyze its quality. Identify common issues such as label noise, class imbalance, and distribution shift.",
-            "2. **Model Robustness Testing**: Train state-of-the-art deep learning models (e.g., YOLOv8, EfficientNetB3) on the collected dataset and evaluate their performance in controlled vs. real-world settings. Metrics: Mean Average Precision (mAP), F1 Score.",
-            "3. **Environmental Variability Study**: Evaluate model performance under different environmental conditions (e.g., lighting, weather). Identify which conditions most significantly impact model accuracy.",
-            "4. **Failure Mode Analysis**: Conduct a detailed analysis of misclassifications to identify common patterns and potential causes (e.g., feature overlap between pests and background).",
-            "5. **Improvement Strategies**: Implement and test various strategies to mitigate identified challenges, such as data augmentation, domain adaptation, and model ensembling. Evaluate their effectiveness in improving model robustness."
+            "Modify OpenBLAS to include a hybrid core scheduler that dynamically assigns tasks to high-performance and efficiency cores",
+            "Profile workload characteristics (compute intensity, memory access patterns) for different BLAS operations",
+            "Implement a scheduling policy that prioritizes compute-heavy tasks on high-performance cores and memory-bound tasks on efficiency cores",
+            "Compare static vs. hybrid core scheduling configurations across 2 hybrid architectures (Intel hybrid CPUs, ARM big.LITTLE)",
+            "Evaluate performance using GFLOPS, energy efficiency (Watts), and task completion time metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration"
         ],
-        "Risk Factors and Limitations": "Potential risks include the availability and quality of real-world data, the computational demands of training and testing multiple deep learning models, and the generalizability of the findings to different types of pests and crops. Additionally, environmental factors may introduce variability that is challenging to control."
+        "Risk Factors and Limitations": [
+            "Hybrid core scheduling may introduce overhead from task migration between core types",
+            "Existing BLAS kernels may not be easily adaptable to hybrid core scheduling without code changes",
+            "Compiler optimizations might override manual scheduling decisions",
+            "Limited support for hybrid core architectures in current HPC benchmarks"
+        ]
+    },
+    {
+        "Name": "dvfs_aware_openblas",
+        "Title": "DVFS-Aware Optimization for OpenBLAS on HPC Systems: Balancing Performance and Energy Efficiency",
+        "Short Hypothesis": "Dynamic voltage and frequency scaling (DVFS) adjustments based on real-time BLAS workload characteristics can improve OpenBLAS performance and energy efficiency on modern HPC systems.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for other HPC applications. This proposal uniquely combines DVFS-awareness with BLAS performance tuning, addressing a gap in literature where DVFS strategies for numerical kernels like OpenBLAS remain unexplored. Unlike prior work on GPU DVFS or hybrid core scheduling, this approach targets CPU-based BLAS performance while integrating power management feedback loops.",
+        "Abstract": "OpenBLAS, a widely used BLAS library in HPC, often underperforms on modern heterogeneous systems due to static configurations and hardware variability. This work proposes a DVFS-aware optimization framework that dynamically adjusts CPU voltage/frequency settings based on real-time BLAS workload characteristics (e.g., compute intensity, memory access patterns). By integrating hardware power management interfaces with OpenBLAS's runtime behavior, we aim to balance performance and energy efficiency while maintaining portability. Our approach involves profiling BLAS workloads to identify optimal DVFS configurations, modifying OpenBLAS to expose power management controls, and validating results across diverse HPC architectures. This work addresses critical gaps in open-source numerical kernels' ability to adapt to both evolving hardware and energy constraints.",
+        "Experiments": [
+            "Profile OpenBLAS workloads to identify compute intensity and memory access patterns for different BLAS operations",
+            "Modify OpenBLAS to interface with CPU power management units (PMUs) for real-time DVFS adjustments",
+            "Implement a DVFS policy that dynamically selects frequency/voltage levels based on workload characteristics (e.g., high-frequency for compute-heavy operations)",
+            "Compare static vs. DVFS-aware configurations across 3 CPU architectures (Intel Xeon, AMD EPYC, ARM Neoverse) with varying power profiles",
+            "Evaluate performance using GFLOPS, energy consumption (Watts), and power-performance ratio metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration"
+        ],
+        "Risk Factors and Limitations": [
+            "DVFS adjustments may introduce latency overhead or destabilize numerical precision",
+            "Hardware-specific power management interfaces could limit cross-architecture generality",
+            "Compiler optimizations might override manual DVFS settings",
+            "Frequent DVFS changes could increase thermal management complexity"
+        ]
+    },
+    {
+        "Name": "machine_learning_driven_blas_optimization",
+        "Title": "Machine Learning-Driven BLAS Library Selection and Optimization for HPC Workloads",
+        "Short Hypothesis": "A machine learning model can predict optimal BLAS library configurations (e.g., OpenBLAS, MKL, cuBLAS) and parameters for diverse HPC workloads, outperforming static heuristics and manual tuning.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for specific hardware aspects (e.g., DVFS, hybrid cores). This proposal uniquely combines machine learning with BLAS library selection and cross-implementation optimization, addressing gaps in adaptive, workload-aware numerical kernel management. Unlike prior studies that modify a single library, this approach leverages the diversity of BLAS implementations to create a unified optimization framework.",
+        "Abstract": "BLAS libraries like OpenBLAS, MKL, and cuBLAS are critical for HPC performance, yet their selection and configuration remain largely static or manually tuned. This work proposes a machine learning-driven framework to automatically select the optimal BLAS library and its configuration parameters (e.g., thread count, kernel selection, data layouts) for diverse workloads. By training a model on historical performance data across architectures and workloads, the system predicts the best library and settings to maximize GFLOPS, minimize latency, and ensure reproducibility. Our approach integrates features such as workload compute intensity, memory access patterns, and hardware metadata (e.g., cache sizes, NUMA topology) to guide the selection process. We validate this framework on HPC benchmarks and real-world applications, demonstrating its ability to outperform static configurations and manual tuning. This work addresses critical gaps in adaptive numerical kernel management, enabling more efficient and portable HPC workflows.",
+        "Experiments": [
+            "Collect performance data across BLAS implementations (OpenBLAS, MKL, cuBLAS) for diverse workloads (e.g., matrix multiplication, eigenvalue decomposition) on multiple architectures (Intel, AMD, NVIDIA)",
+            "Train a machine learning model (e.g., gradient-boosted trees, neural networks) to predict optimal library and parameter settings based on workload features",
+            "Implement a runtime selector that dynamically chooses the best BLAS implementation and configuration at runtime",
+            "Evaluate performance using GFLOPS, execution time, and energy efficiency metrics across 10+ HPC architectures",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration"
+        ],
+        "Risk Factors and Limitations": [
+            "Model generalizability may be limited by hardware diversity and workload variability",
+            "Runtime library selection could introduce overhead or compatibility issues",
+            "Training data may lack coverage for niche workloads or emerging architectures",
+            "Security risks from dynamic library loading in sensitive HPC environments"
+        ]
+    },
+    {
+        "Name": "compiler_optimization_tradeoffs_openblas",
+        "Title": "Compiler Optimization Tradeoffs in OpenBLAS: Balancing Performance and Resilience in HPC Systems",
+        "Short Hypothesis": "Compiler toolchain optimizations significantly influence both performance and transient error rates in OpenBLAS, creating tradeoffs that current HPC workflows overlook.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for specific hardware aspects (e.g., DVFS, hybrid cores). This proposal uniquely examines how compiler toolchain choices (e.g., code generation, inlining, loop unrolling) directly impact both performance and resilience of BLAS operations, a gap highlighted by recent work on transient fault recovery (CARE, IterPro). Unlike prior studies that isolate performance or fault tolerance, this work investigates their intertwined relationship in numerical kernels.",
+        "Abstract": "OpenBLAS, a widely used BLAS library in HPC, faces performance variability due to static configurations and hardware dynamics. However, recent work on transient fault recovery (e.g., CARE, IterPro) reveals that compiler optimizations can inadvertently increase susceptibility to transient errors, which degrade numerical stability and performance. This work investigates how compiler toolchain settings (e.g., optimization levels, code generation strategies) influence both the performance and resilience of OpenBLAS workloads. By systematically analyzing the tradeoffs between compiler-driven performance gains and error resilience, we aim to identify optimal configurations that balance speed with reliability. Our approach involves profiling OpenBLAS under varying compiler flags, quantifying performance metrics (GFLOPS, latency) alongside transient error rates, and proposing a framework to guide compiler choices for HPC workloads. This research addresses critical gaps in understanding how low-level compiler decisions shape both the efficiency and robustness of numerical kernels in HPC environments.",
+        "Experiments": [
+            "Profile OpenBLAS performance and transient error rates under varying compiler flags (e.g., -O2, -O3, -ffast-math) across 3 CPU architectures (Intel Xeon, AMD EPYC, ARM Neoverse)",
+            "Quantify the correlation between compiler-induced code transformations (e.g., loop unrolling, vectorization) and performance degradation under transient faults",
+            "Evaluate the impact of compiler-specific optimizations (e.g., AVX-512, FMA) on both GFLOPS and error resilience metrics",
+            "Compare static vs. compiler-optimized configurations using benchmark suites (Linpack, HPL, HPCG) and synthetic BLAS workloads",
+            "Test reproducibility by measuring performance and error consistency across 10 runs per compiler configuration"
+        ],
+        "Risk Factors and Limitations": [
+            "Compiler toolchain variability across HPC systems may limit cross-architecture generalizability",
+            "Transient error simulation could introduce measurement noise or require specialized hardware",
+            "Optimization tradeoffs may be workload-specific, requiring extensive benchmarking",
+            "Compiler-specific heuristics might reduce portability of proposed configurations"
+        ]
+    },
+    {
+        "Name": "approximate_computing_blas",
+        "Title": "Approximate Computing for BLAS: Balancing Energy Efficiency and Numerical Stability in HPC Workloads",
+        "Short Hypothesis": "Integrating approximate computing techniques into BLAS operations can reduce energy consumption while maintaining acceptable numerical accuracy for HPC workloads.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for hardware aspects. This proposal uniquely explores approximate computing in BLAS, a gap highlighted by the growing demand for energy-efficient HPC. Unlike prior studies on approximate matrix multiplication in neural networks, this work targets numerical linear algebra kernels with strict precision requirements, balancing accuracy loss with energy savings.",
+        "Abstract": "BLAS libraries like OpenBLAS are critical for HPC performance, but their energy consumption is becoming a bottleneck as systems scale. Approximate computing offers a promising avenue to reduce power usage by trading off precision for performance gains. This work investigates the feasibility of integrating approximate computing techniques into BLAS operations, focusing on matrix multiplication and triangular solvers. By introducing controlled precision loss (e.g., reduced bit-width, stochastic rounding) in BLAS kernels, we aim to achieve energy efficiency improvements while maintaining numerical stability within acceptable error margins. Our approach involves modifying OpenBLAS to support precision-aware kernels, evaluating trade-offs between energy savings and accuracy, and validating results on HPC benchmarks. This research addresses critical gaps in energy-efficient numerical computing, offering a novel framework for sustainable HPC workloads.",
+        "Experiments": [
+            "Modify OpenBLAS to implement approximate variants of key BLAS operations (e.g., GEMM with stochastic rounding)",
+            "Evaluate energy consumption and performance using hardware counters and power meters",
+            "Quantify numerical accuracy using relative error metrics (e.g., \u03b5-relative error, Frobenius norm) across 10+ HPC benchmarks",
+            "Compare precision-aware configurations (single/double precision, bit-width reduction) against standard OpenBLAS",
+            "Test reproducibility by measuring performance and accuracy consistency across 10 runs per configuration"
+        ],
+        "Risk Factors and Limitations": [
+            "Precision loss may degrade numerical stability in sensitive HPC applications",
+            "Approximate kernels could introduce compatibility issues with existing workflows",
+            "Hardware-specific power measurement tools may limit cross-architecture generalizability",
+            "Implementation overhead could offset energy savings in small-scale workloads"
+        ]
+    },
+    {
+        "Name": "software_stack_impact_openblas",
+        "Title": "Software Stack Impact on OpenBLAS Performance: Analyzing Version Variability in HPC Environments",
+        "Short Hypothesis": "Variations in software stack versions (OS, compiler, BLAS library) significantly affect OpenBLAS performance and reproducibility in HPC systems, requiring systematic analysis to identify optimal configurations.",
+        "Related Work": "Existing work focuses on hardware-specific optimizations, dynamic tuning, and compiler interactions with OpenBLAS. This proposal uniquely isolates the impact of software stack versions (OS, compiler, BLAS library) on performance, a gap highlighted by recent reproducibility crises in HPC. Unlike prior studies that modify OpenBLAS itself, this work examines how upstream software changes propagate to numerical kernel behavior.",
+        "Abstract": "OpenBLAS performance in HPC systems is often attributed to hardware variability, yet recent studies suggest software stack versions (OS, compiler, BLAS library) may significantly influence numerical kernel behavior. This work systematically evaluates how changes in software stack versions affect OpenBLAS performance and reproducibility across HPC architectures. By benchmarking BLAS operations across diverse OS versions (Linux 5.10/6.1), compiler versions (GCC 11/13, Clang 14), and BLAS library versions (OpenBLAS 0.3.20/0.4.0), we quantify performance degradation, latency shifts, and reproducibility inconsistencies. Our findings reveal how upstream changes in software ecosystems can inadvertently impact numerical stability and performance, providing actionable insights for HPC workflows. This research addresses critical gaps in understanding the interplay between software evolution and numerical kernel behavior, offering a framework for version-aware optimization in HPC.",
+        "Experiments": [
+            "Benchmark OpenBLAS performance (GFLOPS, latency) across OS versions (Linux 5.10, 6.1) on identical hardware",
+            "Evaluate compiler impacts (GCC 11 vs. 13, Clang 14) on BLAS operation reproducibility using fixed seed matrices",
+            "Compare BLAS library versions (OpenBLAS 0.3.20 vs. 0.4.0) across 3 CPU architectures (Intel, AMD, ARM) with identical build flags",
+            "Quantify numerical reproducibility using relative error metrics (\u03b5-relative, Frobenius norm) across 10 runs per configuration",
+            "Analyze version-specific performance trends using statistical tests (ANOVA, Tukey's HSD) to identify significant regressions"
+        ],
+        "Risk Factors and Limitations": [
+            "Software version combinations may introduce confounding variables (e.g., kernel updates, driver changes)",
+            "Reproducibility analysis requires strict environment control across diverse systems",
+            "Performance metrics may be influenced by external factors (e.g., system load, background processes)",
+            "Limited support for older software versions in modern HPC clusters"
+        ]
+    },
+    {
+        "Name": "reinforcement_learning_driven_openblas_tuning",
+        "Title": "Reinforcement Learning-Driven Dynamic Tuning of OpenBLAS for HPC Workloads",
+        "Short Hypothesis": "A reinforcement learning (RL) framework can autonomously optimize OpenBLAS configurations in real-time, adapting to workload dynamics and hardware variability to achieve superior performance and reproducibility.",
+        "Related Work": "Existing work on OpenBLAS optimization focuses on static heuristics, manual tuning, or narrow dynamic adaptations (e.g., DVFS, hybrid core scheduling). This proposal introduces RL as a novel paradigm for end-to-end, self-optimizing BLAS tuning, which has not been explored in HPC contexts. Unlike prior ML-driven approaches that rely on pre-defined feature sets, this work uses RL to simultaneously learn optimal parameter configurations and reward functions from raw performance metrics.",
+        "Abstract": "OpenBLAS performance in HPC systems is constrained by static configurations that fail to adapt to dynamic workload and hardware conditions. This work proposes a reinforcement learning (RL) framework that autonomously tunes OpenBLAS parameters (e.g., thread count, kernel selection, cache blocking) in real-time, leveraging feedback from performance metrics like GFLOPS, memory bandwidth, and energy consumption. By framing BLAS optimization as a sequential decision problem, the RL agent learns to balance competing objectives (speed, energy, reproducibility) across heterogeneous CPU architectures. Our approach involves training a policy network using environment simulations and validating it on real HPC systems. This work addresses critical gaps in adaptive numerical kernel management, offering a self-optimizing framework that outperforms static and manually tuned configurations.",
+        "Experiments": [
+            "Implement an RL agent (e.g., PPO, DQN) to optimize OpenBLAS parameters in real-time",
+            "Train the agent using synthetic workloads and historical performance data from 3 CPU architectures (Intel, AMD, ARM)",
+            "Evaluate against static configurations and state-of-the-art dynamic tuning methods",
+            "Measure performance using GFLOPS, energy efficiency (Watts), and reproducibility (standard deviation across 10 runs)",
+            "Test cross-architecture generalization by deploying the trained policy on unseen hardware"
+        ],
+        "Risk Factors and Limitations": [
+            "RL training may require significant computational resources for policy convergence",
+            "Reward function design could inadvertently prioritize short-term gains over long-term stability",
+            "Hardware-specific reward scaling may reduce cross-architecture generalizability",
+            "Real-time RL inference could introduce latency overhead in latency-sensitive workloads"
+        ]
+    },
+    {
+        "Name": "mixed_precision_blas_impact_analysis",
+        "Title": "Understanding the Impact of Mixed-Precision BLAS on HPC Workloads: A Systematic Evaluation of Performance, Accuracy, and Portability",
+        "Short Hypothesis": "A systematic evaluation of mixed-precision BLAS implementations across diverse HPC workloads reveals optimal precision configurations that balance performance gains with numerical stability, offering actionable insights for adaptive HPC workflows.",
+        "Related Work": "Existing work explores mixed-precision BLAS for specific hardware (e.g., Tensor Cores) or narrow applications (e.g., neural networks), but lacks a comprehensive analysis of trade-offs across diverse HPC workloads. This proposal uniquely combines empirical benchmarking, error analysis, and workload-specific guidelines, distinguishing from prior studies that focus on isolated optimizations or single-precision scenarios.",
+        "Abstract": "Mixed-precision BLAS has emerged as a promising avenue for accelerating HPC workloads while balancing performance and accuracy. However, its adoption remains fragmented, with limited guidance on optimal precision configurations for diverse numerical algorithms. This work conducts a systematic evaluation of mixed-precision BLAS implementations (BF16, TF32, FP32, FP64) across representative HPC workloads (e.g., linear solvers, eigenvalue decomposition, molecular simulations) to quantify performance gains, accuracy preservation, and portability challenges. By benchmarking state-of-the-art BLAS libraries (OpenBLAS, MAGMA, cuBLAS) on heterogeneous architectures (Intel, AMD, NVIDIA), we identify workload-specific precision trade-offs and propose a framework for dynamic precision selection. Our findings aim to inform best practices for integrating mixed-precision BLAS into HPC pipelines, ensuring both efficiency and reliability in scientific computing.",
+        "Experiments": [
+            "Benchmark mixed-precision BLAS (BF16, TF32, FP32) across 5 HPC workloads (linear systems, eigenvalue problems, DCMESH, FFT-based solvers, molecular dynamics) on 3 architectures (Intel, AMD, NVIDIA)",
+            "Quantify accuracy using relative error metrics (\u03b5-relative, Frobenius norm) and convergence rates for iterative solvers",
+            "Evaluate performance gains (GFLOPS, energy efficiency) and identify precision-architecture compatibility patterns",
+            "Compare static vs. dynamic precision selection strategies using workload metadata (compute intensity, memory bandwidth)",
+            "Assess portability by measuring performance consistency across 10+ BLAS implementations and hardware variants"
+        ],
+        "Risk Factors and Limitations": [
+            "Workload-specific insights may limit generalizability to niche applications",
+            "Accuracy analysis requires controlled environments with strict numerical reproducibility",
+            "Hardware diversity may introduce confounding variables (e.g., driver versions, compiler optimizations)",
+            "Dynamic precision selection could introduce overhead in latency-sensitive applications"
+        ]
+    },
+    {
+        "Name": "deterministic_timing_openblas",
+        "Title": "Deterministic Timing for OpenBLAS: Enabling Predictable Performance in HPC Real-Time Systems",
+        "Short Hypothesis": "Enforcing deterministic timing guarantees in OpenBLAS operations can eliminate performance variability in HPC real-time systems, enabling predictable execution for critical applications.",
+        "Related Work": "Existing work focuses on static optimizations, dynamic tuning, and hardware-aware adaptations for OpenBLAS. This proposal uniquely addresses real-time constraints by enforcing deterministic timing guarantees, a gap highlighted by recent studies on time-critical HPC applications. Unlike prior work on latency optimization, this approach prioritizes strict timing bounds over throughput, ensuring reproducible execution times for BLAS operations.",
+        "Abstract": "OpenBLAS, a widely used BLAS library in HPC, often exhibits timing variability due to dynamic kernel selection, NUMA contention, and hardware interrupts, hindering its use in real-time systems. This work proposes a deterministic timing framework for OpenBLAS that ensures predictable execution times by isolating BLAS operations in real-time threads with fixed-priority scheduling. By leveraging hardware features like reserved CPU cores and disabling non-deterministic optimizations (e.g., DVFS, cache prefetching), we aim to eliminate timing jitter while maintaining numerical correctness. Our approach targets critical HPC applications requiring strict timing guarantees, such as embedded control systems and safety-critical simulations. Experiments will evaluate timing predictability, performance overhead, and numerical stability across diverse architectures, demonstrating how deterministic timing can bridge the gap between high-performance computing and real-time constraints.",
+        "Experiments": [
+            "Modify OpenBLAS to run in a real-time thread with fixed-priority scheduling (e.g., CFS, RR)",
+            "Disable non-deterministic hardware features (DVFS, cache prefetching, interrupts) during BLAS execution",
+            "Measure worst-case execution time (WCET) and jitter for matrix multiplication across 3 CPU architectures (Intel, AMD, ARM)",
+            "Compare deterministic vs. standard OpenBLAS configurations using timing histograms and statistical metrics (standard deviation, maximum deviation)",
+            "Evaluate numerical stability by measuring relative error across 10 runs per configuration",
+            "Test real-time feasibility by simulating time-critical workloads with strict timing deadlines"
+        ],
+        "Risk Factors and Limitations": [
+            "Deterministic timing may reduce overall throughput and energy efficiency",
+            "Hardware-specific real-time scheduling policies could limit cross-architecture generality",
+            "Disabling cache prefetching may impact performance on modern architectures",
+            "Strict timing constraints may require specialized hardware support (e.g., reserved cores)"
+        ]
+    },
+    {
+        "Name": "containerized_openblas_portability",
+        "Title": "Containerized OpenBLAS Portability: Evaluating Performance and Overhead in HPC Cloud Environments",
+        "Short Hypothesis": "Containerization introduces performance overhead and architectural portability challenges for OpenBLAS in HPC cloud environments, requiring tailored optimizations to maintain efficiency across diverse hardware.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for specific hardware aspects. This proposal uniquely examines containerization's impact on OpenBLAS performance, addressing gaps highlighted by recent studies on containerized HPC workloads (e.g., Medeiros et al. 2024) and architecture comparisons (Kumar et al. 2024). Unlike prior studies that isolate performance or portability, this work investigates how containerization and architecture diversity interact to affect OpenBLAS behavior.",
+        "Abstract": "OpenBLAS is widely used in HPC, but its performance in containerized cloud environments remains underexplored. This work evaluates how containerization impacts OpenBLAS efficiency across diverse architectures (x86_64, Aarch64) and workload types, addressing gaps in understanding portability and overhead. By benchmarking OpenBLAS in containerized environments with varying isolation levels (rooted vs. rootless), we quantify performance degradation, memory footprint changes, and architectural compatibility. Our findings reveal how containerization introduces latency, resource contention, and architecture-specific inefficiencies, providing actionable insights for optimizing OpenBLAS in HPC clouds. This research bridges critical gaps in understanding containerized numerical kernel behavior, enabling more efficient and portable HPC workflows.",
+        "Experiments": [
+            "Benchmark OpenBLAS performance (GFLOPS, latency) in containerized vs. bare-metal environments across x86_64 and Aarch64 architectures",
+            "Measure memory footprint and CPU utilization for different container isolation modes (rooted, rootless, seccomp)",
+            "Evaluate architecture-specific performance trade-offs (e.g., Aarch64 vs. x86_64) under containerized workloads",
+            "Profile OpenBLAS kernel execution times and cache behavior in containerized environments",
+            "Compare reproducibility and stability across 10 runs per configuration using fixed seed matrices",
+            "Analyze the impact of containerization on NUMA domain utilization and memory bandwidth"
+        ],
+        "Risk Factors and Limitations": [
+            "Containerization overhead may mask hardware-specific optimizations",
+            "Limited support for Aarch64 in existing HPC benchmarks",
+            "Variability in container runtime implementations across cloud providers",
+            "Resource contention may introduce confounding variables in performance analysis"
+        ]
+    },
+    {
+        "Name": "heterogeneous_memory_aware_openblas",
+        "Title": "Heterogeneous Memory-Aware Optimization for OpenBLAS: Leveraging NVM and DRAM for Performance-Portable BLAS Workloads",
+        "Short Hypothesis": "Dynamic data placement strategies that exploit heterogeneous memory hierarchies (NVM + DRAM) can reduce data movement overhead and improve performance for OpenBLAS workloads while maintaining portability across architectures.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for specific hardware aspects (e.g., DVFS, hybrid cores). This proposal uniquely combines memory-aware data placement with BLAS kernel selection, addressing gaps in how OpenBLAS interacts with heterogeneous memory systems. Unlike prior studies on data tiering for HPC applications, this work targets low-level BLAS operations and integrates memory-aware scheduling with existing numerical kernels.",
+        "Abstract": "Modern HPC systems increasingly adopt heterogeneous memory architectures combining fast DRAM with higher-capacity NVM. OpenBLAS, a widely used BLAS library, lacks native support for dynamic data placement across these memory tiers, leading to suboptimal performance and variability. This work proposes a heterogeneous memory-aware optimization framework that dynamically allocates BLAS data (e.g., matrices, scratchpad) to DRAM or NVM based on access patterns, bandwidth, and latency characteristics. By integrating lightweight memory-aware scheduling with existing BLAS kernels, we aim to reduce data movement overhead while maintaining numerical correctness. Our approach involves profiling BLAS workloads to identify optimal memory tier assignments, modifying OpenBLAS to prioritize memory-tier-aware algorithms (e.g., cache-blocking, data locality), and validating results across diverse HPC architectures. This work addresses critical gaps in open-source numerical kernels' ability to adapt to rapidly evolving heterogeneous memory hierarchies while maintaining portability.",
+        "Experiments": [
+            "Profile OpenBLAS workloads to identify memory access patterns and bandwidth requirements for different BLAS operations",
+            "Modify OpenBLAS to implement memory-tier-aware data placement (DRAM/NVM) based on access frequency and latency",
+            "Compare static vs. heterogeneous memory-aware configurations across 3 architectures (Intel, AMD, ARM) with varying NVM/DRAM ratios",
+            "Evaluate performance using GFLOPS, memory bandwidth utilization, and energy efficiency metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration"
+        ],
+        "Risk Factors and Limitations": [
+            "Memory-tier-aware modifications may reduce portability across architectures",
+            "Hardware-specific memory management interfaces could limit cross-architecture generality",
+            "Compiler optimizations might override manual memory-tier assignments",
+            "Profiling overhead could impact real-time performance in latency-sensitive workloads"
+        ]
+    },
+    {
+        "Name": "application_code_restructuring_for_openblas",
+        "Title": "Application Code Restructuring for OpenBLAS: Enhancing Performance via BLAS-Optimized Data Layouts",
+        "Short Hypothesis": "Restructuring application code to align with BLAS-optimized data layouts and operations can significantly improve OpenBLAS performance without modifying the library itself, addressing gaps in workload-specific optimization.",
+        "Related Work": "Existing work focuses on modifying OpenBLAS for hardware and workload adaptability. This proposal uniquely explores application-level transformations to better leverage BLAS optimizations, differing from prior studies that isolate library modifications or static code analysis. Unlike data placement or kernel selection approaches, this work targets algorithmic restructuring to align with BLAS internals.",
+        "Abstract": "OpenBLAS performance in HPC systems is often constrained by static configurations and hardware variability, but application-level optimizations remain underexplored. This work proposes a novel approach to enhance OpenBLAS performance by restructuring application code to align with BLAS-optimized data layouts and operations. By analyzing application code for BLAS-compatible patterns (e.g., matrix multiplications, triangular solves) and applying transformations (e.g., data layout alignment, algorithmic reordering), we aim to improve cache utilization and reduce overhead without modifying the BLAS library. Our framework automatically identifies and applies these transformations, enabling applications to better exploit OpenBLAS optimizations. Experiments will evaluate performance gains across diverse HPC workloads, demonstrating how application restructuring can bridge the gap between library capabilities and workload-specific demands.",
+        "Experiments": [
+            "Develop a static analysis tool to identify BLAS-compatible patterns in application code (e.g., matrix operations, data layouts)",
+            "Implement code transformations to align data layouts with BLAS internals (e.g., row-major to column-major conversion, memory blocking)",
+            "Benchmark performance improvements using HPC benchmarks (HPL, HPCG) and real-world applications (e.g., finite element analysis, molecular dynamics)",
+            "Compare static vs. restructured code configurations using GFLOPS, memory bandwidth utilization, and latency metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration"
+        ],
+        "Risk Factors and Limitations": [
+            "Code restructuring may introduce compatibility issues with existing application logic",
+            "Static analysis tools may have limited accuracy in identifying BLAS-compatible patterns",
+            "Transformation overhead could offset performance gains in small-scale workloads",
+            "Limited support for legacy codebases with non-standard data layouts"
+        ]
+    },
+    {
+        "Name": "threading_model_interoperability_openblas",
+        "Title": "Threading Model Interoperability and Performance Optimization for OpenBLAS in HPC Applications",
+        "Short Hypothesis": "The interaction between OpenBLAS's internal threading and application-level threading models (e.g., OpenMP, pthreads) introduces performance bottlenecks that can be mitigated through coordinated scheduling and resource allocation strategies.",
+        "Related Work": "Existing work focuses on static optimizations for OpenBLAS and dynamic tuning for hardware-specific aspects. This proposal uniquely addresses the often-overlooked interaction between OpenBLAS's internal threading and application-level threading models, a gap highlighted by recent studies on multi-threaded HPC applications. Unlike prior work on hybrid core scheduling or containerization, this work targets low-level thread contention and resource allocation between library and application threads.",
+        "Abstract": "OpenBLAS is widely used in HPC applications, but its performance is often constrained by suboptimal interaction with application-level threading models like OpenMP or pthreads. This work investigates how the coordination (or lack thereof) between OpenBLAS's internal thread management and application-level threading affects performance, latency, and resource utilization. By analyzing contention between library and application threads, we propose strategies to synchronize or decouple these models to enhance efficiency. Our approach involves modifying OpenBLAS to expose thread scheduling policies, integrating with application-level threading frameworks, and validating results across diverse HPC workloads. This research addresses critical gaps in understanding how threading model interoperability shapes numerical kernel performance, offering actionable insights for optimizing hybrid-threaded HPC applications.",
+        "Experiments": [
+            "Benchmark OpenBLAS performance with and without application-level threading (e.g., OpenMP, pthreads) on multi-core systems",
+            "Modify OpenBLAS to expose thread scheduling policies (e.g., thread count, affinity settings) for application-level coordination",
+            "Implement synchronization mechanisms between OpenBL,AS threads and application threads (e.g., thread pools, work stealing)",
+            "Evaluate performance using GFLOPS, memory bandwidth utilization, and thread contention metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration with fixed seed matrices",
+            "Analyze resource utilization (CPU, memory) using system monitoring tools (e.g., perf, HTOP)"
+        ],
+        "Risk Factors and Limitations": [
+            "Thread synchronization may introduce overhead or reduce parallelism in some workloads",
+            "Application-specific threading models may require custom integration with OpenBLAS",
+            "Performance gains may vary across different application architectures and workloads",
+            "Limited support for legacy applications with non-standard threading models"
+        ]
+    },
+    {
+        "Name": "thermal_aware_openblas_tuning",
+        "Title": "Thermal-Aware OpenBLAS Tuning: Mitigating Performance Degradation via Dynamic Thermal Feedback",
+        "Short Hypothesis": "Integrating real-time thermal feedback into OpenBLAS tuning can reduce performance degradation caused by thermal throttling, enabling stable BLAS performance under varying thermal conditions.",
+        "Related Work": "Existing work focuses on static optimizations, DVFS-aware tuning, and hardware-specific adaptations for OpenBLAS. This proposal uniquely combines thermal feedback with dynamic parameter adjustment, addressing a gap in literature where thermal management's impact on numerical kernel performance remains unexplored. Unlike prior work on power capping or cooling solutions, this approach targets low-level BLAS tuning to prevent thermal throttling without requiring hardware changes.",
+        "Abstract": "OpenBLAS performance in HPC systems is often constrained by thermal throttling, which reduces clock frequencies and limits computational throughput. This work proposes a thermal-aware tuning framework that dynamically adjusts OpenBLAS parameters (e.g., thread count, kernel selection) based on real-time thermal sensor data to mitigate performance degradation. By integrating hardware thermal feedback loops with library configurations, we aim to maintain stable BLAS performance under varying thermal loads. Our approach involves profiling thermal behavior across workloads, modifying OpenBLAS to prioritize thermally stable configurations, and validating results across diverse HPC architectures. This work addresses critical gaps in understanding how thermal management influences numerical kernel performance, offering a novel framework for energy-efficient and stable HPC workflows.",
+        "Experiments": [
+            "Implement a thermal monitoring module to track CPU temperature and thermal throttling events during BLAS workloads",
+            "Modify OpenBLAS to adjust thread count and kernel selection based on real-time thermal feedback (e.g., reducing thread count when temperatures exceed thresholds)",
+            "Compare static vs. thermal-aware configurations across 3 CPU architectures (Intel Xeon, AMD EPYC, ARM Neoverse) with varying thermal profiles",
+            "Evaluate performance using GFLOPS, execution time, and thermal throttling frequency metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration under controlled thermal conditions"
+        ],
+        "Risk Factors and Limitations": [
+            "Thermal feedback integration may introduce latency or overhead in tuning decisions",
+            "Hardware-specific thermal sensor APIs could limit cross-architecture generality",
+            "Compiler optimizations might override manual thermal-aware parameter adjustments",
+            "Thermal throttling mitigation could inadvertently increase energy consumption in some scenarios"
+        ]
+    },
+    {
+        "Name": "memory_interleaving_optimization_openblas",
+        "Title": "Memory Interleaving Optimization for OpenBLAS: Enhancing Performance in HPC Systems with CXL and NUMA Architectures",
+        "Short Hypothesis": "Optimizing memory interleaving strategies in OpenBLAS can reduce data movement overhead and improve performance by aligning BLAS memory access patterns with hardware-specific interleaving policies in CXL and NUMA architectures.",
+        "Related Work": "Existing work focuses on static optimizations, dynamic tuning, and memory hierarchy-aware approaches for OpenBLAS. This proposal uniquely addresses memory interleaving strategies (e.g., NUMA domain partitioning, CXL memory tiering) and their impact on BLAS performance, which has not been systematically explored in HPC contexts. Unlike prior studies on data placement or hybrid memory systems, this work targets low-level BLAS kernel execution and integrates interleaving-aware scheduling with existing numerical kernels.",
+        "Abstract": "Modern HPC systems increasingly adopt advanced memory architectures like CXL (Compute Express Link) and NUMA (Non-Uniform Memory Access) to balance speed and capacity. However, OpenBLAS, a widely used BLAS library, lacks native support for dynamic memory interleaving strategies that could reduce data movement overhead and improve performance. This work proposes a memory interleaving optimization framework for OpenBLAS that dynamically adjusts memory access patterns based on hardware-specific interleaving policies (e.g., CXL memory tiering, NUMA domain partitioning) to align with BLAS kernel requirements. By integrating lightweight memory-aware scheduling with existing BLAS operations, we aim to reduce latency and improve GFLOPS while maintaining numerical correctness. Our approach involves profiling BLAS workloads to identify optimal interleaving configurations, modifying OpenBLAS to prioritize interleaving-aware algorithms (e.g., cache-blocking, data locality), and validating results across diverse HPC architectures. This research addresses critical gaps in open-source numerical kernels' ability to adapt to rapidly evolving memory hierarchies while maintaining portability.",
+        "Experiments": [
+            "Profile OpenBLAS memory access patterns to identify bottlenecks in NUMA/CXL interleaving utilization",
+            "Modify OpenBLAS to implement interleaving-aware data placement (e.g., NUMA domain partitioning, CXL tiering) based on access frequency and latency",
+            "Compare static vs. interleaving-aware configurations across 3 architectures (Intel Xeon, AMD EPYC, CXL-enabled systems) with varying memory hierarchies",
+            "Evaluate performance using GFLOPS, memory bandwidth utilization, and latency metrics",
+            "Test reproducibility by measuring performance consistency across 10 runs per configuration using fixed seed matrices"
+        ],
+        "Risk Factors and Limitations": [
+            "Interleaving-aware modifications may reduce portability across architectures",
+            "Hardware-specific memory management interfaces could limit cross-architecture generality",
+            "Compiler optimizations might override manual interleaving adjustments",
+            "Profiling overhead could impact real-time performance in latency-sensitive workloads"
+        ]
+    },
+    {
+        "Name": "memory_compression_impact_openblas",
+        "Title": "Memory Compression Impact on OpenBLAS Performance: Evaluating OS-Level Trade-offs in HPC Workloads",
+        "Short Hypothesis": "OS-level memory compression introduces overhead that degrades OpenBLAS performance, and optimizing compression settings can mitigate this trade-off while balancing memory efficiency and computational throughput.",
+        "Related Work": "Existing work focuses on static optimizations, dynamic tuning, and hardware-specific adaptations for OpenBLAS. This proposal uniquely examines how OS-level memory compression (e.g., ZRAM, Zswap) affects BLAS performance, a gap highlighted by recent studies on memory management in HPC systems. Unlike prior work on data placement or thermal management, this research isolates the impact of memory compression policies on numerical kernel behavior, offering novel insights into system-level performance bottlenecks.",
+        "Abstract": "OpenBLAS, a widely used BLAS library in HPC, faces performance variability due to hardware dynamics and system-level interactions. This work investigates how OS-level memory compression mechanisms (e.g., ZRAM, Zswap) impact BLAS performance by introducing overhead that degrades computational throughput. We hypothesize that memory compression introduces latency for decompression and alters memory access patterns, leading to reduced cache efficiency and increased CPU utilization. By systematically evaluating compression settings across HPC workloads, we aim to identify optimal trade-offs between memory efficiency and computational performance. Our approach involves benchmarking OpenBLAS under varying compression configurations, quantifying performance degradation, and proposing adaptive strategies to mitigate compression-induced overhead. This research addresses critical gaps in understanding how OS-level memory management policies shape numerical kernel performance, offering actionable insights for optimizing HPC workflows in memory-constrained environments.",
+        "Experiments": [
+            "Benchmark OpenBLAS performance (GFLOPS, latency) under different memory compression settings (e.g., ZRAM enabled/disabled, compression ratios)",
+            "Profile memory access patterns and decompression overhead during BLAS operations using system monitoring tools (e.g., perf, vmstat)",
+            "Quantify the correlation between compression-induced latency and performance degradation across 5 HPC workloads (matrix multiplication, eigenvalue decomposition, FFT, molecular dynamics, linear solvers)",
+            "Compare static vs. adaptive compression-aware configurations using workload metadata (memory footprint, compute intensity)",
+            "Evaluate memory efficiency gains and performance trade-offs across 10+ OS distributions (Linux, BSD, etc.) with varying compression policies"
+        ],
+        "Risk Factors and Limitations": [
+            "Isolating compression effects may require controlled environments with minimal background processes",
+            "Compression policies vary widely across OS distributions, limiting cross-platform generalizability",
+            "Decompression overhead may be negligible for small matrices but significant for large-scale HPC workloads",
+            "Adaptive strategies could introduce runtime overhead for dynamic compression setting adjustments"
+        ]
     }
 ]

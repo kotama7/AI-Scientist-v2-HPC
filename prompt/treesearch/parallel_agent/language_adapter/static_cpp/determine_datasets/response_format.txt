@@ -6,9 +6,6 @@ Your response should start with 'REASONING: <reasoning>' to think about the plot
 #include <vector>
 #include <string>
 #include <cmath>
-#include <matplotlibcpp.h> // Assuming matplotlibcpp is available for plotting
-
-namespace plt = matplotlibcpp;
 
 std::vector<double> load_data(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary);
@@ -27,9 +24,13 @@ void save_data(const std::string& filename, const std::vector<double>& data) {
     }
 }
 
-void plot_data(const std::vector<double>& data) {
-    plt::plot(data);
-    plt::show();
+void log_summary(const std::vector<double>& data) {
+    double sum = 0.0;
+    for (double value : data) {
+        sum += value;
+    }
+    double mean = data.empty() ? 0.0 : sum / data.size();
+    std::cout << "Data points: " << data.size() << ", Mean: " << mean << std::endl;
 }
 
 int main() {
@@ -39,10 +40,10 @@ int main() {
     // Perform computations as per the original experiment pipeline
 
     save_data(filename, data);
-    plot_data(data);
+    log_summary(data);
 
     return 0;
 }
 ```
 
-Make sure to have the `matplotlibcpp` library set up correctly for plotting. The file `experiment_data.npy` must be saved exactly as the baseline describes.
+The file `experiment_data.npy` must be saved exactly as the baseline describes.

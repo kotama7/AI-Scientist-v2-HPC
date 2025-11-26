@@ -32,24 +32,31 @@ conda info
 conda list
 echo ""
 echo "===== COMPILER FLAG =====
--O2
--std=c++20
--I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include
--I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/python3.11
--I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/eigen3
--L/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib
--lpython3.11
--lcnpy
--lcudart
--lblas
--lfmt
--fopenmp
--larmadillo
--lmkl_intel_lp64
--lmkl_core
--lmkl_sequential
--lpthread
--lm
--ldl
--Wl,-rpath,~/miniconda3/envs/ai_scientist/lib/python3.11/site-packages/torch/lib"
+-ccbin,
+/usr/bin/g++,
+-O2,
+-std=c++20,
+--cudart,
+shared,
+-Xcompiler, 
+-fopenmp,
+-I$CONDA_PREFIX/include,
+-I$CONDA_PREFIX/include/python3.11,
+-I$CONDA_PREFIX/include/eigen3,
+-L/usr/lib64,
+-L/lib64,
+-L$CONDA_PREFIX/lib,
+-lcnpy,
+-lfmt,
+-lopenblas,
+-lcublas,
+-lpython3.11,
+-lpthread,
+-lm,
+-ldl,
+-lstdc++fs,
+-Xlinker,
+'-rpath,$CONDA_PREFIX/lib',
+-Xlinker,
+'-rpath,$CONDA_PREFIX/lib/python3.11/site-packages/torch/lib'"
 echo ""

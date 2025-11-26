@@ -83,6 +83,7 @@ class ExecConfig:
     language: str = "python"
     env_packages_template: str | None = None
     cpp_compile_flags: list[str] | None = None
+    cpp_compiler: str = "g++"
 
 
 @dataclass

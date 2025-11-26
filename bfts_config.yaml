@@ -20,34 +20,45 @@ exec:
   agent_file_name: runfile.py
   format_tb_ipython: False
   language: cpp
+  cpp_compiler: nvcc
   cpp_compile_flags: [
-    "-O2",
-    "-std=c++20",
-    "-I$CONDA_PREFIX/include",
-    "-I$CONDA_PREFIX/include/python3.11",
-    "-I$CONDA_PREFIX/include/eigen3",
-    "-L$CONDA_PREFIX/lib",
-    "-lpython3.11",
-    "-lcnpy",
-    "-lcudart",
-    "-lblas",
-    "-lfmt",
-    "-fopenmp",
-    "-larmadillo",
-    "-lmkl_intel_lp64", "-lmkl_core", "-lmkl_sequential",
-    "-lpthread", "-lm", "-ldl",
-    "-lopenblas",
-    "-Wl,-rpath,$CONDA_PREFIX/lib/python3.11/site-packages/torch/lib"
+    -ccbin,
+    /usr/bin/g++,
+    -O2,
+    -std=c++20,
+    --cudart,
+    shared,
+    -Xcompiler, 
+    -fopenmp,
+    -I"$CONDA_PREFIX/include",
+    -I"$CONDA_PREFIX/include/python3.11",
+    -I"$CONDA_PREFIX/include/eigen3",
+    -L/usr/lib64,
+    -L/lib64,
+    -L"$CONDA_PREFIX/lib",
+    -lcnpy,
+    -lfmt,
+    -lopenblas,
+    -lcublas,
+    -lpython3.11,
+    -lpthread,
+    -lm,
+    -ldl,
+    -lstdc++fs,
+    -Xlinker,
+    '-rpath,"$CONDA_PREFIX/lib"',
+    -Xlinker,
+    '-rpath,"$CONDA_PREFIX/lib/python3.11/site-packages/torch/lib"'
   ]
 
 generate_report: True
 # LLM settings for final report from journal
 report:
-  model: gpt-4o
+  model: ollama/gpt-oss:120b
   temp: 1.0
 
 prompt_adapter:
-  model: gpt-4o
+  model: ollama/gpt-oss:120b
   temp: 0.2
   max_tokens: 4096
 
@@ -82,19 +93,19 @@ agent:
 
   # LLM settings for coding
   code:
-    model: gpt-4o
+    model: ollama/qwen2.5vl:32b
     temp: 1.0
     max_tokens: null
 
   # LLM settings for evaluating program output / tracebacks
   feedback:
-    model: gpt-4o
+    model: ollama/qwen3:32b
     # gpt-4o
     temp: 0.5
     max_tokens: null
 
   vlm_feedback:
-    model: gpt-4o
+    model: ollama/z-uo/qwen2.5vl_tools:32b
     temp: 0.5
     max_tokens: null
 
@@ -107,9 +118,9 @@ agent:
   # If not specified, the default behavior will be used.
 
   summary:
-    model: gpt-4o
+    model: ollama/qwen3:8b
     temp: 0.3
 
   select_node:
-    model: gpt-4o
+    model: ollama/qwen3:8b
     temp: 0.3

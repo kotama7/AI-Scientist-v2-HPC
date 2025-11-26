@@ -6,9 +6,6 @@ Provide a concise outline of your proposed solution in natural language (3-5 sen
 #include <vector>
 #include <string>
 #include <cmath>
-#include <matplotlibcpp.h>
-
-namespace plt = matplotlibcpp;
 
 void saveExperimentData(const std::vector<double>& data, const std::string& filename) {
     std::ofstream file(filename, std::ios::binary);
@@ -36,16 +33,20 @@ std::vector<double> loadExperimentData(const std::string& filename) {
     return data;
 }
 
-void plotData(const std::vector<double>& data) {
-    plt::plot(data);
-    plt::show();
+void printSummary(const std::vector<double>& data) {
+    double sum = 0.0;
+    for (double value : data) {
+        sum += value;
+    }
+    double mean = data.empty() ? 0.0 : sum / data.size();
+    std::cout << "Loaded " << data.size() << " values, mean=" << mean << std::endl;
 }
 
 int main() {
     std::vector<double> experimentData = {1.0, 2.0, 3.0, 4.0, 5.0}; // Placeholder for actual experiment data
     saveExperimentData(experimentData, "experiment_data.npy");
     std::vector<double> loadedData = loadExperimentData("experiment_data.npy");
-    plotData(loadedData);
+    printSummary(loadedData);
     return 0;
 }
 ```

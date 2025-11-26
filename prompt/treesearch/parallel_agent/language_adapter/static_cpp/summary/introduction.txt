@@ -5,9 +5,6 @@ You are an AI researcher analyzing experimental results. Please summarize the fi
 #include <fstream>
 #include <vector>
 #include <cmath>
-#include <matplotlibcpp.h>
-
-namespace plt = matplotlibcpp;
 
 std::vector<double> load_experiment_data(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary);
@@ -51,10 +48,6 @@ int main() {
 
     std::cout << "Mean: " << mean << std::endl;
     std::cout << "Standard Deviation: " << std_dev << std::endl;
-
-    plt::hist(data, 50);
-    plt::title("Experiment Data Distribution");
-    plt::show();
 
     save_experiment_data(filename, data);
 

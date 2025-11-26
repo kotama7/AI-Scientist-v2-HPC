@@ -6,9 +6,6 @@ You are an experienced AI researcher. Your previous code for research experiment
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include <matplotlibcpp.h>
-
-namespace plt = matplotlibcpp;
 namespace fs = std::filesystem;
 
 fs::path resolve_working_dir() {
@@ -34,10 +31,13 @@ std::vector<double> loadExperimentData(const fs::path& working_dir) {
     return std::vector<double>(loaded, loaded + arr.num_bytes() / sizeof(double));
 }
 
-void plotData(const fs::path& working_dir, const std::vector<double>& data) {
-    plt::plot(data);
-    plt::save((working_dir / "experiment_plot.png").string());
-    plt::close();
+void logSummary(const std::vector<double>& data) {
+    double sum = 0.0;
+    for (double value : data) {
+        sum += value;
+    }
+    double mean = data.empty() ? 0.0 : sum / data.size();
+    std::cout << "Data points: " << data.size() << ", Mean: " << mean << std::endl;
 }
 
 int main() {
@@ -52,8 +52,7 @@ int main() {
     // Load the experiment data
     std::vector<double> loadedData = loadExperimentData(working_dir);
 
-    // Plot the data using matplotlib
-    plotData(working_dir, loadedData);
+    logSummary(loadedData);
 
     return 0;
 }

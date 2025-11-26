@@ -91,6 +91,7 @@ class Interpreter:
         env_vars: dict[str, str] = {},
         language: str = "python",
         cpp_compile_flags: Optional[Sequence[str]] = None,
+        cpp_compiler: str | None = None,
     ):
         """
         Simulates a standalone Python REPL with an execution time limit.
@@ -114,6 +115,7 @@ class Interpreter:
         self.env_vars = env_vars
         self.language = language.lower()
         self.cpp_compile_flags = list(cpp_compile_flags) if cpp_compile_flags else None
+        self.cpp_compiler = cpp_compiler or "g++"
 
     def child_proc_setup(self, result_outq: Queue) -> None:
         # disable all warnings (before importing anything)
@@ -182,13 +184,27 @@ class Interpreter:
         binary_path = source_path.with_suffix("")
 
         default_flags = self.cpp_compile_flags or ["-std=c++17", "-O2"]
-        compile_cmd = [
-            "g++",
-            str(source_path),
-            "-o",
-            str(binary_path),
-            *default_flags
-        ]
+        expanded_flags = [os.path.expandvars(flag) for flag in default_flags]
+
+        compiler = self.cpp_compiler or "g++"
+        if compiler == "nvcc":
+            compile_cmd = [
+                compiler,
+                "-x",
+                "cu",
+                str(source_path),
+                "-o",
+                str(binary_path),
+                *expanded_flags,
+            ]
+        else:
+            compile_cmd = [
+                compiler,
+                str(source_path),
+                "-o",
+                str(binary_path),
+                *expanded_flags,
+            ]
 
         try:
             compile_proc = subprocess.run(
@@ -199,7 +215,7 @@ class Interpreter:
                 text=True,
             )
         except FileNotFoundError as exc:
-            result_outq.put("g++ compiler not found. Please install a C++ toolchain.")
+            result_outq.put(f"{compiler} compiler not found. Please install the required C++ toolchain.")
             return ("CompilationError", {"message": str(exc)}, [])
 
         if compile_proc.stdout:

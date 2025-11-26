@@ -6,9 +6,6 @@ You are an AI researcher conducting ablation studies. Based on the current imple
 #include <vector>
 #include <string>
 #include <cmath>
-#include <matplotlibcpp.h>
-
-namespace plt = matplotlibcpp;
 
 void loadData(const std::string& filename, std::vector<double>& data) {
     std::ifstream file(filename, std::ios::binary);
@@ -35,9 +32,13 @@ void saveData(const std::string& filename, const std::vector<double>& data) {
     file.close();
 }
 
-void plotData(const std::vector<double>& data) {
-    plt::plot(data);
-    plt::show();
+void printSummary(const std::vector<double>& data) {
+    double sum = 0.0;
+    for (double value : data) {
+        sum += value;
+    }
+    double mean = data.empty() ? 0.0 : sum / data.size();
+    std::cout << "Data points: " << data.size() << ", Mean: " << mean << std::endl;
 }
 
 int main() {
@@ -47,10 +48,10 @@ int main() {
     // Perform computations and ablation study here
 
     saveData("experiment_data.npy", experiment_data);
-    plotData(experiment_data);
+    printSummary(experiment_data);
 
     return 0;
 }
 ```
 
-Make sure to use matplotlib for plotting and ensure that experiment_data.npy is saved exactly as the baseline describes.
+Ensure that experiment_data.npy is saved exactly as the baseline describes.

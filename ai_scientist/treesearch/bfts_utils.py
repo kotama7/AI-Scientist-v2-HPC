@@ -55,6 +55,7 @@ def edit_bfts_config_file(
     agent_file_name: str | None = None,
     env_packages_template: str | None = None,
     cpp_compile_flags: Sequence[str] | None = None,
+    cpp_compiler: str | None = None,
 ) -> str:
     """
     Edit the bfts_config.yaml file to point to the idea.md file
@@ -93,6 +94,8 @@ def edit_bfts_config_file(
         exec_cfg["env_packages_template"] = env_packages_template
     if cpp_compile_flags is not None:
         exec_cfg["cpp_compile_flags"] = list(cpp_compile_flags)
+    if cpp_compiler is not None:
+        exec_cfg["cpp_compiler"] = cpp_compiler
 
     with open(run_config_path, "w") as f:
         yaml.dump(config, f)

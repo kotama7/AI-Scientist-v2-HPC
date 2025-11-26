@@ -1,0 +1,743 @@
+===== CPU =====
+Architecture:                         x86_64
+CPU op-mode(s):                       32-bit, 64-bit
+Address sizes:                        48 bits physical, 48 bits virtual
+Byte Order:                           Little Endian
+CPU(s):                               256
+On-line CPU(s) list:                  0-255
+Vendor ID:                            AuthenticAMD
+Model name:                           AMD EPYC 7713 64-Core Processor
+CPU family:                           25
+Model:                                1
+Thread(s) per core:                   2
+Core(s) per socket:                   64
+Socket(s):                            2
+Stepping:                             1
+Frequency boost:                      enabled
+CPU(s) scaling MHz:                   61%
+CPU max MHz:                          3720.7029
+CPU min MHz:                          1500.0000
+BogoMIPS:                             3999.63
+Flags:                                fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpb cat_l3 cdp_l3 hw_pstate ssbd mba ibrs ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local clzero irperf xsaveerptr rdpru wbnoinvd amd_ppin brs arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold v_vmsave_vmload vgif v_spec_ctrl umip pku ospke vaes vpclmulqdq rdpid overflow_recov succor smca fsrm debug_swap
+Virtualization:                       AMD-V
+L1d cache:                            4 MiB (128 instances)
+L1i cache:                            4 MiB (128 instances)
+L2 cache:                             64 MiB (128 instances)
+L3 cache:                             512 MiB (16 instances)
+NUMA node(s):                         2
+NUMA node0 CPU(s):                    0-63,128-191
+NUMA node1 CPU(s):                    64-127,192-255
+Vulnerability Gather data sampling:   Not affected
+Vulnerability Itlb multihit:          Not affected
+Vulnerability L1tf:                   Not affected
+Vulnerability Mds:                    Not affected
+Vulnerability Meltdown:               Not affected
+Vulnerability Mmio stale data:        Not affected
+Vulnerability Reg file data sampling: Not affected
+Vulnerability Retbleed:               Not affected
+Vulnerability Spec rstack overflow:   Mitigation; Safe RET
+Vulnerability Spec store bypass:      Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:             Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:             Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                  Not affected
+Vulnerability Tsx async abort:        Not affected
+
+===== CACHE =====
+NAME ONE-SIZE ALL-SIZE WAYS TYPE        LEVEL  SETS PHY-LINE COHERENCY-SIZE
+L1d       32K       4M    8 Data            1    64        1             64
+L1i       32K       4M    8 Instruction     1    64        1             64
+L2       512K      64M    8 Unified         2  1024        1             64
+L3        32M     512M   16 Unified         3 32768        1             64
+
+===== MEMORY =====
+               total        used        free      shared  buff/cache   available
+Mem:           3.9Ti        87Gi       3.7Ti        79Mi       124Gi       3.8Ti
+Swap:          4.0Gi       1.5Gi       2.5Gi
+available: 2 nodes (0-1)
+node 0 cpus: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 128 129 130 131 132 133 134 135 136 137 138 139 140 141 142 143 144 145 146 147 148 149 150 151 152 153 154 155 156 157 158 159 160 161 162 163 164 165 166 167 168 169 170 171 172 173 174 175 176 177 178 179 180 181 182 183 184 185 186 187 188 189 190 191
+node 0 size: 2051486 MB
+node 0 free: 1949159 MB
+node 1 cpus: 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 192 193 194 195 196 197 198 199 200 201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 240 241 242 243 244 245 246 247 248 249 250 251 252 253 254 255
+node 1 size: 2064332 MB
+node 1 free: 1969112 MB
+node distances:
+node   0   1 
+  0:  10  32 
+  1:  32  10 
+
+===== OS =====
+Linux qc-a100-00.cloud.r-ccs.riken.jp 5.14.0-570.26.1.el9_6.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Jul 16 21:00:44 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+NAME="Rocky Linux"
+VERSION="9.6 (Blue Onyx)"
+ID="rocky"
+ID_LIKE="rhel centos fedora"
+VERSION_ID="9.6"
+PLATFORM_ID="platform:el9"
+PRETTY_NAME="Rocky Linux 9.6 (Blue Onyx)"
+ANSI_COLOR="0;32"
+LOGO="fedora-logo-icon"
+CPE_NAME="cpe:/o:rocky:rocky:9::baseos"
+HOME_URL="https://rockylinux.org/"
+VENDOR_NAME="RESF"
+VENDOR_URL="https://resf.org/"
+BUG_REPORT_URL="https://bugs.rockylinux.org/"
+SUPPORT_END="2032-05-31"
+ROCKY_SUPPORT_PRODUCT="Rocky-Linux-9"
+ROCKY_SUPPORT_PRODUCT_VERSION="9.6"
+REDHAT_SUPPORT_PRODUCT="Rocky Linux"
+REDHAT_SUPPORT_PRODUCT_VERSION="9.6"
+
+===== COMPILER =====
+gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-5)
+Copyright (C) 2021 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+  -m128bit-long-double        		[enabled]
+  -m64                        		[enabled]
+  -m80387                     		[enabled]
+  -mabm                       		[enabled]
+  -madx                       		[enabled]
+  -maes                       		[enabled]
+  -malign-stringops           		[enabled]
+  -mavx                       		[enabled]
+  -mavx2                      		[enabled]
+  -mbmi                       		[enabled]
+  -mbmi2                      		[enabled]
+  -mclflushopt                		[enabled]
+  -mclwb                      		[enabled]
+  -mclzero                    		[enabled]
+  -mcrc32                     		[enabled]
+  -mcx16                      		[enabled]
+  -mf16c                      		[enabled]
+  -mfancy-math-387            		[enabled]
+  -mfma                       		[enabled]
+  -mfp-ret-in-387             		[enabled]
+  -mfsgsbase                  		[enabled]
+  -mfxsr                      		[enabled]
+  -mglibc                     		[enabled]
+  -mhard-float                		[enabled]
+  -mieee-fp                   		[enabled]
+  -mlong-double-80            		[enabled]
+  -mlzcnt                     		[enabled]
+  -mmmx                       		[enabled]
+  -mmovbe                     		[enabled]
+  -mmwait                     		[enabled]
+  -mmwaitx                    		[enabled]
+  -mpclmul                    		[enabled]
+  -mpku                       		[enabled]
+  -mpopcnt                    		[enabled]
+  -mprfchw                    		[enabled]
+  -mpush-args                 		[enabled]
+  -mrdpid                     		[enabled]
+  -mrdrnd                     		[enabled]
+  -mrdseed                    		[enabled]
+  -mred-zone                  		[enabled]
+  -msahf                      		[enabled]
+  -msha                       		[enabled]
+  -mshstk                     		[enabled]
+  -msse                       		[enabled]
+  -msse2                      		[enabled]
+  -msse3                      		[enabled]
+  -msse4                      		[enabled]
+  -msse4.1                    		[enabled]
+  -msse4.2                    		[enabled]
+  -msse4a                     		[enabled]
+  -mssse3                     		[enabled]
+  -mstv                       		[enabled]
+  -mtls-direct-seg-refs       		[enabled]
+  -mvaes                      		[enabled]
+  -mvpclmulqdq                		[enabled]
+  -mwbnoinvd                  		[enabled]
+  -mxsave                     		[enabled]
+  -mxsavec                    		[enabled]
+  -mxsaveopt                  		[enabled]
+  -mxsaves                    		[enabled]
+
+===== OPENBLAS =====
+Build Dependencies:
+  blas:
+    detection method: pkgconfig
+    found: true
+    include directory: /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include
+    lib directory: /home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib
+    name: openblas
+    openblas configuration: USE_64BITINT=0 DYNAMIC_ARCH=1 DYNAMIC_OLDER= NO_CBLAS=
+      NO_LAPACK=0 NO_LAPACKE= NO_AFFINITY=1 USE_OPENMP=0 PRESCOTT MAX_THREADS=128
+    pc file directory: /home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib/pkgconfig
+    version: 0.3.29
+  lapack:
+    detection method: internal
+    found: true
+    include directory: unknown
+    lib directory: unknown
+    name: dep140661036384976
+    openblas configuration: unknown
+    pc file directory: unknown
+    version: 1.26.4
+Compilers:
+  c:
+    args: -march=nocona, -mtune=haswell, -ftree-vectorize, -fPIC, -fstack-protector-strong,
+      -fno-plt, -O2, -ffunction-sections, -pipe, -isystem, /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include,
+      -fdebug-prefix-map=/croot/numpy_and_numpy_base_1755590845055/work=/usr/local/src/conda/numpy-base-1.26.4,
+      -fdebug-prefix-map=/home/users/takanori.kotama/miniconda3/envs/ai_scientist=/usr/local/src/conda-prefix,
+      -DNDEBUG, -D_FORTIFY_SOURCE=2, -O2, -isystem, /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include
+    commands: /croot/numpy_and_numpy_base_1755590845055/_build_env/bin/x86_64-conda-linux-gnu-cc
+    linker: ld.bfd
+    linker args: -Wl,-O2, -Wl,--sort-common, -Wl,--as-needed, -Wl,-z,relro, -Wl,-z,now,
+      -Wl,--disable-new-dtags, -Wl,--gc-sections, -Wl,-rpath,/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib,
+      -Wl,-rpath-link,/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib,
+      -L/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib, -march=nocona,
+      -mtune=haswell, -ftree-vectorize, -fPIC, -fstack-protector-strong, -fno-plt,
+      -O2, -ffunction-sections, -pipe, -isystem, /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include,
+      -fdebug-prefix-map=/croot/numpy_and_numpy_base_1755590845055/work=/usr/local/src/conda/numpy-base-1.26.4,
+      -fdebug-prefix-map=/home/users/takanori.kotama/miniconda3/envs/ai_scientist=/usr/local/src/conda-prefix,
+      -DNDEBUG, -D_FORTIFY_SOURCE=2, -O2, -isystem, /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include
+    name: gcc
+    version: 11.2.0
+  c++:
+    args: -fvisibility-inlines-hidden, -std=c++17, -fmessage-length=0, -march=nocona,
+      -mtune=haswell, -ftree-vectorize, -fPIC, -fstack-protector-strong, -fno-plt,
+      -O2, -ffunction-sections, -pipe, -isystem, /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include,
+      -fdebug-prefix-map=/croot/numpy_and_numpy_base_1755590845055/work=/usr/local/src/conda/numpy-base-1.26.4,
+      -fdebug-prefix-map=/home/users/takanori.kotama/miniconda3/envs/ai_scientist=/usr/local/src/conda-prefix,
+      -DNDEBUG, -D_FORTIFY_SOURCE=2, -O2, -isystem, /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include
+    commands: /croot/numpy_and_numpy_base_1755590845055/_build_env/bin/x86_64-conda-linux-gnu-c++
+    linker: ld.bfd
+    linker args: -Wl,-O2, -Wl,--sort-common, -Wl,--as-needed, -Wl,-z,relro, -Wl,-z,now,
+      -Wl,--disable-new-dtags, -Wl,--gc-sections, -Wl,-rpath,/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib,
+      -Wl,-rpath-link,/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib,
+      -L/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib, -fvisibility-inlines-hidden,
+      -std=c++17, -fmessage-length=0, -march=nocona, -mtune=haswell, -ftree-vectorize,
+      -fPIC, -fstack-protector-strong, -fno-plt, -O2, -ffunction-sections, -pipe,
+      -isystem, /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include,
+      -fdebug-prefix-map=/croot/numpy_and_numpy_base_1755590845055/work=/usr/local/src/conda/numpy-base-1.26.4,
+      -fdebug-prefix-map=/home/users/takanori.kotama/miniconda3/envs/ai_scientist=/usr/local/src/conda-prefix,
+      -DNDEBUG, -D_FORTIFY_SOURCE=2, -O2, -isystem, /home/users/takanori.kotama/miniconda3/envs/ai_scientist/include
+    name: gcc
+    version: 11.2.0
+  cython:
+    commands: cython
+    linker: cython
+    name: cython
+    version: 3.0.12
+Machine Information:
+  build:
+    cpu: x86_64
+    endian: little
+    family: x86_64
+    system: linux
+  host:
+    cpu: x86_64
+    endian: little
+    family: x86_64
+    system: linux
+Python Information:
+  path: /home/users/takanori.kotama/miniconda3/envs/ai_scientist/bin/python
+  version: '3.11'
+SIMD Extensions:
+  baseline:
+  - SSE
+  - SSE2
+  - SSE3
+  found:
+  - SSSE3
+  - SSE41
+  - POPCNT
+  - SSE42
+  - AVX
+  - F16C
+  - FMA3
+  - AVX2
+  not found:
+  - AVX512F
+  - AVX512CD
+  - AVX512_KNL
+  - AVX512_KNM
+  - AVX512_SKX
+  - AVX512_CLX
+  - AVX512_CNL
+  - AVX512_ICL
+
+
+===== THREAD SETTINGS =====
+OMP_NUM_THREADS=
+OPENBLAS_NUM_THREADS=
+GOTO_NUM_THREADS=
+
+===== GPU =====
+Wed Nov 26 14:31:26 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 575.57.08              Driver Version: 575.57.08      CUDA Version: 12.9     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A100-SXM4-80GB          Off |   00000000:07:00.0 Off |                    0 |
+| N/A   39C    P0             64W /  400W |       0MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA A100-SXM4-80GB          Off |   00000000:0A:00.0 Off |                    0 |
+| N/A   30C    P0             61W /  400W |       0MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA A100-SXM4-80GB          Off |   00000000:4C:00.0 Off |                    0 |
+| N/A   35C    P0             63W /  400W |       0MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA A100-SXM4-80GB          Off |   00000000:C0:00.0 Off |                    0 |
+| N/A   26C    P0             62W /  400W |       0MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+
+===== CONDA ENVIRONMENT =====
+
+     active environment : ai_scientist
+    active env location : /home/users/takanori.kotama/miniconda3/envs/ai_scientist
+            shell level : 4
+       user config file : /home/users/takanori.kotama/.condarc
+ populated config files : /home/users/takanori.kotama/miniconda3/.condarc
+          conda version : 25.9.1
+    conda-build version : not installed
+         python version : 3.13.9.final.0
+                 solver : libmamba (default)
+       virtual packages : __archspec=1=zen3
+                          __conda=25.9.1=0
+                          __cuda=12.9=0
+                          __glibc=2.34=0
+                          __linux=5.14.0=0
+                          __unix=0=0
+       base environment : /home/users/takanori.kotama/miniconda3  (writable)
+      conda av data dir : /home/users/takanori.kotama/miniconda3/etc/conda
+  conda av metadata url : None
+           channel URLs : https://repo.anaconda.com/pkgs/main/linux-64
+                          https://repo.anaconda.com/pkgs/main/noarch
+                          https://repo.anaconda.com/pkgs/r/linux-64
+                          https://repo.anaconda.com/pkgs/r/noarch
+          package cache : /home/users/takanori.kotama/miniconda3/pkgs
+                          /home/users/takanori.kotama/.conda/pkgs
+       envs directories : /home/users/takanori.kotama/miniconda3/envs
+                          /home/users/takanori.kotama/.conda/envs
+               platform : linux-64
+             user-agent : conda/25.9.1 requests/2.32.5 CPython/3.13.9 Linux/5.14.0-570.26.1.el9_6.x86_64 rocky/9.6 glibc/2.34 solver/libmamba conda-libmamba-solver/25.4.0 libmambapy/2.3.2 aau/0.7.4 c/. s/. e/.
+                UID:GID : 1875:1875
+             netrc file : None
+           offline mode : False
+
+# packages in environment at /home/users/takanori.kotama/miniconda3/envs/ai_scientist:
+#
+# Name                                  Version          Build                   Channel
+_libgcc_mutex                           0.1              main
+_openmp_mutex                           4.5              6_kmp_llvm              conda-forge
+_sysroot_linux-64_curr_repodata_hack    3                haa98f57_10
+aiohappyeyeballs                        2.6.1            pypi_0                  pypi
+aiohttp                                 3.13.2           pypi_0                  pypi
+aiosignal                               1.4.0            pypi_0                  pypi
+annotated-types                         0.7.0            pypi_0                  pypi
+anthropic                               0.72.1           pypi_0                  pypi
+antlr4-python3-runtime                  4.9.3            pypi_0                  pypi
+anyio                                   4.11.0           pypi_0                  pypi
+aom                                     3.12.1           h7934f7d_0
+armadillo                               15.2.1           h7dbe251_0              conda-forge
+arpack                                  3.9.1            nompi_hf03ea27_102      conda-forge
+attr                                    2.5.2            h39aace5_0              conda-forge
+attrs                                   25.4.0           pypi_0                  pypi
+backoff                                 2.2.1            pypi_0                  pypi
+binutils_impl_linux-64                  2.40             h5293946_0
+binutils_linux-64                       2.40.0           hc2dff05_2
+black                                   25.11.0          pypi_0                  pypi
+blas                                    1.0              openblas
+boost                                   1.82.0           h781c19f_3              conda-forge
+boto3                                   1.40.73          pypi_0                  pypi
+botocore                                1.40.73          pypi_0                  pypi
+bzip2                                   1.0.8            h5eee18b_6
+c-ares                                  1.34.5           hef5626c_0
+ca-certificates                         2025.11.12       hbd8a1cb_0              conda-forge
+cairo                                   1.18.4           h44eff21_0
+certifi                                 2025.11.12       pyhd8ed1ab_0            conda-forge
+charset-normalizer                      3.4.4            pypi_0                  pypi
+chktex                                  1.7.9            haa1a288_1              conda-forge
+click                                   8.3.0            pypi_0                  pypi
+contourpy                               1.3.3            pypi_0                  pypi
+coolname                                2.2.0            pypi_0                  pypi
+cuda-cccl_linux-64                      12.9.27          0                       nvidia
+cuda-command-line-tools                 12.9.1           0                       nvidia
+cuda-compiler                           12.9.1           0                       nvidia
+cuda-crt-dev_linux-64                   12.9.86          0                       nvidia
+cuda-crt-tools                          12.9.86          0                       nvidia
+cuda-cudart                             12.9.79          0                       nvidia
+cuda-cudart-dev                         12.9.79          0                       nvidia
+cuda-cudart-dev_linux-64                12.9.79          0                       nvidia
+cuda-cudart-static                      12.9.79          0                       nvidia
+cuda-cudart-static_linux-64             12.9.79          0                       nvidia
+cuda-cudart_linux-64                    12.9.79          0                       nvidia
+cuda-cuobjdump                          12.9.82          1                       nvidia
+cuda-cupti                              12.9.79          0                       nvidia
+cuda-cupti-dev                          12.9.79          0                       nvidia
+cuda-cuxxfilt                           12.9.82          1                       nvidia
+cuda-driver-dev                         12.9.79          0                       nvidia
+cuda-driver-dev_linux-64                12.9.79          0                       nvidia
+cuda-gdb                                12.9.79          1                       nvidia
+cuda-libraries                          12.9.1           0                       nvidia
+cuda-libraries-dev                      12.9.1           0                       nvidia
+cuda-nsight                             12.9.79          0                       nvidia
+cuda-nvcc                               12.9.86          0                       nvidia
+cuda-nvcc-dev_linux-64                  12.9.86          0                       nvidia
+cuda-nvcc-impl                          12.9.86          0                       nvidia
+cuda-nvcc-tools                         12.9.86          0                       nvidia
+cuda-nvcc_linux-64                      12.9.86          0                       nvidia
+cuda-nvdisasm                           12.9.88          1                       nvidia
+cuda-nvml-dev                           12.9.79          1                       nvidia
+cuda-nvprof                             12.9.79          0                       nvidia
+cuda-nvprune                            12.9.82          1                       nvidia
+cuda-nvrtc                              12.9.86          0                       nvidia
+cuda-nvrtc-dev                          12.9.86          0                       nvidia
+cuda-nvtx                               12.9.79          0                       nvidia
+cuda-nvvm-dev_linux-64                  12.9.86          0                       nvidia
+cuda-nvvm-impl                          12.9.86          0                       nvidia
+cuda-nvvm-tools                         12.9.86          0                       nvidia
+cuda-nvvp                               12.9.79          1                       nvidia
+cuda-opencl                             12.9.19          0                       nvidia
+cuda-opencl-dev                         12.9.19          0                       nvidia
+cuda-profiler-api                       12.9.79          0                       nvidia
+cuda-runtime                            12.9.1           0                       nvidia
+cuda-sanitizer-api                      12.9.79          1                       nvidia
+cuda-toolkit                            12.9.1           0                       nvidia
+cuda-tools                              12.9.1           0                       nvidia
+cuda-version                            12.9             3                       nvidia
+cuda-visual-tools                       12.9.1           0                       nvidia
+cycler                                  0.12.1           pypi_0                  pypi
+cyrus-sasl                              2.1.28           h1110e0f_3
+dataclasses-json                        0.6.7            pypi_0                  pypi
+datasets                                4.4.1            pypi_0                  pypi
+dav1d                                   1.2.1            h5eee18b_0
+dbus                                    1.16.2           h5bd4931_0
+dill                                    0.4.0            pypi_0                  pypi
+distro                                  1.9.0            pypi_0                  pypi
+dlib                                    19.24.0          py311h7366164_3         conda-forge
+docstring-parser                        0.17.0           pypi_0                  pypi
+eigen                                   3.4.0            h171cf75_1              conda-forge
+expat                                   2.7.3            h3385a95_0
+filelock                                3.20.0           py311h06a4308_0
+fmt                                     12.0.0           h2b0788b_0              conda-forge
+font-ttf-dejavu-sans-mono               2.37             hab24e00_0              conda-forge
+font-ttf-inconsolata                    3.000            h77eed37_0              conda-forge
+font-ttf-source-code-pro                2.038            h77eed37_0              conda-forge
+font-ttf-ubuntu                         0.83             h77eed37_3              conda-forge
+fontconfig                              2.15.0           h2c49b7f_0
+fonts-conda-ecosystem                   1                0                       conda-forge
+fonts-conda-forge                       1                hc364b38_1              conda-forge
+fonttools                               4.60.1           py311hee96239_0
+freetype                                2.13.3           h4a9f257_0
+fribidi                                 1.0.10           h7b6447c_0
+frozenlist                              1.8.0            pypi_0                  pypi
+fsspec                                  2025.10.0        py311h7040dfc_0
+funcy                                   2.0              pypi_0                  pypi
+gcc_impl_linux-64                       11.2.0           h1234567_1
+gcc_linux-64                            11.2.0           h5c386dc_2
+gds-tools                               1.14.1.1         4                       nvidia
+genson                                  1.3.0            pypi_0                  pypi
+gettext                                 0.21.0           hedfda30_2
+gitdb                                   4.0.12           pypi_0                  pypi
+gitpython                               3.1.45           pypi_0                  pypi
+gmp                                     6.3.0            h6a678d5_0
+gmpy2                                   2.2.1            py311h5eee18b_0
+graphite2                               1.3.14           h295c915_1
+gxx_impl_linux-64                       11.2.0           h1234567_1
+gxx_linux-64                            11.2.0           hc2dff05_2
+h11                                     0.16.0           pypi_0                  pypi
+harfbuzz                                10.2.0           hdfddeaa_1
+hf-xet                                  1.2.0            pypi_0                  pypi
+httpcore                                1.0.9            pypi_0                  pypi
+httpx                                   0.28.1           pypi_0                  pypi
+huggingface-hub                         0.36.0           pypi_0                  pypi
+humanize                                4.14.0           pypi_0                  pypi
+icu                                     73.2             h59595ed_0              conda-forge
+idna                                    3.11             pypi_0                  pypi
+igraph                                  1.0.0            pypi_0                  pypi
+jansson                                 2.14             h5eee18b_1
+jinja2                                  3.1.6            py311h06a4308_0
+jiter                                   0.12.0           pypi_0                  pypi
+jmespath                                1.0.1            pypi_0                  pypi
+jpeg                                    9f               h5ce9db8_0
+jsonschema                              4.25.1           pypi_0                  pypi
+jsonschema-specifications               2025.9.1         pypi_0                  pypi
+kernel-headers_linux-64                 3.10.0           h57e8cba_10
+kiwisolver                              1.4.9            pypi_0                  pypi
+lcms2                                   2.16             h92b89f2_1
+ld_impl_linux-64                        2.40             h12ee557_0
+lerc                                    4.0.0            h6a678d5_0
+libabseil                               20240116.2       cxx17_h6a678d5_0
+libavif                                 1.1.1            h0131e85_1
+libblas                                 3.9.0            1_h86c2bf4_netlib       conda-forge
+libboost                                1.88.0           h9d9b81f_0
+libboost-headers                        1.82.0           ha770c72_3              conda-forge
+libboost-python                         1.82.0           py311h92ebd52_3         conda-forge
+libboost-python-devel                   1.82.0           py311h781c19f_3         conda-forge
+libcap                                  2.77             h3ff7636_0              conda-forge
+libcblas                                3.9.0            12_h832b8c9_netlib      conda-forge
+libcnpy                                 0.0.20210729     h780b84a_0              conda-forge
+libcublas                               12.9.1.4         0                       nvidia
+libcublas-dev                           12.9.1.4         0                       nvidia
+libcufft                                11.4.1.4         0                       nvidia
+libcufft-dev                            11.4.1.4         0                       nvidia
+libcufile                               1.14.1.1         4                       nvidia
+libcufile-dev                           1.14.1.1         4                       nvidia
+libcups                                 2.4.2            h252cb56_2
+libcurand                               10.3.10.19       0                       nvidia
+libcurand-dev                           10.3.10.19       0                       nvidia
+libcurl                                 8.16.0           heebcbe5_0
+libcusolver                             11.7.5.82        0                       nvidia
+libcusolver-dev                         11.7.5.82        0                       nvidia
+libcusparse                             12.5.10.65       0                       nvidia
+libcusparse-dev                         12.5.10.65       0                       nvidia
+libdeflate                              1.22             h5eee18b_0
+libdrm                                  2.4.124          h5eee18b_0
+libegl                                  1.7.0            h5eee18b_2
+libev                                   4.33             h7f8727e_1
+libevent                                2.1.12           hdbd6064_1
+libfabric                               2.3.1            ha770c72_1              conda-forge
+libfabric1                              2.3.1            h6c8fc0a_1              conda-forge
+libffi                                  3.4.4            h6a678d5_1
+libgcc                                  15.2.0           h69a1729_7
+libgcc-devel_linux-64                   11.2.0           h1234567_1
+libgcc-ng                               15.2.0           h166f726_7
+libgfortran                             15.2.0           h69a702a_7              conda-forge
+libgfortran-ng                          15.2.0           h69a702a_7              conda-forge
+libgfortran5                            15.2.0           hcd61629_7              conda-forge
+libgl                                   1.7.0            h5eee18b_2
+libglib                                 2.84.4           h77a78f3_0
+libglvnd                                1.7.0            h5eee18b_2
+libglx                                  1.7.0            h5eee18b_2
+libgomp                                 15.2.0           h4751f2c_7
+libhwloc                                2.12.1           default_h3d81e11_1000   conda-forge
+libiconv                                1.16             h5eee18b_3
+libidn2                                 2.3.8            hf80d704_0
+libkrb5                                 1.21.3           h520c7b4_4
+liblapack                               3.9.0            12_hd37a5e2_netlib      conda-forge
+libllvm15                               15.0.7           he89c38a_4
+libnghttp2                              1.67.1           h697f920_0
+libnl                                   3.11.0           hb9d3cd8_0              conda-forge
+libnpp                                  12.4.1.87        0                       nvidia
+libnpp-dev                              12.4.1.87        0                       nvidia
+libnsl                                  2.0.0            h5eee18b_0
+libnuma                                 2.0.18           hb9d3cd8_3              conda-forge
+libnvfatbin                             12.9.82          0                       nvidia
+libnvfatbin-dev                         12.9.82          0                       nvidia
+libnvjitlink                            12.9.86          0                       nvidia
+libnvjitlink-dev                        12.9.86          0                       nvidia
+libnvjpeg                               12.4.0.76        0                       nvidia
+libnvjpeg-dev                           12.4.0.76        0                       nvidia
+libopenblas                             0.3.30           pthreads_h94d23a6_3     conda-forge
+libopengl                               1.7.0            h5eee18b_2
+libopenjpeg                             2.5.4            hee96239_1
+libpciaccess                            0.18             h5eee18b_0
+libpng                                  1.6.50           h2ed474d_0
+libpq                                   17.6             ha51bf15_0
+libprotobuf                             4.25.3           he621ea3_0
+libsodium                               1.0.20           heac8642_0
+libsqlite                               3.46.0           hde9e2c9_0              conda-forge
+libssh2                                 1.11.1           h251f7ec_0
+libstdcxx                               15.2.0           h39759b7_7
+libstdcxx-devel_linux-64                11.2.0           h1234567_1
+libstdcxx-ng                            15.2.0           hc03a8fd_7
+libsystemd0                             258.2            h6569c3e_1              conda-forge
+libtiff                                 4.7.0            hde9077f_0
+libudev1                                258.2            h6569c3e_1              conda-forge
+libunistring                            1.3              hb25bd0a_0
+libuuid                                 1.41.5           h5eee18b_0
+libwebp-base                            1.3.2            h5eee18b_1
+libxcb                                  1.17.0           h9b100fa_0
+libxcrypt                               4.4.36           hd590300_1              conda-forge
+libxkbcommon                            1.9.1            h69220b7_0
+libxml2                                 2.13.9           h2c43086_0
+libzlib                                 1.2.13           h4ab18f5_6              conda-forge
+llvm-openmp                             21.1.5           h4922eb0_0              conda-forge
+lmdb                                    0.9.31           hb25bd0a_0
+lz4-c                                   1.9.4            h6a678d5_1
+markdown-it-py                          4.0.0            pypi_0                  pypi
+markupsafe                              3.0.2            py311h5eee18b_0
+marshmallow                             3.26.1           pypi_0                  pypi
+matplotlib                              3.10.7           pypi_0                  pypi
+matplotlib-base                         3.10.6           py311h71dd3da_1
+mdurl                                   0.1.2            pypi_0                  pypi
+mesalib                                 25.1.5           h31e3550_0
+mkl                                     2024.0.0         ha957f24_49657          conda-forge
+mkl-devel                               2024.0.0         ha770c72_49657          conda-forge
+mkl-include                             2024.0.0         ha957f24_49657          conda-forge
+mpc                                     1.3.1            h5eee18b_0
+mpfr                                    4.2.1            h5eee18b_0
+mpi                                     1.0.1            mpich                   conda-forge
+mpich                                   4.3.2            h79b1c89_100            conda-forge
+mpmath                                  1.3.0            py311h06a4308_0
+multidict                               6.7.0            pypi_0                  pypi
+multiprocess                            0.70.18          pypi_0                  pypi
+mypy-extensions                         1.1.0            pypi_0                  pypi
+mysql-common                            9.3.0            h0021b1a_3
+mysql-libs                              9.3.0            h797a5cd_3
+ncurses                                 6.5              h7934f7d_0
+networkx                                3.5              py311h06a4308_0
+nlohmann_json                           3.12.0           h54a6638_1              conda-forge
+nsight-compute                          2025.2.1.3       0                       nvidia
+nspr                                    4.37             h8459abe_0
+nss                                     3.89.1           h6a678d5_0
+numactl                                 2.0.18           hb9d3cd8_3              conda-forge
+numpy                                   1.26.4           py311hc213724_1
+numpy-base                              1.26.4           py311hf387b04_1
+ocl-icd                                 2.3.2            h5eee18b_1
+omegaconf                               2.3.0            pypi_0                  pypi
+openai                                  2.8.0            pypi_0                  pypi
+openblas                                0.3.30           pthreads_h6ec200e_3     conda-forge
+openjpeg                                2.5.4            h4e0627c_1
+openldap                                2.6.10           he9288cc_1
+openssl                                 3.6.0            h26f9b46_0              conda-forge
+packaging                               25.0             py311h06a4308_1
+pandas                                  2.3.3            pypi_0                  pypi
+pathspec                                0.12.1           pypi_0                  pypi
+pcre2                                   10.46            hf426167_0
+perl                                    5.32.1           7_hd590300_perl5        conda-forge
+pillow                                  12.0.0           py311h3b88751_1
+pip                                     25.3             pypi_0                  pypi
+pixman                                  0.46.4           h7934f7d_0
+platformdirs                            4.5.0            pypi_0                  pypi
+poppler                                 25.07.0          h381f37c_0              anaconda
+poppler-data                            0.4.12           h06a4308_0
+propcache                               0.4.1            pypi_0                  pypi
+protobuf                                6.33.1           pypi_0                  pypi
+psutil                                  7.0.0            py311hee96239_1
+pthread-stubs                           0.3              h0ce48e5_1
+pyarrow                                 22.0.0           pypi_0                  pypi
+pydantic                                2.12.4           pypi_0                  pypi
+pydantic-core                           2.41.5           pypi_0                  pypi
+pygments                                2.19.2           pypi_0                  pypi
+pymupdf                                 1.26.6           pypi_0                  pypi
+pymupdf4llm                             0.2.0            pypi_0                  pypi
+pyparsing                               3.2.5            pypi_0                  pypi
+pypdf                                   6.2.0            pypi_0                  pypi
+pyqt                                    6.9.1            py311hc79087c_0
+pyqt6-sip                               13.10.2          py311hee96239_0
+python                                  3.11.14          h6fa692b_0
+python-dateutil                         2.9.0post0       py311h06a4308_2
+python-igraph                           1.0.0            pypi_0                  pypi
+python_abi                              3.11             2_cp311                 conda-forge
+pytokens                                0.3.0            pypi_0                  pypi
+pytorch                                 2.3.1            cpu_py311h4f03144_0
+pytz                                    2025.2           pypi_0                  pypi
+pyyaml                                  6.0.2            py311h5eee18b_0
+qtbase                                  6.9.2            hd13baf8_5
+qtdeclarative                           6.9.2            h55666de_1
+qtsvg                                   6.9.2            h75a08ff_1
+qttools                                 6.9.2            hc856bc8_0
+qtwayland                               6.9.2            h9f1b7ec_1
+qtwebchannel                            6.9.2            hbdd6827_1
+qtwebsockets                            6.9.2            hbdd6827_1
+rdma-core                               60.0             hecca717_0              conda-forge
+readline                                8.3              hc2a1206_0
+referencing                             0.37.0           pypi_0                  pypi
+regex                                   2025.11.3        pypi_0                  pypi
+requests                                2.32.5           pypi_0                  pypi
+rich                                    14.2.0           pypi_0                  pypi
+rpds-py                                 0.28.0           pypi_0                  pypi
+s3transfer                              0.14.0           pypi_0                  pypi
+safetensors                             0.6.2            pypi_0                  pypi
+seaborn                                 0.13.2           pypi_0                  pypi
+sentry-sdk                              2.44.0           pypi_0                  pypi
+setuptools                              80.9.0           py311h06a4308_0
+shutup                                  0.2.0            pypi_0                  pypi
+sip                                     6.12.0           py311h7934f7d_0
+six                                     1.17.0           py311h06a4308_0
+smmap                                   5.0.2            pypi_0                  pypi
+sniffio                                 1.3.1            pypi_0                  pypi
+spdlog                                  1.16.0           hffee6e0_1              conda-forge
+spirv-tools                             2025.1           hdb19cb5_0
+sqlite                                  3.51.0           h2a70700_0
+superlu                                 7.0.1            h8f6e6c4_0              conda-forge
+sympy                                   1.14.0           py311h06a4308_0
+sysroot_linux-64                        2.17             h57e8cba_10
+tabulate                                0.9.0            pypi_0                  pypi
+tbb                                     2021.13.0        h8d10470_4              conda-forge
+tectonic                                0.15.0           hffe7e2f_0              conda-forge
+texttable                               1.7.0            pypi_0                  pypi
+tiktoken                                0.12.0           pypi_0                  pypi
+tk                                      8.6.15           h54e0aa7_0
+tokenizers                              0.22.1           pypi_0                  pypi
+torchtriton                             2.3.0            cuda123py311hdb19cb5_0
+tornado                                 6.5.1            py311h5eee18b_0
+tqdm                                    4.67.1           pypi_0                  pypi
+transformers                            4.57.1           pypi_0                  pypi
+typing-inspect                          0.9.0            pypi_0                  pypi
+typing-inspection                       0.4.2            pypi_0                  pypi
+typing_extensions                       4.15.0           py311h06a4308_0
+tzdata                                  2025.2           pypi_0                  pypi
+ucx                                     1.19.0           h63b5c0b_5              conda-forge
+urllib3                                 2.5.0            pypi_0                  pypi
+wandb                                   0.23.0           pypi_0                  pypi
+wayland                                 1.24.0           hdac8c69_0
+wheel                                   0.45.1           py311h06a4308_0
+xcb-util                                0.4.1            h5eee18b_2
+xcb-util-cursor                         0.1.5            h5eee18b_0
+xcb-util-image                          0.4.0            h5eee18b_2
+xcb-util-keysyms                        0.4.1            h5eee18b_0
+xcb-util-renderutil                     0.3.10           h5eee18b_0
+xcb-util-wm                             0.4.2            h5eee18b_0
+xkeyboard-config                        2.44             h5eee18b_0
+xorg-libice                             1.1.2            h9b100fa_0
+xorg-libsm                              1.2.6            h9b100fa_0
+xorg-libx11                             1.8.12           h9b100fa_1
+xorg-libxau                             1.0.12           h9b100fa_0
+xorg-libxdmcp                           1.1.5            h9b100fa_0
+xorg-libxext                            1.3.6            h9b100fa_0
+xorg-libxfixes                          6.0.1            h9b100fa_0
+xorg-libxrandr                          1.5.4            h9b100fa_0
+xorg-libxrender                         0.9.12           h9b100fa_0
+xorg-libxshmfence                       1.3.3            h9b100fa_0
+xorg-libxxf86vm                         1.1.6            h9b100fa_0
+xorg-xorgproto                          2024.1           h5eee18b_1
+xtensor                                 0.23.10          h4bd325d_0              conda-forge
+xtensor-blas                            0.19.0           h998ca80_1              conda-forge
+xtl                                     0.7.7            h00ab1b0_0              conda-forge
+xxhash                                  3.6.0            pypi_0                  pypi
+xz                                      5.6.4            h5eee18b_1
+yaml                                    0.2.5            h7b6447c_0
+yarl                                    1.22.0           pypi_0                  pypi
+zlib                                    1.2.13           h4ab18f5_6              conda-forge
+zstd                                    1.5.6            hc292b87_0
+
+===== COMPILER FLAG =====
+-ccbin,
+/usr/bin/g++,
+-O2,
+-std=c++20,
+--cudart,
+shared,
+-Xcompiler, 
+-fopenmp,
+-I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include,
+-I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/python3.11,
+-I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/eigen3,
+-L/usr/lib64,
+-L/lib64,
+-L/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib,
+-lcnpy,
+-lfmt,
+-lopenblas,
+-lcublas,
+-lpython3.11,
+-lpthread,
+-lm,
+-ldl,
+-lstdc++fs,
+-Xlinker,
+'-rpath,/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib',
+-Xlinker,
+'-rpath,/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib/python3.11/site-packages/torch/lib'
+

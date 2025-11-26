@@ -1395,6 +1395,7 @@ class ParallelAgent:
             agent_file_name=cfg.exec.agent_file_name,
             language=cfg.exec.language,
             cpp_compile_flags=cfg.exec.cpp_compile_flags,
+            cpp_compiler=cfg.exec.cpp_compiler,
         )
         plot_interpreter: Optional[Interpreter] = None
         plot_agent_file_name = f"{Path(cfg.exec.agent_file_name).stem}_plot.py"

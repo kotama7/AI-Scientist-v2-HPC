@@ -6,9 +6,6 @@ You are an AI researcher analyzing experiment results. Based on the plot analyse
 #include <vector>
 #include <string>
 #include <cmath>
-#include <matplotlibcpp.h>
-
-namespace plt = matplotlibcpp;
 
 std::vector<double> load_data(const std::string& filename) {
     std::ifstream file(filename, std::ios::binary);
@@ -27,9 +24,13 @@ void save_data(const std::string& filename, const std::vector<double>& data) {
     }
 }
 
-void plot_data(const std::vector<double>& data) {
-    plt::plot(data);
-    plt::show();
+void log_summary(const std::vector<double>& data) {
+    double sum = 0.0;
+    for (double value : data) {
+        sum += value;
+    }
+    double mean = data.empty() ? 0.0 : sum / data.size();
+    std::cout << "Data points: " << data.size() << ", Mean: " << mean << std::endl;
 }
 
 int main() {
@@ -42,8 +43,8 @@ int main() {
     }
     double mean = sum / experiment_data.size();
     
-    // Plot the data using matplotlib
-    plot_data(experiment_data);
+    // Log a quick summary instead of plotting
+    log_summary(experiment_data);
     
     // Save the processed data
     save_data("experiment_data.npy", experiment_data);

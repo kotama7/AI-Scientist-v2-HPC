@@ -48,7 +48,9 @@ def query(
        filtered_kwargs["model"] = filtered_kwargs["model"].replace("ollama/", "")
 
     retry_messages: list[dict[str, str]] = []
-    max_func_retries = 2 if func_spec else 1
+    # Give the model a couple of extra chances to return a tool call when it
+    # accidentally responds without one.
+    max_func_retries = 5 if func_spec else 1
     total_req_time = 0.0
     total_in_tokens = 0
     total_out_tokens = 0
