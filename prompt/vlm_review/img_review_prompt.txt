@@ -6,6 +6,7 @@ You should:
   - Examine the figure in detail: conclude elements in figures (e.g. name of axis) and describe what information is shown (e.g. the line of loss decreases monotonically but plateaus after X epochs)
   - Suggest any potential improvements or issues in the figure itself (e.g., missing legend, unclear labeling, no meaningful conclusion, mismatch with what the caption claims).
   - Verify that the figure or any accompanying text explicitly lists the data source path(s) used to generate it (e.g., "Loaded data: <path>"). If the path is missing, unclear, or inconsistent with the visualized data, flag it in your review.
+  - If the image is unsafe/inappropriate for publication (e.g., sexual or violent content, hateful symbols, personal/identifying photos, copyrighted watermarks), explicitly recommend removing it from the paper. Prefix the Img_review with `REMOVE_IMAGE: <short reason>` and avoid graphic detail.
 
 Finally, respond in the following format:
 

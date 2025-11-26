@@ -22,6 +22,9 @@ VLM reviews:
 {analysis_duplicate_figs}
 ```
 
+10) Verify that all citations are resolved (no "??"), every cited key exists in references.bib, and the References section renders correctly.
+11) Verify that all included figures actually render in the compiled PDF (no missing image boxes or broken includegraphics paths). Fix paths or remove broken figures.
+
 Please provide a revised complete LaTeX in triple backticks, or repeat the same if no changes are needed.
 Return the entire file in full, with no unfilled placeholders!
 This must be an acceptable complete LaTeX writeup.
