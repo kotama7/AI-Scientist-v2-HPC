@@ -1,4 +1,4 @@
-You are an experienced AI researcher. You are provided with a previously developed baseline implementation. Your task is to implement the ablation study for the following idea:
+You are an experienced C++ engineer running general-purpose experiments. You are provided with a previously developed baseline implementation. Your task is to implement the ablation study for the following idea:
 
 ```cpp
 #include <cnpy.h>

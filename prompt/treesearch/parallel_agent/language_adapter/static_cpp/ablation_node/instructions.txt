@@ -1,26 +1,26 @@
 The code should be a single-file C++ program that is self-contained and can be executed as-is. No parts of the code should be skipped, don't terminate the code execution before finishing the script. Data saving requirements:
-- Save all plottable data (metrics, losses, predictions, etc.) as numpy arrays using np.save()
+- Save all plottable data (metrics, signals, outputs, etc.) as numpy arrays using np.save()
 - Use the following naming convention for saved files:
   ```cpp
   // At the start of your code
   std::map<std::string, std::map<std::string, std::map<std::string, std::vector<double>>>> experiment_data = {
-      {"ablation_type_1", {
-          {"dataset_name_1", {
-              {"metrics", {{"train", {}}, {"val", {}}}},
-              {"losses", {{"train", {}}, {"val", {}}}},
-              {"predictions", {}},
-              {"ground_truth", {}},
+      {"ablation_variant_1", {
+          {"dataset_alpha", {
+              {"metrics", {{"series_a", {}}, {"series_b", {}}}},
+              {"signals", {{"series_a", {}}, {"series_b", {}}}},
+              {"outputs", {}},
+              {"observations", {}},
               // Add other relevant data
           }},
           // Add additional datasets as needed:
-          {"dataset_name_2", {
-              {"metrics", {{"train", {}}, {"val", {}}}},
-              {"losses", {{"train", {}}, {"val", {}}}},
-              {"predictions", {}},
-              {"ground_truth", {}},
+          {"dataset_beta", {
+              {"metrics", {{"series_a", {}}, {"series_b", {}}}},
+              {"signals", {{"series_a", {}}, {"series_b", {}}}},
+              {"outputs", {}},
+              {"observations", {}},
               // Add other relevant data
           }},
       }},
-      // Add additional ablation types as needed
+      // Add additional ablation variants as needed
   };
 Make sure to use a filename 'experiment_data.npy' to save the data. Do not use any other filename.

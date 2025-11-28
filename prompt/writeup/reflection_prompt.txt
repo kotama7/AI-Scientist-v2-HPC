@@ -4,6 +4,7 @@ Now let's reflect and identify any issues (including but not limited to):
 3) Have we included all relevant details from the summaries without hallucinating?
 4) The following figures are available in the folder but not used in the LaTeX: {unused_figs}
 5) The following figure references in the LaTeX do not match any actual file: {invalid_figs}
+6) Are all claims that require support properly cited, and do all \cite entries resolve to existing references without leaving uncited items in the References section?
 {reflection_page_info}
 chktex results:
 ```

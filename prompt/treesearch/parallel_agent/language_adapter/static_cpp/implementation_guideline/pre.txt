@@ -19,7 +19,7 @@ CRITICAL GPU REQUIREMENTS - Your code MUST include ALL of these:
   - ALWAYS move input data to device using the appropriate CUDA API
   - ALWAYS move model related data to device using the appropriate CUDA API
   - For optimizers, create them AFTER moving model to device
-  - When using data loaders, move batch data to device in training loop using the appropriate CUDA API
+  - When using data loaders, move each data chunk to device in the compute loop using the appropriate CUDA API
 CRITICAL MODEL INPUT GUIDELINES:
   - Always pay extra attention to the input to the model being properly normalized
   - This is extremely important because the input to the model's forward pass directly affects the output, and the loss function is computed based on the output

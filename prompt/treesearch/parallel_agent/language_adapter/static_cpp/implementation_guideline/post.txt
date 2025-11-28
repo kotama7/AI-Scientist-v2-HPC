@@ -32,22 +32,22 @@ int main() {
     using DatasetStore = std::map<std::string, std::map<std::string, MetricStore>>;
     std::map<std::string, DatasetStore> experiment_data = {
         {"dataset_name_1",
-         {{"metrics", {{"train", {}}, {"val", {}}}},
-          {"losses", {{"train", {}}, {"val", {}}}},
-          {"predictions", {}},
-          {"ground_truth", {}}}},
+         {{"metrics", {{"series_a", {}}, {"series_b", {}}}},
+          {"signals", {{"series_a", {}}, {"series_b", {}}}},
+          {"outputs", {}},
+          {"observations", {}}}},
     };
 
     for (int epoch = 0; epoch < 3; ++epoch) {
-        double train_metric = 0.1 * epoch;
-        double val_loss = 0.2 * epoch;
-        experiment_data["dataset_name_1"]["metrics"]["train"].push_back(train_metric);
-        experiment_data["dataset_name_1"]["losses"]["val"].push_back(val_loss);
-        std::cout << "Epoch " << epoch << ": validation_loss = " << val_loss << std::endl;
+        double series_a_value = 0.1 * epoch;
+        double series_b_value = 0.2 * epoch;
+        experiment_data["dataset_name_1"]["metrics"]["series_a"].push_back(series_a_value);
+        experiment_data["dataset_name_1"]["signals"]["series_b"].push_back(series_b_value);
+        std::cout << "Step " << epoch << ": series_b_value = " << series_b_value << std::endl;
     }
 
     std::vector<double> flat_metrics =
-        experiment_data["dataset_name_1"]["metrics"]["train"];
+        experiment_data["dataset_name_1"]["metrics"]["series_a"];
     cnpy::npy_save((working_dir / "experiment_data.npy").string(),
                    flat_metrics.data(),
                    {flat_metrics.size()},

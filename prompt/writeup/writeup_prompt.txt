@@ -31,6 +31,7 @@ Your current progress on the LaTeX write-up is:
 ```
 
 Produce the final version of the LaTeX manuscript now, ensuring the paper is coherent, concise, and reports results accurately.
+Ensure every claim that needs support is cited, all citations correspond to existing entries in references.bib, and the References section lists every cited work with no placeholders or uncited items.
 Return the entire file in full, with no unfilled placeholders!
 This must be an acceptable complete LaTeX writeup.
 

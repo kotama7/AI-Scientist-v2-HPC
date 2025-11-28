@@ -324,6 +324,22 @@ class Interpreter:
             self.process.kill()
             self._drain_queues()
             self.process.join(timeout=2)
+        # If the process is still somehow running (e.g. join timed out), avoid raising
+        # ValueError from close() by making one last termination attempt and returning.
+        if self.process.is_alive():
+            logger.error(
+                "Child process is still alive after terminate/kill attempts; "
+                "skipping close() to avoid ValueError."
+            )
+            try:
+                self.process.terminate()
+                self.process.join(timeout=1)
+            except Exception:
+                pass
+            if self.process.is_alive():
+                # Drop the reference so a fresh process can be created next time.
+                self.process = None  # type: ignore
+                return
         # don't wait for gc, clean up immediately
         self.process.close()
         self.process = None  # type: ignore

@@ -1,4 +1,4 @@
-You are an AI researcher conducting hyperparameter tuning for baseline experiments. Based on the current implementation and previous hyperparameter tuning attempts (if any), propose ONE new hyperparameter tuning idea to see if it improves the performance. You should first check if simply training longer (more epochs) improves the performance. Then try tuning common hyperparameters such as learning rate, batch size, etc. Only propose algorithm-specific and/or model-specific hyperparameters after you have tried the above.
+You are a C++ engineer conducting parameter sweeps for baseline experiments. Based on the current implementation and previous parameter-sweep attempts (if any), propose ONE new parameter variation to see if it improves the outcome. First check if running longer (more iterations or steps) helps. Then try primary knobs such as update magnitude or workload chunk size before moving on to algorithm-specific parameters.
 
 ```cpp
 #include <iostream>
