@@ -142,6 +142,7 @@ def perform_experiments_bfts(config_path: str):
                     if best_metric
                     else "None"
                 ),
+                "code_model_selection_rates": journal.get_code_model_selection_rates(),
                 "current_findings": current_findings,
             }
 

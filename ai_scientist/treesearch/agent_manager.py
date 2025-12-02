@@ -13,6 +13,7 @@ import json
 from rich import print
 from .utils.serialize import parse_markdown_to_dict
 from .utils.metric import WorstMetricValue
+from .utils.model_selector import BanditModelSelector
 from ai_scientist.prompt_loader import load_prompt
 
 STAGE_GOAL_PROMPTS = {
@@ -166,6 +167,9 @@ class AgentManager:
             4: "ablation_studies",
         }
         self.main_stage_goals: Dict[int, str] = self._load_stage_goals()
+        self.code_model_selector = BanditModelSelector.from_code_config(
+            getattr(self.cfg.agent, "code", None)
+        )
 
         # Create initial stage
         self._create_initial_stage()
@@ -225,7 +229,9 @@ class AgentManager:
 
         self.stages.append(initial_stage)
         self.current_stage = initial_stage
-        self.journals[initial_stage.name] = Journal()
+        self.journals[initial_stage.name] = Journal(
+            code_model_selector=self.code_model_selector
+        )
 
     def _curate_task_desc(self, stage: Stage) -> str:
         task_desc = self._get_task_desc_str()
@@ -722,7 +728,9 @@ class AgentManager:
                         print(f"[cyan]self.stage_history: {self.stage_history}[/cyan]")
                         prev_best = self._get_best_implementation(prev_stage)
                         if prev_best:
-                            self.journals[self.current_stage.name].append(prev_best)
+                            self.journals[self.current_stage.name].append(
+                                prev_best, record_generation=False
+                            )
                         else:
                             print(
                                 f"[red]No previous best implementation found for {self.current_stage.name}. Something went wrong so finishing the experiment...[/red]"
@@ -810,7 +818,9 @@ class AgentManager:
 
                                 # Setup new sub-stage
                                 self.stages.append(next_substage)
-                                self.journals[next_substage.name] = Journal()
+                                self.journals[next_substage.name] = Journal(
+                                    code_model_selector=self.code_model_selector
+                                )
                                 current_substage = next_substage
                             else:
                                 # If no next sub-stage could be created, end this main stage
@@ -834,7 +844,9 @@ class AgentManager:
                     )
 
                     self.stages.append(next_main_stage)
-                    self.journals[next_main_stage.name] = Journal()
+                    self.journals[next_main_stage.name] = Journal(
+                        code_model_selector=self.code_model_selector
+                    )
                     self.current_stage = next_main_stage
                 else:
                     # Exit the outer loop if no more main stages

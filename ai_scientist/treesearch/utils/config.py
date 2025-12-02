@@ -34,12 +34,22 @@ class ThinkingConfig:
 
 
 @dataclass
+class BanditConfig:
+    """Optional configuration for bandit-based model selection."""
+
+    enabled: bool = False
+    exploration: float = 0.1
+
+
+@dataclass
 class StageConfig:
     model: str
     temp: float
-    thinking: ThinkingConfig
-    betas: str
+    thinking: ThinkingConfig | None = None
+    betas: str | None = None
     max_tokens: Optional[int] = None
+    models: list[dict] | None = None
+    bandit: BanditConfig | None = None
 
 
 @dataclass

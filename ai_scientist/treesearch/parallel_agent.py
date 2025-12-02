@@ -3,6 +3,7 @@ from typing import List, Optional, Set, Any, Callable, cast, Dict, Tuple
 import random
 import subprocess
 import os
+import copy
 from queue import Queue
 import logging
 import humanize
@@ -524,9 +525,14 @@ class MinimalAgent:
         print("[cyan]--------------------------------[/cyan]")
 
         print("MinimalAgent: Getting plan and code")
-        plan, code = self.plan_and_code_query(prompt)
+        plan, code, model_info = self.plan_and_code_query(prompt)
         print("MinimalAgent: Draft complete")
-        return Node(plan=plan, code=code)
+        return Node(
+            plan=plan,
+            code=code,
+            code_model=model_info.get("model"),
+            code_temperature=model_info.get("temp"),
+        )
 
     def _debug(self, parent_node: Node) -> Node:
         prompt: Any = {
@@ -545,8 +551,14 @@ class MinimalAgent:
         if self.cfg.agent.data_preview:
             prompt["Data Overview"] = self.data_preview
 
-        plan, code = self.plan_and_code_query(prompt)
-        return Node(plan=plan, code=code, parent=parent_node)
+        plan, code, model_info = self.plan_and_code_query(prompt)
+        return Node(
+            plan=plan,
+            code=code,
+            parent=parent_node,
+            code_model=model_info.get("model"),
+            code_temperature=model_info.get("temp"),
+        )
 
     def _improve(self, parent_node: Node) -> Node:
         prompt: Any = {
@@ -564,11 +576,13 @@ class MinimalAgent:
         prompt["Instructions"] |= self._prompt_resp_fmt
         prompt["Instructions"] |= self._prompt_impl_guideline
 
-        plan, code = self.plan_and_code_query(prompt)
+        plan, code, model_info = self.plan_and_code_query(prompt)
         return Node(
             plan=plan,
             code=code,
             parent=parent_node,
+            code_model=model_info.get("model"),
+            code_temperature=model_info.get("temp"),
         )
 
     def _generate_seed_node(self, parent_node: Node):
@@ -590,12 +604,14 @@ class MinimalAgent:
         }
         prompt["Instructions"]["Implementation guideline"] = list(HYPERPARAM_NODE_INSTRUCTIONS)
         prompt["Instructions"] |= self._prompt_hyperparam_tuning_resp_fmt
-        plan, code = self.plan_and_code_query(prompt)
+        plan, code, model_info = self.plan_and_code_query(prompt)
         return Node(
             plan="Hyperparam tuning name: " + hyperparam_idea.name + ".\n" + plan,
             code=code,
             parent=parent_node,
             hyperparam_name=hyperparam_idea.name,
+            code_model=model_info.get("model"),
+            code_temperature=model_info.get("temp"),
         )
 
     def _generate_ablation_node(self, parent_node: Node, ablation_idea: AblationIdea):
@@ -607,26 +623,34 @@ class MinimalAgent:
         }
         prompt["Instructions"]["Implementation guideline"] = list(ABLATION_NODE_INSTRUCTIONS)
         prompt["Instructions"] |= self._prompt_ablation_resp_fmt
-        plan, code = self.plan_and_code_query(prompt)
+        plan, code, model_info = self.plan_and_code_query(prompt)
         return Node(
             plan="Ablation name: " + ablation_idea.name + ".\n" + plan,
             code=code,
             parent=parent_node,
             ablation_name=ablation_idea.name,
+            code_model=model_info.get("model"),
+            code_temperature=model_info.get("temp"),
         )
 
     def plan_and_code_query(
         self, prompt, retries=3, code_language: str | None = None
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict]:
         """Generate a natural language plan + code in the same LLM call and split them apart."""
         completion_text = None
         target_language = code_language or self.code_language
+        model_info = {
+            "model": getattr(self.cfg.agent.code, "model", None),
+            "temp": getattr(self.cfg.agent.code, "temp", None),
+            "max_tokens": getattr(self.cfg.agent.code, "max_tokens", None),
+        }
         for _ in range(retries):
             completion_text = query(
                 system_message=prompt,
                 user_message=None,
-                model=self.cfg.agent.code.model,
-                temperature=self.cfg.agent.code.temp,
+                model=model_info["model"],
+                temperature=model_info["temp"],
+                max_tokens=model_info["max_tokens"],
             )
 
             code = extract_code(completion_text, language=target_language)
@@ -634,14 +658,14 @@ class MinimalAgent:
 
             if code and nl_text:
                 # merge all code blocks into a single string
-                return nl_text, code
+                return nl_text, code, model_info
 
             print("Plan + code extraction failed, retrying...")
             prompt["Parsing Feedback"] = (
                 f"The code extraction failed. Make sure to use the format ```{target_language} ... ``` for the code blocks."
             )
         print("Final plan + code extraction attempt failed, giving up...")
-        return "", completion_text  # type: ignore
+        return "", completion_text, model_info  # type: ignore
 
     def parse_exec_result(
         self, node: Node, exec_result: ExecutionResult, workspace: str
@@ -732,7 +756,7 @@ class MinimalAgent:
             )
 
         # Get plotting code from LLM
-        plan, code = self.plan_and_code_query(
+        plan, code, _ = self.plan_and_code_query(
             plotting_prompt, code_language="python"
         )
 
@@ -1102,6 +1126,25 @@ class ParallelAgent:
         }
 
     @property
+    def _code_model_defaults(self) -> tuple[str | None, float | None, int | None]:
+        code_cfg = getattr(self.cfg.agent, "code", None)
+        return (
+            getattr(code_cfg, "model", None),
+            getattr(code_cfg, "temp", None),
+            getattr(code_cfg, "max_tokens", None),
+        )
+
+    def _prepare_worker_cfg(self, model_choice: dict) -> Config:
+        worker_cfg = copy.deepcopy(self.cfg)
+        if model_choice.get("model") is not None:
+            worker_cfg.agent.code.model = model_choice["model"]
+        if model_choice.get("temp") is not None:
+            worker_cfg.agent.code.temp = model_choice["temp"]
+        if model_choice.get("max_tokens") is not None:
+            worker_cfg.agent.code.max_tokens = model_choice["max_tokens"]
+        return worker_cfg
+
+    @property
     def code_language(self) -> str:
         return getattr(self.cfg.exec, "language", "python")
 
@@ -1126,16 +1169,21 @@ class ParallelAgent:
 
     def plan_and_code_query(
         self, prompt, retries=3, code_language: str | None = None
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict]:
         """Generate a natural language plan + code in the same LLM call and split them apart."""
         completion_text = None
         target_language = code_language or self.code_language
+        default_model, default_temp, default_max_tokens = self._code_model_defaults
+        model_choice = self.journal.select_code_model(
+            default_model, default_temp, default_max_tokens
+        )
         for _ in range(retries):
             completion_text = query(
                 system_message=prompt,
                 user_message=None,
-                model=self.cfg.agent.code.model,
-                temperature=self.cfg.agent.code.temp,
+                model=model_choice.get("model"),
+                temperature=model_choice.get("temp"),
+                max_tokens=model_choice.get("max_tokens"),
             )
 
             code = extract_code(completion_text, language=target_language)
@@ -1143,13 +1191,13 @@ class ParallelAgent:
 
             if code and nl_text:
                 # merge all code blocks into a single string
-                return nl_text, code
+                return nl_text, code, model_choice
             print("Plan + code extraction failed, retrying...")
             prompt["Parsing Feedback"] = (
                 f"The code extraction failed. Make sure to use the format ```{target_language} ... ``` for the code blocks."
             )
         print("Final plan + code extraction attempt failed, giving up...")
-        return "", completion_text
+        return "", completion_text, model_choice
 
     def _generate_seed_eval_aggregation_node(
         self, node: Node, agg_plotting_code: str
@@ -1534,6 +1582,7 @@ class ParallelAgent:
                         (
                             parse_metrics_plan,
                             parse_metrics_code,
+                            _,
                         ) = worker_agent.plan_and_code_query(parse_metrics_prompt, retries=3, code_language="python")
                         print(f"[blue]Parse metrics plan:[/blue] {parse_metrics_plan}")
                         print(f"[blue]Parse metrics code:[/blue] {parse_metrics_code}")
@@ -2066,12 +2115,17 @@ class ParallelAgent:
                 self.best_stage3_node.plot_code if self.best_stage3_node else None
             )
             seed_eval = False
+            default_model, default_temp, default_max_tokens = self._code_model_defaults
+            model_choice = self.journal.select_code_model(
+                default_model, default_temp, default_max_tokens
+            )
+            worker_cfg = self._prepare_worker_cfg(model_choice)
             futures.append(
                 self.executor.submit(
                     self._process_node_wrapper,
                     node_data,
                     self.task_desc,
-                    self.cfg,
+                    worker_cfg,
                     gpu_id,
                     memory_summary,
                     self.evaluation_metrics,
@@ -2203,7 +2257,7 @@ class ParallelAgent:
                 f"{seed_nodes[2].exp_results_dir}/experiment_data.npy\n"
             ),
         }
-        plan, code = self.plan_and_code_query(
+        plan, code, _ = self.plan_and_code_query(
             plotting_prompt, code_language="python"
         )
 

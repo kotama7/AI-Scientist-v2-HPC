@@ -11,6 +11,7 @@ from dataclasses_json import DataClassJsonMixin
 from .interpreter import ExecutionResult
 from .utils.metric import MetricValue, WorstMetricValue
 from .utils.response import trim_long_string
+from .utils.model_selector import BanditModelSelector
 from .backend import FunctionSpec, query
 from ai_scientist.prompt_loader import load_prompt
 
@@ -60,6 +61,8 @@ class Node(DataClassJsonMixin):
     plan: str = field(default="", kw_only=True)  # type: ignore
     overall_plan: str = field(default="", kw_only=True)  # type: ignore
     code: str = field(default="", kw_only=True)  # type: ignore
+    code_model: str | None = field(default=None, kw_only=True)
+    code_temperature: float | None = field(default=None, kw_only=True)
     plot_code: str = field(default=None, kw_only=True)  # type: ignore
     plot_plan: str = field(default=None, kw_only=True)  # type: ignore
 
@@ -227,6 +230,8 @@ class Node(DataClassJsonMixin):
         """Convert node to dictionary for serialization"""
         return {
             "code": self.code,
+            "code_model": self.code_model,
+            "code_temperature": self.code_temperature,
             "plan": self.plan,
             "overall_plan": (
                 self.overall_plan if hasattr(self, "overall_plan") else None
@@ -375,6 +380,9 @@ class Journal:
     """A collection of nodes representing the solution tree."""
 
     nodes: list[Node] = field(default_factory=list)
+    code_model_selector: BanditModelSelector | None = field(
+        default=None, kw_only=True
+    )
 
     def __getitem__(self, idx: int) -> Node:
         return self.nodes[idx]
@@ -383,10 +391,39 @@ class Journal:
         """Return the number of nodes in the journal."""
         return len(self.nodes)
 
-    def append(self, node: Node) -> None:
+    def select_code_model(
+        self,
+        default_model: str,
+        default_temp: float,
+        default_max_tokens: int | None = None,
+    ) -> dict:
+        """
+        Select a code model using the configured bandit (if available).
+        Returns a dict containing at least the model name and temperature.
+        """
+        if self.code_model_selector:
+            choice = self.code_model_selector.select(default_model, default_temp)
+        else:
+            choice = {"model": default_model, "temp": default_temp}
+
+        if choice.get("max_tokens") is None:
+            choice["max_tokens"] = default_max_tokens
+        return choice
+
+    def _record_model_generation(self, node: Node) -> None:
+        if self.code_model_selector and node.code_model:
+            self.code_model_selector.record_generation(node.code_model)
+
+    def _record_model_selection(self, node: Node) -> None:
+        if self.code_model_selector and node and node.code_model:
+            self.code_model_selector.record_selection(node.code_model)
+
+    def append(self, node: Node, *, record_generation: bool = True) -> None:
         """Append a new node to the journal."""
         node.step = len(self.nodes)
         self.nodes.append(node)
+        if record_generation:
+            self._record_model_generation(node)
 
     @property
     def draft_nodes(self) -> list[Node]:
@@ -429,6 +466,12 @@ class Journal:
         """Return a list of all metric values in the journal."""
         return [n.metric for n in self.nodes]
 
+    def get_code_model_selection_rates(self) -> dict[str, float]:
+        """Return selection rates for each code model (if bandit is enabled)."""
+        if not self.code_model_selector:
+            return {}
+        return self.code_model_selector.selection_rates()
+
     def get_best_node(self, only_good=True, use_val_metric_only=False, cfg=None) -> None | Node:
         """Return the best solution found so far."""
         if only_good:
@@ -439,9 +482,12 @@ class Journal:
             nodes = self.nodes
 
         if use_val_metric_only:
-            return max(nodes, key=lambda n: n.metric)
+            best = max(nodes, key=lambda n: n.metric)
+            self._record_model_selection(best)
+            return best
 
         if len(nodes) == 1:
+            self._record_model_selection(nodes[0])
             return nodes[0]
 
         # Create evaluation prompt for LLM
@@ -493,15 +539,20 @@ class Journal:
                     f"Selected node {selected_node.id} as best implementation"
                 )
                 logger.warning(f"Reasoning: {selection['reasoning']}")
+                self._record_model_selection(selected_node)
                 return selected_node
             else:
                 logger.warning("Falling back to metric-based selection")
-                return max(nodes, key=lambda n: n.metric)
+                fallback_node = max(nodes, key=lambda n: n.metric)
+                self._record_model_selection(fallback_node)
+                return fallback_node
 
         except Exception as e:
             logger.error(f"Error in LLM selection process: {e}")
             logger.warning("Falling back to metric-based selection")
-            return max(nodes, key=lambda n: n.metric)
+            fallback_node = max(nodes, key=lambda n: n.metric)
+            self._record_model_selection(fallback_node)
+            return fallback_node
 
     def generate_summary(self, include_code: bool = False, **model_kwargs) -> str:
         """Generate a summary of the research progress using LLM, including both successes and failures."""

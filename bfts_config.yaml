@@ -85,6 +85,14 @@ agent:
     model: gpt-4o
     temp: 1.0
     max_tokens: null
+    # Optional: provide multiple models and enable bandit-based selection that
+    # favors models whose generated nodes are picked during node selection.
+    models:
+      - model: gpt-4o
+        temp: 1.0
+    bandit:
+      enabled: false
+      exploration: 0.1
 
   # LLM settings for evaluating program output / tracebacks
   feedback:
