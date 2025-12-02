@@ -14,6 +14,7 @@ Please review the figures and make the following changes:
 3. For figures that does not contain subfigures and present sparse information, consider combining them with other related figures
 4. Update all relevant text discussions to reflect any changes in figure placement or combinations
 5. Enhance the scientific analysis of the remaining figures in the text - provide detailed, insightful discussions of their significance and findings
+6. Confirm that every included figure renders correctly in the compiled PDF (no missing image boxes or bad includegraphics paths); fix or remove any broken references.
 
 Please ensure all changes maintain scientific rigor and improve the paper's clarity and impact.
 Be more aggressive with figure selection - move more figures to the appendix or group them together with other figures if the page limit is already exceeded.
