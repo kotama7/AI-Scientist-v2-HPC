@@ -90,6 +90,12 @@ def parse_arguments():
         help="Number of writeup attempts to try",
     )
     parser.add_argument(
+        "--writeup-reflections",
+        type=int,
+        default=3,
+        help="Number of reflection steps to run during the writeup stage",
+    )
+    parser.add_argument(
         "--attempt_id",
         type=int,
         default=0,
@@ -260,12 +266,33 @@ def _infer_language_from_idea(
 
 
 def _detect_target_language(
-    idea: dict, code_path: Optional[str], adapter_settings: Dict[str, Any]
+    idea: dict,
+    code_path: Optional[str],
+    adapter_settings: Dict[str, Any],
+    language_override: Optional[str] = None,
 ) -> Tuple[str, str, bool]:
     """Determine whether prompts should stay in Python or be adapted to C++.
 
     Returns (language_label, code_fence, adapt_to_cpp).
     """
+    def _coerce_language_override(language_value: Optional[str]) -> Optional[Tuple[str, str, bool]]:
+        if language_value is None:
+            return None
+        normalized = str(language_value).strip().lower()
+        if not normalized:
+            return None
+        if normalized in {"cpp", "c++", "cxx"}:
+            return "C++", "cpp", True
+        if normalized in {"python", "py"}:
+            return "Python", "python", False
+        raise ValueError(
+            f"Unsupported language override '{language_value}'. Use 'python' or 'cpp'."
+        )
+
+    override = _coerce_language_override(language_override)
+    if override is not None:
+        return override
+
     if code_path:
         ext = Path(code_path).suffix.lower()
         hint = _EXTENSION_LANGUAGE_HINTS.get(ext)
@@ -375,141 +402,143 @@ if __name__ == "__main__":
         print(f"Attached supplemental information from {additional_info_path}")
 
     date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # idea_dir = f"experiments/{date}_{idea['Name']}_attempt_{args.attempt_id}"
-    idea_dir = "/home/users/takanori.kotama/workplace/AI-Scientist-v2-HPC/experiments/2025-11-26_14-31-38_dynamic_kernel_adaptation_openblas_attempt_0"
+    idea_dir = f"experiments/{date}_{idea['Name']}_attempt_{args.attempt_id}"
     idea_dir_path = Path(idea_dir)
     print(f"Results will be saved in {idea_dir}")
     idea_dir_path.mkdir(parents=True, exist_ok=True)
 
-    # # Prepare idea metadata paths
-    # idea_path_md = idea_dir_path / "idea.md"
+    # Prepare idea metadata paths
+    idea_path_md = idea_dir_path / "idea.md"
 
-    # # If load_code is True, locate a code file that matches the idea file stem
-    # code = None
-    # code_path: Optional[str] = None
-    # if args.load_code:
-    #     idea_json_path = Path(args.load_ideas)
-    #     candidate_extensions = [".py"]
-    #     candidate_extensions.extend(
-    #         ext for ext in _EXTENSION_LANGUAGE_HINTS.keys() if ext not in candidate_extensions
-    #     )
-    #     for ext in candidate_extensions:
-    #         candidate = idea_json_path.with_suffix(ext)
-    #         if candidate.exists():
-    #             code_path = str(candidate)
-    #             with open(candidate, "r") as f:
-    #                 code = f.read()
-    #             break
-    #     if code_path is None:
-    #         fallback_code_path = idea_json_path.with_suffix(".py")
-    #         print(f"Warning: Code file {fallback_code_path} not found")
+    # If load_code is True, locate a code file that matches the idea file stem
+    code = None
+    code_path: Optional[str] = None
+    if args.load_code:
+        idea_json_path = Path(args.load_ideas)
+        candidate_extensions = [".py"]
+        candidate_extensions.extend(
+            ext for ext in _EXTENSION_LANGUAGE_HINTS.keys() if ext not in candidate_extensions
+        )
+        for ext in candidate_extensions:
+            candidate = idea_json_path.with_suffix(ext)
+            if candidate.exists():
+                code_path = str(candidate)
+                with open(candidate, "r") as f:
+                    code = f.read()
+                break
+        if code_path is None:
+            fallback_code_path = idea_json_path.with_suffix(".py")
+            print(f"Warning: Code file {fallback_code_path} not found")
 
-    # base_config_path = repo_root / "bfts_config.yaml"
-    # base_config = _load_base_config(base_config_path)
-    # prompt_adapter_settings = _load_prompt_adapter_settings(base_config)
-    # if prompt_adapter_settings is None:
-    #     raise ValueError(
-    #         "prompt_adapter configuration is required for language inference."
-    #     )
-    # set_persona_role(_extract_role_description(base_config))
+    base_config_path = repo_root / "bfts_config.yaml"
+    base_config = _load_base_config(base_config_path)
+    prompt_adapter_settings = _load_prompt_adapter_settings(base_config)
+    if prompt_adapter_settings is None:
+        raise ValueError(
+            "prompt_adapter configuration is required for language inference."
+        )
+    set_persona_role(_extract_role_description(base_config))
 
-    # language_label, code_fence, adapt_to_cpp = _detect_target_language(
-    #     idea, code_path, prompt_adapter_settings
-    # )
-    # print(
-    #     f"Configured prompts for target language: {language_label} "
-    #     f"(code fence `{code_fence}`, adapt_to_cpp={adapt_to_cpp})"
-    # )
+    language_label, code_fence, adapt_to_cpp = _detect_target_language(
+        idea,
+        code_path,
+        prompt_adapter_settings,
+        language_override=base_config.get("exec", {}).get("language"),
+    )
+    print(
+        f"Configured prompts for target language: {language_label} "
+        f"(code fence `{code_fence}`, adapt_to_cpp={adapt_to_cpp})"
+    )
 
-    # execution_language = "cpp" if adapt_to_cpp else "python"
-    # agent_file_name = "runfile.cpp" if adapt_to_cpp else "runfile.py"
-    # env_packages_template = (
-    #     "treesearch/parallel_agent/language_adapter/environment_packages_cpp"
-    #     if adapt_to_cpp
-    #     else None
-    # )
-    # prompt_dir = _snapshot_and_prepare_prompts(
-    #     repo_root,
-    #     idea_dir_path,
-    #     language_label,
-    #     code_fence,
-    #     adapt_to_cpp,
-    # )
-    # os.environ["AI_SCIENTIST_PROMPT_DIR"] = str(prompt_dir)
-    # prompt_loader.PROMPT_DIR = Path(prompt_dir)
-    # prompt_loader.load_prompt.cache_clear()
+    execution_language = "cpp" if adapt_to_cpp else "python"
+    agent_file_name = "runfile.cpp" if adapt_to_cpp else "runfile.py"
+    env_packages_template = (
+        "treesearch/parallel_agent/language_adapter/environment_packages_cpp"
+        if adapt_to_cpp
+        else None
+    )
+    prompt_dir = _snapshot_and_prepare_prompts(
+        repo_root,
+        idea_dir_path,
+        language_label,
+        code_fence,
+        adapt_to_cpp,
+    )
+    os.environ["AI_SCIENTIST_PROMPT_DIR"] = str(prompt_dir)
+    prompt_loader.PROMPT_DIR = Path(prompt_dir)
+    prompt_loader.load_prompt.cache_clear()
 
-    # perform_experiments_impl = perform_experiments_bfts
+    perform_experiments_impl = perform_experiments_bfts
 
-    # modules_to_reload = [
-    #     "ai_scientist.treesearch.parallel_agent",
-    #     "ai_scientist.treesearch.agent_manager",
-    #     "ai_scientist.treesearch.perform_experiments_bfts_with_agentmanager",
-    # ]
-    # for module_name in modules_to_reload:
-    #     importlib.reload(importlib.import_module(module_name))
+    modules_to_reload = [
+        "ai_scientist.treesearch.parallel_agent",
+        "ai_scientist.treesearch.agent_manager",
+        "ai_scientist.treesearch.perform_experiments_bfts_with_agentmanager",
+    ]
+    for module_name in modules_to_reload:
+        importlib.reload(importlib.import_module(module_name))
 
-    # perform_module = importlib.import_module(
-    #     "ai_scientist.treesearch.perform_experiments_bfts_with_agentmanager"
-    # )
-    # perform_experiments_impl = perform_module.perform_experiments_bfts
+    perform_module = importlib.import_module(
+        "ai_scientist.treesearch.perform_experiments_bfts_with_agentmanager"
+    )
+    perform_experiments_impl = perform_module.perform_experiments_bfts
 
-    # idea_to_markdown(idea, str(idea_path_md), code_path, code_fence=code_fence)
+    idea_to_markdown(idea, str(idea_path_md), code_path, code_fence=code_fence)
 
-    # dataset_ref_code = None
-    # if args.add_dataset_ref:
-    #     dataset_ref_path = Path("hf_dataset_reference.py")
-    #     if dataset_ref_path.exists():
-    #         with open(dataset_ref_path, "r") as f:
-    #             dataset_ref_code = f.read()
-    #     else:
-    #         print(f"Warning: Dataset reference file {dataset_ref_path} not found")
-    #         dataset_ref_code = None
+    dataset_ref_code = None
+    if args.add_dataset_ref:
+        dataset_ref_path = Path("hf_dataset_reference.py")
+        if dataset_ref_path.exists():
+            with open(dataset_ref_path, "r") as f:
+                dataset_ref_code = f.read()
+        else:
+            print(f"Warning: Dataset reference file {dataset_ref_path} not found")
+            dataset_ref_code = None
 
-    # if dataset_ref_code is not None and code is not None:
-    #     added_code = dataset_ref_code + "\n" + code
-    # elif dataset_ref_code is not None and code is None:
-    #     added_code = dataset_ref_code
-    # elif dataset_ref_code is None and code is not None:
-    #     added_code = code
-    # else:
-    #     added_code = None
+    if dataset_ref_code is not None and code is not None:
+        added_code = dataset_ref_code + "\n" + code
+    elif dataset_ref_code is not None and code is None:
+        added_code = dataset_ref_code
+    elif dataset_ref_code is None and code is not None:
+        added_code = code
+    else:
+        added_code = None
 
-    # print(added_code)
+    print(added_code)
 
-    # # Add code to idea json if it was loaded
-    # if added_code is not None:
-    #     ideas[args.idea_idx]["Code"] = added_code
+    # Add code to idea json if it was loaded
+    if added_code is not None:
+        ideas[args.idea_idx]["Code"] = added_code
 
-    # # Store raw idea json
-    # idea_path_json = idea_dir_path / "idea.json"
-    # with open(idea_path_json, "w") as f:
-    #     json.dump(ideas[args.idea_idx], f, indent=4)
+    # Store raw idea json
+    idea_path_json = idea_dir_path / "idea.json"
+    with open(idea_path_json, "w") as f:
+        json.dump(ideas[args.idea_idx], f, indent=4)
 
-    # config_path = "bfts_config.yaml"
-    # idea_config_path = edit_bfts_config_file(
-    #     config_path,
-    #     idea_dir,
-    #     str(idea_path_json),
-    #     language=execution_language,
-    #     agent_file_name=agent_file_name,
-    #     env_packages_template=env_packages_template,
-    # )
+    config_path = "bfts_config.yaml"
+    idea_config_path = edit_bfts_config_file(
+        config_path,
+        idea_dir,
+        str(idea_path_json),
+        language=execution_language,
+        agent_file_name=agent_file_name,
+        env_packages_template=env_packages_template,
+    )
 
-    # perform_experiments_impl(idea_config_path)
-    # experiment_results_dir = idea_dir_path / "logs/0-run/experiment_results"
-    # if experiment_results_dir.exists():
-    #     shutil.copytree(
-    #         experiment_results_dir,
-    #         idea_dir_path / "experiment_results",
-    #         dirs_exist_ok=True,
-    #     )
+    perform_experiments_impl(idea_config_path)
+    experiment_results_dir = idea_dir_path / "logs/0-run/experiment_results"
+    if experiment_results_dir.exists():
+        shutil.copytree(
+            experiment_results_dir,
+            idea_dir_path / "experiment_results",
+            dirs_exist_ok=True,
+        )
 
-    # aggregate_plots(base_folder=idea_dir, model=args.model_agg_plots, n_reflections=args.model_agg_plots_ref)
+    aggregate_plots(base_folder=idea_dir, model=args.model_agg_plots, n_reflections=args.model_agg_plots_ref)
 
-    # shutil.rmtree(idea_dir_path / "experiment_results")
+    shutil.rmtree(idea_dir_path / "experiment_results")
 
-    # save_token_tracker(idea_dir)
+    save_token_tracker(idea_dir)
 
     if not args.skip_writeup:
         writeup_success = False
@@ -526,6 +555,7 @@ if __name__ == "__main__":
                     small_model=args.model_writeup_small,
                     big_model=args.model_writeup,
                     page_limit=8,
+                    n_writeup_reflections=args.writeup_reflections,
                     citations_text=citations_text,
                 )
             else:
@@ -539,6 +569,7 @@ if __name__ == "__main__":
                     small_model=args.model_writeup_small,
                     big_model=args.model_writeup,
                     page_limit=4,
+                    n_writeup_reflections=args.writeup_reflections,
                     citations_text=citations_text,
                 )
             if writeup_success:

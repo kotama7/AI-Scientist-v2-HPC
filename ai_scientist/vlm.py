@@ -15,6 +15,7 @@ AVAILABLE_VLMS = [
     "gpt-4o-2024-08-06",
     "gpt-4o-2024-11-20",
     "gpt-4o-mini-2024-07-18",
+    "gpt-4o",
     "o3-mini",
 
     # Ollama models
@@ -113,6 +114,14 @@ def make_vlm_call(client, model, temperature, system_message, prompt):
             ],
             temperature=temperature,
             max_tokens=MAX_NUM_TOKENS,
+        )
+    elif "o1" in model or "o3" in model:
+        return client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "user", "content": system_message},
+                *prompt,
+            ],
         )
     else:
         raise ValueError(f"Model {model} not supported.")
