@@ -208,6 +208,7 @@ def create_client(model: str) -> tuple[Any, str]:
         "gpt-4o-2024-08-06",
         "gpt-4o-2024-11-20",
         "gpt-4o-mini-2024-07-18",
+        "gpt-4o",
         "o3-mini",
     ]:
         print(f"Using OpenAI API with model {model}.")
