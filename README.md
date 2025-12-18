@@ -196,9 +196,39 @@ Everything required to orchestrate a cluster run lives in this directory. The st
      --model_agg_plots ollama/deepseek-r1:70b \
      --model_agg_plots_ref 20 \
      --num_cite_rounds 20 \
-     --additional-information "$(pwd)/suppliment_information.txt"
+     --additional-information "$(pwd)/suppliment_information.txt" \
+     --num_workers 4
    ```
    Replace the idea file, models, and additional flags according to your experiment. If you use a scheduler, wrap this command sequence in your site-specific submission script.
+
+### Split-phase HPC execution (default)
+
+- `exec.phase_mode` now defaults to `split`, executing **download → coding → compile → run** in order and halting on failures. Each phase writes logs under `logs/<run>/phase_logs/node_<id>/{download,coding,compile,run}.log`.
+- Provide a container image with `--singularity_image` (or `exec.singularity_image`); the runner now uses Singularity only. For each worker it runs Phase 1 inside the user-provided `base.sif`, mirrors the installs into a sandbox, and seals a `worker-<i>.sif` under `runs/<run_id>/workers/worker-<i>/container/`. Phases 2–4 always execute inside that worker image with `--nv` and `CUDA_VISIBLE_DEVICES` pinned sequentially (`worker-i` → GPU `i`). Writable installs during Phase 1 prefer `--writable-tmpfs` (set `exec.writable_tmpfs=false` to disable) and can use optional overlays (`exec.container_overlay`).
+- The coding phase materializes the LLM-specified workspace tree/files under `/workspace` (relative paths only; no parent traversal).
+- Compile commands respect the LLM `build_plan.compiler_selected`, which must be chosen from `available_compilers` discovered inside the container. The runner never swaps the compiler; an invalid/missing selection fails the compile phase.
+- Split-mode prompts enforce machine-readable JSON output, including `coding.workspace.tree` and `coding.workspace.files`. Legacy language adapters remain available only when `phase_mode=single`.
+- Switch modes via `--phase_mode split|single`; force Singularity with `--container_runtime singularity` if auto-detection is not desired.
+- Expected LLM output (JSON only) follows the schema:
+  ```json
+  {
+    "phase_artifacts": {
+      "download": {"commands": [], "notes": ""},
+      "coding": {"workspace": {"root": "/workspace", "tree": [], "files": []}},
+      "compile": {"build_plan": {"compiler_selected": "", "output": "bin/a.out"}, "commands": []},
+      "run": {"commands": [], "expected_outputs": ["artifacts/final/output.npy"]}
+    },
+    "constraints": {
+      "allow_sudo_in_singularity": true,
+      "allow_apt_get_in_singularity": true,
+      "write_only_under_workspace": true,
+      "no_absolute_paths": true,
+      "no_parent_traversal": true,
+      "python_output_must_use_numpy": true,
+      "non_python_output_must_use_cnpy": true
+    }
+  }
+  ```
 
 
 ## Citing The AI Scientist-v2

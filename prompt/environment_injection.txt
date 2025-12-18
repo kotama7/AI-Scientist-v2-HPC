@@ -1,0 +1,9 @@
+Environment context (from inside the worker container):
+- container_runtime: {container_runtime}
+- singularity_image: {singularity_image}
+- workspace_mount: {workspace_mount}
+- available_compiler_names: {available_compiler_names}
+- available_compilers (full): {available_compilers_json}
+- available_libs: {available_libs}
+
+Select compiler_selected from available_compiler_names. If nothing fits, plan installs in download phase (sudo/apt-get with --writable-tmpfs/overlay or source build under /workspace).

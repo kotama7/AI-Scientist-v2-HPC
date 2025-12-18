@@ -60,6 +60,7 @@ class Node(DataClassJsonMixin):
     plan: str = field(default="", kw_only=True)  # type: ignore
     overall_plan: str = field(default="", kw_only=True)  # type: ignore
     code: str = field(default="", kw_only=True)  # type: ignore
+    phase_artifacts: dict | None = field(default=None, kw_only=True)
     plot_code: str = field(default=None, kw_only=True)  # type: ignore
     plot_plan: str = field(default=None, kw_only=True)  # type: ignore
 
@@ -231,6 +232,7 @@ class Node(DataClassJsonMixin):
             "overall_plan": (
                 self.overall_plan if hasattr(self, "overall_plan") else None
             ),
+            "phase_artifacts": getattr(self, "phase_artifacts", None),
             "plot_code": self.plot_code,
             "plot_plan": self.plot_plan,
             "step": self.step,

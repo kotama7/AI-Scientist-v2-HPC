@@ -60,6 +60,17 @@ exec:
     -lpthread,
     -lstdc++fs
   ]
+  phase_mode: split
+  singularity_image: null
+  container_runtime: null
+  workspace_mount: "/workspace"
+  writable_tmpfs: true
+  container_overlay: null
+  container_extra_args: []
+  per_worker_sif: true
+  keep_sandbox: false
+  use_fakeroot: true
+  writable_mode: auto
 
 generate_report: True
 # LLM settings for final report from journal
@@ -99,7 +110,7 @@ agent:
   # whether to provide the agent with a preview of the data
   data_preview: False
   # persona that is injected into prompts (replace occurrences of "AI researcher")
-  role_description: "HPC researcher"
+  role_description: "Domain-neutral research engineer"
 
   # LLM settings for coding
   code:

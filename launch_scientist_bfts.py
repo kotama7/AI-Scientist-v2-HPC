@@ -153,6 +153,68 @@ def parse_arguments():
         action="store_true",
         help="If set, skip the review process",
     )
+    parser.add_argument(
+        "--phase_mode",
+        type=str,
+        default="split",
+        choices=["split", "single"],
+        help="Execution phase mode (split runs download/coding/compile/run phases, single keeps legacy behavior)",
+    )
+    parser.add_argument(
+        "--singularity_image",
+        type=str,
+        default=None,
+        help="Path to Singularity image for worker execution",
+    )
+    parser.add_argument(
+        "--container_runtime",
+        type=str,
+        default=None,
+        choices=["singularity"],
+        help="Force Singularity runtime (otherwise auto-detected)",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=None,
+        help="Number of parallel workers to launch (maps worker-i to GPU i).",
+    )
+    parser.add_argument(
+        "--container_overlay",
+        type=str,
+        default=None,
+        help="Writable overlay image/path to enable apt-get inside Singularity",
+    )
+    parser.add_argument(
+        "--disable_writable_tmpfs",
+        action="store_true",
+        help="Disable --writable-tmpfs when starting container instances.",
+    )
+    parser.add_argument(
+        "--per_worker_sif",
+        type=lambda x: str(x).lower() in ("1", "true", "yes"),
+        default=True,
+        help="Whether to build per-worker Singularity images (default: true).",
+    )
+    parser.add_argument(
+        "--keep_sandbox",
+        type=lambda x: str(x).lower() in ("1", "true", "yes"),
+        default=False,
+        help="Keep worker sandbox directories after building worker SIFs.",
+    )
+    parser.add_argument(
+        "--use_fakeroot",
+        type=lambda x: str(x).lower() in ("1", "true", "yes"),
+        default=True,
+        help="Use --fakeroot for Singularity build/exec when preparing worker images.",
+    )
+    parser.add_argument(
+        "--writable_mode",
+        type=str,
+        choices=["auto", "tmpfs", "overlay"],
+        default="auto",
+        help="Writable mode for Phase 1 in Singularity (auto chooses tmpfs, fallback to overlay).",
+    )
     return parser.parse_args()
 
 
@@ -432,25 +494,33 @@ if __name__ == "__main__":
 
     base_config_path = repo_root / "bfts_config.yaml"
     base_config = _load_base_config(base_config_path)
-    prompt_adapter_settings = _load_prompt_adapter_settings(base_config)
-    if prompt_adapter_settings is None:
+    phase_mode = str(base_config.get("exec", {}).get("phase_mode", "split")).lower()
+    prompt_adapter_settings = (
+        _load_prompt_adapter_settings(base_config) if phase_mode != "split" else None
+    )
+    if phase_mode != "split" and prompt_adapter_settings is None:
         raise ValueError(
             "prompt_adapter configuration is required for language inference."
         )
     set_persona_role(_extract_role_description(base_config))
-
-    language_label, code_fence, adapt_to_cpp = _detect_target_language(
-        idea,
-        code_path,
-        prompt_adapter_settings,
-        language_override=base_config.get("exec", {}).get("language"),
-    )
+    if phase_mode == "split":
+        execution_language = base_config.get("exec", {}).get("language", "python")
+        adapt_to_cpp = False
+        code_fence = execution_language or "python"
+        language_label = (code_fence or "python").capitalize()
+    else:
+        language_label, code_fence, adapt_to_cpp = _detect_target_language(
+            idea,
+            code_path,
+            prompt_adapter_settings,
+            language_override=base_config.get("exec", {}).get("language"),
+        )
+        execution_language = "cpp" if adapt_to_cpp else "python"
     print(
         f"Configured prompts for target language: {language_label} "
         f"(code fence `{code_fence}`, adapt_to_cpp={adapt_to_cpp})"
     )
 
-    execution_language = "cpp" if adapt_to_cpp else "python"
     agent_file_name = "runfile.cpp" if adapt_to_cpp else "runfile.py"
     env_packages_template = (
         "treesearch/parallel_agent/language_adapter/environment_packages_cpp"
@@ -523,6 +593,16 @@ if __name__ == "__main__":
         language=execution_language,
         agent_file_name=agent_file_name,
         env_packages_template=env_packages_template,
+        phase_mode=args.phase_mode,
+        singularity_image=args.singularity_image,
+        container_runtime=args.container_runtime,
+        num_workers=args.num_workers,
+        writable_tmpfs=not args.disable_writable_tmpfs,
+        container_overlay=args.container_overlay,
+        per_worker_sif=args.per_worker_sif,
+        keep_sandbox=args.keep_sandbox,
+        use_fakeroot=args.use_fakeroot,
+        writable_mode=args.writable_mode,
     )
 
     perform_experiments_impl(idea_config_path)

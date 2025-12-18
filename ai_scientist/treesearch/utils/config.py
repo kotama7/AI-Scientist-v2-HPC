@@ -84,6 +84,17 @@ class ExecConfig:
     env_packages_template: str | None = None
     cpp_compile_flags: list[str] | None = None
     cpp_compiler: str = "g++"
+    phase_mode: str = "split"
+    singularity_image: str | None = None
+    container_runtime: str | None = None
+    workspace_mount: str = "/workspace"
+    writable_tmpfs: bool = True
+    container_overlay: str | None = None
+    container_extra_args: list[str] | None = None
+    per_worker_sif: bool = True
+    keep_sandbox: bool = False
+    use_fakeroot: bool = True
+    writable_mode: str = "auto"
 
 
 @dataclass
@@ -189,6 +200,9 @@ def prep_cfg(cfg: Config):
         raise ValueError("agent.type must be either 'parallel' or 'sequential'")
 
     set_persona_role(getattr(cfg.agent, "role_description", None))
+    cfg.exec.phase_mode = str(getattr(cfg.exec, "phase_mode", "split")).lower()
+    if cfg.exec.phase_mode not in {"split", "single"}:
+        raise ValueError("exec.phase_mode must be either 'split' or 'single'")
 
     return cast(Config, cfg)
 

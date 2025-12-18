@@ -56,6 +56,17 @@ def edit_bfts_config_file(
     env_packages_template: str | None = None,
     cpp_compile_flags: Sequence[str] | None = None,
     cpp_compiler: str | None = None,
+    phase_mode: str | None = None,
+    singularity_image: str | None = None,
+    container_runtime: str | None = None,
+    num_workers: int | None = None,
+    writable_tmpfs: bool | None = None,
+    container_overlay: str | None = None,
+    container_extra_args: Sequence[str] | None = None,
+    per_worker_sif: bool | None = None,
+    keep_sandbox: bool | None = None,
+    use_fakeroot: bool | None = None,
+    writable_mode: str | None = None,
 ) -> str:
     """
     Edit the bfts_config.yaml file to point to the idea.md file
@@ -96,6 +107,29 @@ def edit_bfts_config_file(
         exec_cfg["cpp_compile_flags"] = list(cpp_compile_flags)
     if cpp_compiler is not None:
         exec_cfg["cpp_compiler"] = cpp_compiler
+    if phase_mode is not None:
+        exec_cfg["phase_mode"] = phase_mode
+    if singularity_image is not None:
+        exec_cfg["singularity_image"] = singularity_image
+    if container_runtime is not None:
+        exec_cfg["container_runtime"] = container_runtime
+    if writable_tmpfs is not None:
+        exec_cfg["writable_tmpfs"] = bool(writable_tmpfs)
+    if container_overlay is not None:
+        exec_cfg["container_overlay"] = container_overlay
+    if container_extra_args is not None:
+        exec_cfg["container_extra_args"] = list(container_extra_args)
+    if per_worker_sif is not None:
+        exec_cfg["per_worker_sif"] = bool(per_worker_sif)
+    if keep_sandbox is not None:
+        exec_cfg["keep_sandbox"] = bool(keep_sandbox)
+    if use_fakeroot is not None:
+        exec_cfg["use_fakeroot"] = bool(use_fakeroot)
+    if writable_mode is not None:
+        exec_cfg["writable_mode"] = writable_mode
+    if num_workers is not None:
+        config.setdefault("agent", {})
+        config["agent"]["num_workers"] = int(num_workers)
 
     with open(run_config_path, "w") as f:
         yaml.dump(config, f)

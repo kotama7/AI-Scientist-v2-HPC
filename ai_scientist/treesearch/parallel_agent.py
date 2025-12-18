@@ -1,11 +1,13 @@
 from concurrent.futures import ProcessPoolExecutor
 from typing import List, Optional, Set, Any, Callable, cast, Dict, Tuple
+import json
 import random
 import subprocess
 import os
 from queue import Queue
 import logging
 import humanize
+import time
 from .backend import FunctionSpec, compile_prompt_to_md, query
 from .interpreter import ExecutionResult
 from .journal import Journal, Node
@@ -13,9 +15,21 @@ from .utils import data_preview
 from .utils.config import Config
 from .utils.metric import MetricValue, WorstMetricValue
 from .utils.response import extract_code, extract_text_up_to_code, wrap_code
+from .utils.phase_execution import (
+    ExecutionEnvironment,
+    SingularityWorkerContainer,
+    collect_available_compilers,
+    collect_available_libs,
+)
+from .utils.phase_plan import (
+    PhasePlanError,
+    apply_workspace_plan,
+    combine_sources_for_display,
+    extract_phase_artifacts,
+)
 import pickle
 from dataclasses import asdict
-from ai_scientist.prompt_loader import load_prompt, load_prompt_lines
+from ai_scientist.prompt_loader import load_prompt, load_prompt_lines, format_prompt
 
 from rich import print
 from pathlib import Path
@@ -29,6 +43,11 @@ ExecCallbackType = Callable[[str, bool], ExecutionResult]
 
 
 PROMPT_BASE = "treesearch/parallel_agent/"
+
+BASE_SYSTEM_PROMPT = load_prompt("base_system").rstrip("\n")
+DOMAIN_NEUTRAL_PROMPT = load_prompt("domain_neutral").rstrip("\n")
+ENVIRONMENT_INJECTION_TEMPLATE = load_prompt("environment_injection").rstrip("\n")
+AI_OPTIONAL_PROMPT = load_prompt("ai_optional").rstrip("\n")
 
 IMPLEMENTATION_GUIDELINE_PRE = tuple(
     load_prompt_lines(PROMPT_BASE + "implementation_guideline/pre")
@@ -46,6 +65,9 @@ DATA_SOURCE_GUIDELINES = {
 
 RESPONSE_FORMAT_DEFAULT = load_prompt(
     PROMPT_BASE + "response_format/default"
+).rstrip("\n")
+RESPONSE_FORMAT_SPLIT_PHASE = load_prompt(
+    "execution_split_schema"
 ).rstrip("\n")
 RESPONSE_FORMAT_METRIC_PARSE = load_prompt(
     PROMPT_BASE + "response_format/metric_parse"
@@ -399,6 +421,7 @@ class MinimalAgent:
         evaluation_metrics=None,
         stage=None,
         stage_name=None,
+        environment_context: dict | None = None,
     ):
         self.task_desc = task_desc
         self.memory_summary = memory_summary
@@ -406,13 +429,32 @@ class MinimalAgent:
         self.evaluation_metrics = evaluation_metrics
         self.stage_name = stage_name
         self.data_preview = None
+        self.environment_context = environment_context or {}
 
     @property
     def code_language(self) -> str:
         return getattr(self.cfg.exec, "language", "python")
 
     @property
+    def phase_mode(self) -> str:
+        return getattr(self.cfg.exec, "phase_mode", "single")
+
+    @property
     def _prompt_environment(self):
+        if self.phase_mode == "split":
+            compilers = self.environment_context.get("available_compilers", [])
+            libs = self.environment_context.get("available_libs", [])
+            payload = {
+                "available_compilers_json": json.dumps(compilers, indent=2),
+                "available_compiler_names": ", ".join([c.get("name", "") for c in compilers if isinstance(c, dict)]) or "none",
+                "available_libs": json.dumps(libs, indent=2),
+                "container_runtime": self.environment_context.get("container_runtime") or "host",
+                "singularity_image": self.environment_context.get("singularity_image") or "none",
+                "workspace_mount": self.environment_context.get("workspace_mount", "/workspace"),
+            }
+            rendered_message = format_prompt("environment_injection", **payload)
+            return {"Environment injection": rendered_message}
+
         if self.cfg.exec.env_packages_template:
             package_template = self.cfg.exec.env_packages_template
         else:
@@ -444,6 +486,10 @@ class MinimalAgent:
 
     @property
     def _prompt_impl_guideline(self):
+        if self.phase_mode == "split":
+            domain_guideline = DOMAIN_NEUTRAL_PROMPT.splitlines()
+            return {"Implementation guideline": domain_guideline}
+
         impl_guideline = list(IMPLEMENTATION_GUIDELINE_PRE)
 
         if hasattr(self.cfg.experiment, "num_syn_datasets"):
@@ -485,7 +531,36 @@ class MinimalAgent:
 
     @property
     def _prompt_resp_fmt(self):
+        if self.phase_mode == "split":
+            return {"Response format": RESPONSE_FORMAT_SPLIT_PHASE}
         return {"Response format": RESPONSE_FORMAT_DEFAULT}
+
+    @property
+    def _prompt_phase_guidance(self):
+        if self.phase_mode != "split":
+            return {}
+        return {
+            "Phase workflow": [
+                "Use the 4-phase plan: Phase 1 download/install, Phase 2 coding, Phase 3 compile, Phase 4 run.",
+                "Phase 1 may use sudo/apt-get inside Singularity with writable-tmpfs/overlay; if unavailable install under /workspace.",
+                "All paths are relative to /workspace; no absolute paths or parent traversal.",
+                "compile commands must honor build_plan.compiler_selected chosen from available_compilers (do not invent compilers or switch).",
+                "Run phase must generate /workspace/artifacts/final/output.npy (Python uses numpy save; non-Python must use cnpy).",
+                "Do not rely on language adapters, interpreter adapters, or external routers; commands run directly in the worker.",
+            ]
+        }
+
+    def _apply_split_prompt_layers(self, prompt: dict[str, Any]) -> dict[str, Any]:
+        """Inject common split-phase system guidance and environment context."""
+        prompt = {"System": BASE_SYSTEM_PROMPT, **prompt}
+        prompt["Domain"] = DOMAIN_NEUTRAL_PROMPT
+        env_block = self._prompt_environment
+        if env_block:
+            prompt["Environment"] = env_block.get("Environment injection", env_block)
+        prompt["Instructions"] |= self._prompt_phase_guidance
+        prompt["Instructions"] |= self._prompt_resp_fmt
+        prompt["Instructions"] |= self._prompt_impl_guideline
+        return prompt
 
     def _prompt_metricparse_resp_fmt(self):
         return {"Response format": RESPONSE_FORMAT_METRIC_PARSE}
@@ -509,11 +584,15 @@ class MinimalAgent:
             "Memory": self.memory_summary if self.memory_summary else "",
             "Instructions": {},
         }
-        prompt["Instructions"] |= self._prompt_resp_fmt
         prompt["Instructions"]["Experiment design sketch guideline"] = list(DRAFT_EXP_GUIDELINES)
         prompt["Instructions"]["Evaluation Metric(s)"] = self.evaluation_metrics
-        prompt["Instructions"] |= self._prompt_impl_guideline
-        prompt["Instructions"] |= self._prompt_environment
+        if self.phase_mode == "split":
+            prompt = self._apply_split_prompt_layers(prompt)
+        else:
+            prompt["Instructions"] |= self._prompt_phase_guidance
+            prompt["Instructions"] |= self._prompt_resp_fmt
+            prompt["Instructions"] |= self._prompt_impl_guideline
+            prompt["Instructions"] |= self._prompt_environment
 
         if self.cfg.agent.data_preview:
             prompt["Data Overview"] = self.data_preview
@@ -524,6 +603,12 @@ class MinimalAgent:
         print("[cyan]--------------------------------[/cyan]")
 
         print("MinimalAgent: Getting plan and code")
+        if self.phase_mode == "split":
+            artifacts = self.generate_phase_artifacts(prompt)
+            files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
+            code_repr = combine_sources_for_display(files)
+            plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
+            return Node(plan=plan, code=code_repr, phase_artifacts=artifacts)
         plan, code = self.plan_and_code_query(prompt)
         print("MinimalAgent: Draft complete")
         return Node(plan=plan, code=code)
@@ -540,10 +625,21 @@ class MinimalAgent:
         }
         prompt["Instructions"] |= self._prompt_debug_resp_fmt
         prompt["Instructions"]["Bugfix improvement sketch guideline"] = list(DEBUG_BUGFIX_GUIDELINES)
-        prompt["Instructions"] |= self._prompt_impl_guideline
+        if self.phase_mode == "split":
+            prompt = self._apply_split_prompt_layers(prompt)
+        else:
+            prompt["Instructions"] |= self._prompt_phase_guidance
+            prompt["Instructions"] |= self._prompt_impl_guideline
 
         if self.cfg.agent.data_preview:
             prompt["Data Overview"] = self.data_preview
+
+        if self.phase_mode == "split":
+            artifacts = self.generate_phase_artifacts(prompt)
+            files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
+            code_repr = combine_sources_for_display(files)
+            plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
+            return Node(plan=plan, code=code_repr, parent=parent_node, phase_artifacts=artifacts)
 
         plan, code = self.plan_and_code_query(prompt)
         return Node(plan=plan, code=code, parent=parent_node)
@@ -561,8 +657,24 @@ class MinimalAgent:
             "Code": wrap_code(parent_node.code, lang=self.code_language),
         }
 
-        prompt["Instructions"] |= self._prompt_resp_fmt
-        prompt["Instructions"] |= self._prompt_impl_guideline
+        if self.phase_mode == "split":
+            prompt = self._apply_split_prompt_layers(prompt)
+        else:
+            prompt["Instructions"] |= self._prompt_phase_guidance
+            prompt["Instructions"] |= self._prompt_resp_fmt
+            prompt["Instructions"] |= self._prompt_impl_guideline
+
+        if self.phase_mode == "split":
+            artifacts = self.generate_phase_artifacts(prompt)
+            files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
+            code_repr = combine_sources_for_display(files)
+            plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
+            return Node(
+                plan=plan,
+                code=code_repr,
+                parent=parent_node,
+                phase_artifacts=artifacts,
+            )
 
         plan, code = self.plan_and_code_query(prompt)
         return Node(
@@ -577,6 +689,7 @@ class MinimalAgent:
             code=parent_node.code,
             parent=parent_node,
             is_seed_node=True,
+            phase_artifacts=parent_node.phase_artifacts,
         )
 
     def _generate_hyperparam_tuning_node(
@@ -589,7 +702,23 @@ class MinimalAgent:
             "Instructions": {},
         }
         prompt["Instructions"]["Implementation guideline"] = list(HYPERPARAM_NODE_INSTRUCTIONS)
-        prompt["Instructions"] |= self._prompt_hyperparam_tuning_resp_fmt
+        if self.phase_mode == "split":
+            prompt = self._apply_split_prompt_layers(prompt)
+        else:
+            prompt["Instructions"] |= self._prompt_phase_guidance
+            prompt["Instructions"] |= self._prompt_hyperparam_tuning_resp_fmt
+        if self.phase_mode == "split":
+            artifacts = self.generate_phase_artifacts(prompt)
+            files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
+            code_repr = combine_sources_for_display(files)
+            plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
+            return Node(
+                plan="Hyperparam tuning name: " + hyperparam_idea.name + ".\n" + plan,
+                code=code_repr,
+                parent=parent_node,
+                hyperparam_name=hyperparam_idea.name,
+                phase_artifacts=artifacts,
+            )
         plan, code = self.plan_and_code_query(prompt)
         return Node(
             plan="Hyperparam tuning name: " + hyperparam_idea.name + ".\n" + plan,
@@ -606,7 +735,23 @@ class MinimalAgent:
             "Instructions": {},
         }
         prompt["Instructions"]["Implementation guideline"] = list(ABLATION_NODE_INSTRUCTIONS)
-        prompt["Instructions"] |= self._prompt_ablation_resp_fmt
+        if self.phase_mode == "split":
+            prompt = self._apply_split_prompt_layers(prompt)
+        else:
+            prompt["Instructions"] |= self._prompt_phase_guidance
+            prompt["Instructions"] |= self._prompt_ablation_resp_fmt
+        if self.phase_mode == "split":
+            artifacts = self.generate_phase_artifacts(prompt)
+            files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
+            code_repr = combine_sources_for_display(files)
+            plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
+            return Node(
+                plan="Ablation name: " + ablation_idea.name + ".\n" + plan,
+                code=code_repr,
+                parent=parent_node,
+                ablation_name=ablation_idea.name,
+                phase_artifacts=artifacts,
+            )
         plan, code = self.plan_and_code_query(prompt)
         return Node(
             plan="Ablation name: " + ablation_idea.name + ".\n" + plan,
@@ -614,6 +759,84 @@ class MinimalAgent:
             parent=parent_node,
             ablation_name=ablation_idea.name,
         )
+
+    def generate_phase_artifacts(self, prompt, retries: int = 3) -> dict:
+        """Query the LLM for split-phase output and validate the JSON structure."""
+        last_error = ""
+        last_response = ""
+        for _ in range(retries):
+            completion_text = query(
+                system_message=prompt,
+                user_message=None,
+                model=self.cfg.agent.code.model,
+                temperature=self.cfg.agent.code.temp,
+            )
+            try:
+                return extract_phase_artifacts(completion_text)
+            except PhasePlanError as exc:
+                last_error = str(exc)
+                last_response = completion_text
+                prompt["Parsing Feedback"] = (
+                    "The previous response was invalid JSON: "
+                    f"{last_error}.\n"
+                    "Raw response was:\n"
+                    "<<<RAW_RESPONSE_START>>>\n"
+                    f"{completion_text}\n"
+                    "<<<RAW_RESPONSE_END>>>\n"
+                    "Return strict JSON following the Response format with download/coding/compile/run."
+                )
+        # Fallback: return a minimal placeholder plan to keep execution moving
+        fallback = {
+            "phase_artifacts": {
+                "download": {"commands": [], "notes": f"fallback after parse error: {last_error}"},
+                "coding": {
+                    "workspace": {
+                        "root": "/workspace",
+                        "tree": ["workspace/", "workspace/src/"],
+                        "files": [
+                            {
+                                "path": "src/main.py",
+                                "mode": "0644",
+                                "encoding": "utf-8",
+                                "content": (
+                                    "# Fallback placeholder due to LLM parse failure\n"
+                                    f"# Error: {last_error}\n"
+                                    "print('Placeholder execution; no real code generated')\n"
+                                ),
+                            }
+                        ],
+                    },
+                    "notes": "fallback coding plan",
+                },
+                "compile": {
+                    "build_plan": {
+                        "language": "python",
+                        "compiler_selected": "python",
+                        "cflags": [],
+                        "ldflags": [],
+                        "workdir": "/workspace",
+                        "output": "artifacts/final/output.npy",
+                    },
+                    "commands": [],
+                    "notes": "no compile needed for placeholder",
+                },
+                "run": {
+                    "commands": ["python src/main.py"],
+                    "expected_outputs": ["artifacts/final/output.npy"],
+                    "notes": "fallback run",
+                },
+            },
+            "constraints": {
+                "allow_sudo_in_singularity": True,
+                "allow_apt_get_in_singularity": True,
+                "write_only_under_workspace": True,
+                "no_absolute_paths": True,
+                "no_parent_traversal": True,
+                "python_output_must_use_numpy": True,
+                "non_python_output_must_use_cnpy": True,
+            },
+        }
+        return fallback
 
     def plan_and_code_query(
         self, prompt, retries=3, code_language: str | None = None
@@ -1012,7 +1235,15 @@ class GPUManager:
             raise RuntimeError("No GPUs available")
         print(f"Available GPUs: {self.available_gpus}")
         print(f"Process ID: {process_id}")
-        gpu_id = min(self.available_gpus)
+        preferred_id = None
+        try:
+            preferred_id = int(str(process_id).split("_")[-1])
+        except Exception:
+            preferred_id = None
+        if preferred_id is not None and preferred_id in self.available_gpus:
+            gpu_id = preferred_id
+        else:
+            gpu_id = min(self.available_gpus)
         print(f"Acquiring GPU {gpu_id} for process {process_id}")
         self.available_gpus.remove(gpu_id)
         self.gpu_assignments[process_id] = gpu_id
@@ -1179,7 +1410,7 @@ class ParallelAgent:
             gpu_id = None
             if self.gpu_manager is not None:
                 try:
-                    process_id = f"seed_{seed}_worker"
+                    process_id = f"worker_{seed}"
                     gpu_id = self.gpu_manager.acquire_gpu(process_id)
                     logger.info(f"Assigned GPU {gpu_id} to seed {seed}")
                 except RuntimeError as e:
@@ -1233,10 +1464,11 @@ class ParallelAgent:
                     best_stage2_plot_code,
                     best_stage3_plot_code,
                     seed_eval,
+                    seed,
                 )
             )
 
-        for future in futures:
+        for seed, future in enumerate(futures):
             try:
                 result_data = future.result(timeout=self.timeout)
                 result_node = Node.from_dict(result_data, self.journal)
@@ -1248,6 +1480,13 @@ class ParallelAgent:
                 print("Added result node to journal")
             except Exception as e:
                 logger.error(f"Error in multi-seed evaluation: {str(e)}")
+            finally:
+                process_id = f"worker_{seed}"
+                if (
+                    self.gpu_manager is not None
+                    and process_id in self.gpu_manager.gpu_assignments
+                ):
+                    self.gpu_manager.release_gpu(process_id)
 
         return seed_nodes
 
@@ -1351,11 +1590,11 @@ class ParallelAgent:
         best_stage2_plot_code=None,
         best_stage1_plot_code=None,
         seed_eval=False,
+        worker_id: int | None = None,
     ):
         """Wrapper function that creates a fresh environment for each process"""
         from .interpreter import Interpreter
-        from .journal import Node, Journal
-        from copy import deepcopy
+        from .journal import Node
         import os
         import multiprocessing
 
@@ -1369,6 +1608,62 @@ class ParallelAgent:
         # Create process-specific working directory
         working_dir = os.path.join(workspace, "working")
         os.makedirs(working_dir, exist_ok=True)
+        workspace_path = Path(workspace)
+        phase_log_dir: Path | None = None
+
+        def resolve_workdir(requested: str | None) -> Path:
+            expected_root = getattr(cfg.exec, "workspace_mount", "/workspace")
+            if not requested:
+                return workspace_path
+            requested_path = str(requested)
+            if requested_path.startswith("/"):
+                if requested_path.startswith(expected_root):
+                    rel = requested_path[len(expected_root) :].lstrip("/")
+                    candidate = (workspace_path / rel).resolve()
+                else:
+                    candidate = workspace_path
+            else:
+                candidate = (workspace_path / requested_path).resolve()
+            try:
+                candidate.relative_to(workspace_path)
+                return candidate
+            except ValueError:
+                return workspace_path
+
+        def run_commands_with_logging(env, commands, cwd: Path, log_path: Path, phase_name: str, extra_env=None):
+            outputs: list[str] = []
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a") as log:
+                if not commands:
+                    log.write(f"No commands provided for {phase_name}\n")
+                    return True, outputs, None
+                for raw_cmd in commands:
+                    printable_cmd = " ".join(raw_cmd) if isinstance(raw_cmd, list) else str(raw_cmd)
+                    log.write(f"$ {printable_cmd}\n")
+                    if env is None:
+                        if isinstance(raw_cmd, str):
+                            exec_cmd = ["bash", "-lc", raw_cmd]
+                        else:
+                            exec_cmd = list(raw_cmd)
+                        result = subprocess.run(
+                            exec_cmd,
+                            cwd=str(cwd) if cwd else None,
+                            env={**os.environ, **(extra_env or {})},
+                            capture_output=True,
+                            text=True,
+                        )
+                    else:
+                        result = env.run(raw_cmd, cwd=cwd, extra_env=extra_env)
+                    if result.stdout:
+                        log.write(result.stdout)
+                        outputs.append(result.stdout)
+                    if result.stderr:
+                        log.write(result.stderr)
+                        outputs.append(result.stderr)
+                    if result.returncode != 0:
+                        log.flush()
+                        return False, outputs, result
+            return True, outputs, None
 
         if gpu_id is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -1377,6 +1672,44 @@ class ParallelAgent:
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
             logger.info(f"Process {process_id} running on CPU")
 
+        environment_context: dict[str, Any] = {}
+        exec_env: ExecutionEnvironment | None = None
+        if getattr(cfg.exec, "phase_mode", "single") == "split":
+            exec_env = ExecutionEnvironment(
+                workspace=workspace_path,
+                image=getattr(cfg.exec, "singularity_image", None),
+                runtime_preference="singularity",
+                workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
+                gpu_id=gpu_id,
+                instance_name=f"worker-{worker_id}" if worker_id is not None else None,
+                enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
+                overlay_path=getattr(cfg.exec, "container_overlay", None),
+                extra_start_args=getattr(cfg.exec, "container_extra_args", None),
+            )
+            env_started = False
+            try:
+                exec_env.start()
+                env_started = True
+            except Exception as exc:
+                logger.warning("Failed to start container instance; falling back to host. Details: %s", exc)
+            try:
+                available_compilers = collect_available_compilers(exec_env) if env_started else []
+                available_libs = collect_available_libs(exec_env) if env_started else []
+            except Exception as exc:
+                logger.warning("Failed to collect environment facts: %s", exc)
+                available_compilers = []
+                available_libs = []
+            environment_context = {
+                "available_compilers": available_compilers,
+                "available_libs": available_libs,
+                "container_runtime": exec_env.runtime if exec_env else None,
+                "singularity_image": str(exec_env.image) if exec_env and exec_env.image else None,
+                "workspace_mount": getattr(cfg.exec, "workspace_mount", "/workspace"),
+            }
+            if exec_env:
+                exec_env.stop()
+                exec_env = None
+
         # Create minimal agent for worker process with the global metric definition
         worker_agent = MinimalAgent(
             task_desc=task_desc,
@@ -1384,19 +1717,21 @@ class ParallelAgent:
             memory_summary=memory_summary,
             evaluation_metrics=evaluation_metrics,
             stage_name=stage_name,
+            environment_context=environment_context,
         )
 
-        # Create interpreter instance for worker process
-        print("Creating Interpreter")
-        process_interpreter = Interpreter(
-            working_dir=workspace,
-            timeout=cfg.exec.timeout,
-            format_tb_ipython=cfg.exec.format_tb_ipython,
-            agent_file_name=cfg.exec.agent_file_name,
-            language=cfg.exec.language,
-            cpp_compile_flags=cfg.exec.cpp_compile_flags,
-            cpp_compiler=cfg.exec.cpp_compiler,
-        )
+        process_interpreter: Optional[Interpreter] = None
+        if cfg.exec.phase_mode == "single":
+            print("Creating Interpreter")
+            process_interpreter = Interpreter(
+                working_dir=workspace,
+                timeout=cfg.exec.timeout,
+                format_tb_ipython=cfg.exec.format_tb_ipython,
+                agent_file_name=cfg.exec.agent_file_name,
+                language=cfg.exec.language,
+                cpp_compile_flags=cfg.exec.cpp_compile_flags,
+                cpp_compiler=cfg.exec.cpp_compiler,
+            )
         plot_interpreter: Optional[Interpreter] = None
         plot_agent_file_name = f"{Path(cfg.exec.agent_file_name).stem}_plot.py"
         plot_interpreter = Interpreter(
@@ -1474,16 +1809,267 @@ class ParallelAgent:
 
             # Execute and parse results
             print("Running code")
-            exec_result = process_interpreter.run(child_node.code, True)
-            process_interpreter.cleanup_session()
+            exec_result: ExecutionResult
+            if cfg.exec.phase_mode == "split":
+                phase_log_dir = Path(cfg.log_dir) / "phase_logs" / f"node_{child_node.id}"
+                phase_log_dir.mkdir(parents=True, exist_ok=True)
+                raw_phase_artifacts = getattr(child_node, "phase_artifacts", None)
+                phase_data = None
+                if isinstance(raw_phase_artifacts, dict):
+                    phase_data = raw_phase_artifacts.get("phase_artifacts") or raw_phase_artifacts
+                elif isinstance(raw_phase_artifacts, list) and raw_phase_artifacts:
+                    first = raw_phase_artifacts[0]
+                    if isinstance(first, dict):
+                        phase_data = first.get("phase_artifacts") or first
+                if isinstance(phase_data, list) and phase_data:
+                    phase_data = phase_data[0]
+                if not isinstance(phase_data, dict):
+                    exec_result = ExecutionResult(
+                        ["Missing phase_artifacts for split execution"],
+                        0.0,
+                        "PhasePlanError",
+                        {"message": "phase_artifacts missing"},
+                        None,
+                    )
+                else:
+                    exec_start = time.time()
+                    term_outputs: list[str] = []
+                    exc_type = None
+                    exc_info = None
+                    run_root_env = os.environ.get("AI_SCIENTIST_RUN_ROOT")
+                    if run_root_env:
+                        run_root = Path(run_root_env).expanduser().resolve()
+                    else:
+                        run_root = Path(cfg.log_dir).parent.parent / "runs" / cfg.exp_name
+                    run_root.mkdir(parents=True, exist_ok=True)
+                    worker_container: SingularityWorkerContainer | None = None
+                    if getattr(cfg.exec, "singularity_image", None):
+                        worker_container = SingularityWorkerContainer(
+                            base_image=getattr(cfg.exec, "singularity_image", None),
+                            run_root=run_root,
+                            workspace=workspace_path,
+                            workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
+                            worker_id=worker_id if worker_id is not None else 0,
+                            per_worker_sif=getattr(cfg.exec, "per_worker_sif", True),
+                            keep_sandbox=getattr(cfg.exec, "keep_sandbox", False),
+                            use_fakeroot=getattr(cfg.exec, "use_fakeroot", True),
+                            writable_mode=getattr(cfg.exec, "writable_mode", "auto"),
+                            enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
+                            overlay_path=getattr(cfg.exec, "container_overlay", None),
+                        )
+                    active_env: ExecutionEnvironment | None = None
+                    def norm_section(val, default):
+                        if isinstance(val, list) and val:
+                            val = val[0]
+                        return val if isinstance(val, dict) else default
+
+                    download_section = norm_section(phase_data.get("download", {}), {"commands": []})
+                    coding_section = norm_section(phase_data.get("coding", {}), {"workspace": {}})
+                    compile_section = norm_section(phase_data.get("compile", {}), {"build_plan": {}})
+                    run_section = norm_section(phase_data.get("run", {}), {"commands": []})
+
+                    build_plan = compile_section.get("build_plan", {})
+                    download_commands = download_section.get("commands", [])
+                    coding_workspace = coding_section.get("workspace", {})
+                    compile_commands = compile_section.get("commands", [])
+                    run_commands = run_section.get("commands", [])
+                    expected_outputs = run_section.get("expected_outputs") or ["artifacts/final/output.npy"]
+                    final_output_path = workspace_path / "artifacts" / "final" / "output.npy"
+                    final_output_path.parent.mkdir(parents=True, exist_ok=True)
+                    available_compiler_names = [
+                        c.get("name")
+                        for c in environment_context.get("available_compilers", [])
+                        if isinstance(c, dict) and c.get("name")
+                    ]
+                    term_outputs.append(f"available_compilers: {available_compiler_names}")
+                    selected_compiler = build_plan.get("compiler_selected")
+                    try:
+                        download_log_path = phase_log_dir / "download.log"
+                        if worker_container:
+                            success, outputs, failure = worker_container.prepare_phase1(
+                                download_commands,
+                                workspace=workspace_path,
+                                workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
+                                download_log=download_log_path,
+                                extra_env={"CUDA_VISIBLE_DEVICES": str(gpu_id)} if gpu_id is not None else None,
+                            )
+                            term_outputs.extend(outputs)
+                            if success:
+                                try:
+                                    active_env = worker_container.create_execution_env(
+                                        gpu_id=gpu_id,
+                                        enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
+                                        overlay_path=worker_container.overlay_path,
+                                        extra_start_args=getattr(cfg.exec, "container_extra_args", None),
+                                    )
+                                except Exception as exc:
+                                    exc_type = "EnvironmentError"
+                                    exc_info = {"message": str(exc)}
+                            else:
+                                exc_type = "DownloadError"
+                                exc_info = failure
+                        else:
+                            success, outputs, failure = run_commands_with_logging(
+                                exec_env,
+                                download_commands,
+                                workspace_path,
+                                download_log_path,
+                                "download",
+                            )
+                            term_outputs.extend(outputs)
+                            if not success:
+                                exc_type = "DownloadError"
+                                exc_info = {
+                                    "returncode": getattr(failure, "returncode", None),
+                                    "stderr": getattr(failure, "stderr", ""),
+                                }
+                        if exc_type is None and active_env is None and worker_container:
+                            exc_type = "EnvironmentError"
+                            exc_info = {"message": "Failed to initialize worker container."}
+                        if exc_type is None and active_env is None:
+                            active_env = exec_env
+                            if active_env is None:
+                                active_env = ExecutionEnvironment(
+                                    workspace=workspace_path,
+                                    image=getattr(cfg.exec, "singularity_image", None),
+                                    runtime_preference="singularity",
+                                    workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
+                                    gpu_id=gpu_id,
+                                    enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
+                                    overlay_path=getattr(cfg.exec, "container_overlay", None),
+                                    extra_start_args=getattr(cfg.exec, "container_extra_args", None),
+                                )
+                                try:
+                                    active_env.start()
+                                except Exception as exc:
+                                    logger.warning("Failed to start execution environment: %s", exc)
+                        if exc_type is None:
+                            try:
+                                created_files = apply_workspace_plan(
+                                    workspace_path,
+                                    coding_workspace,
+                                    expected_root=getattr(cfg.exec, "workspace_mount", "/workspace"),
+                                )
+                                with open(phase_log_dir / "coding.log", "a") as log:
+                                    log.write("Generated files:\n")
+                                    for path in created_files:
+                                        log.write(str(path) + "\n")
+                                    for line in coding_workspace.get("tree", []):
+                                        log.write(str(line) + "\n")
+                                term_outputs.append("Coding phase wrote files.")
+                            except Exception as exc:
+                                exc_type = "CodingError"
+                                exc_info = {"message": str(exc)}
+                            if exc_type is None:
+                                if not selected_compiler:
+                                    exc_type = "CompilationError"
+                                    exc_info = {"message": "build_plan.compiler_selected is required."}
+                                    term_outputs.append(exc_info["message"])
+                                elif available_compiler_names and selected_compiler not in available_compiler_names:
+                                    exc_type = "CompilationError"
+                                    exc_info = {
+                                        "message": f"compiler_selected '{selected_compiler}' not in available_compilers.",
+                                        "available_compilers": available_compiler_names,
+                                    }
+                                    term_outputs.append(exc_info["message"])
+                                else:
+                                    term_outputs.append(f"Using compiler_selected: {selected_compiler}")
+                                    fmt_ctx = {**build_plan, "compiler_selected": selected_compiler}
+                                    formatted_compile_cmds = []
+                                    for cmd in compile_commands:
+                                        if isinstance(cmd, str):
+                                            try:
+                                                formatted_compile_cmds.append(cmd.format(**fmt_ctx))
+                                            except Exception:
+                                                formatted_compile_cmds.append(cmd)
+                                        else:
+                                            formatted_compile_cmds.append(cmd)
+                                    compile_cwd = resolve_workdir(build_plan.get("workdir"))
+                                    compile_cwd.mkdir(parents=True, exist_ok=True)
+                                    success, outputs, failure = run_commands_with_logging(
+                                        active_env,
+                                        formatted_compile_cmds,
+                                        compile_cwd,
+                                        phase_log_dir / "compile.log",
+                                        "compile",
+                                        extra_env={"COMPILER_SELECTED": selected_compiler},
+                                    )
+                                    term_outputs.extend(outputs)
+                                    if not success:
+                                        exc_type = "CompilationError"
+                                        exc_info = {
+                                            "returncode": getattr(failure, "returncode", None),
+                                            "stderr": getattr(failure, "stderr", ""),
+                                        }
+                                    else:
+                                        formatted_run_cmds = []
+                                        for cmd in run_commands:
+                                            if isinstance(cmd, str):
+                                                try:
+                                                    formatted_run_cmds.append(cmd.format(**fmt_ctx))
+                                                except Exception:
+                                                    formatted_run_cmds.append(cmd)
+                                            else:
+                                                formatted_run_cmds.append(cmd)
+                                        run_cwd = resolve_workdir(build_plan.get("workdir"))
+                                        run_cwd.mkdir(parents=True, exist_ok=True)
+                                        success, outputs, failure = run_commands_with_logging(
+                                            active_env,
+                                            formatted_run_cmds,
+                                            run_cwd,
+                                            phase_log_dir / "run.log",
+                                            "run",
+                                        )
+                                        term_outputs.extend(outputs)
+                                        if not success:
+                                            exc_type = "RuntimeError"
+                                            exc_info = {
+                                                "returncode": getattr(failure, "returncode", None),
+                                                "stderr": getattr(failure, "stderr", ""),
+                                            }
+                                        elif not final_output_path.exists():
+                                            exc_type = "RuntimeError"
+                                            exc_info = {
+                                                "message": "Expected output.npy missing after run phase.",
+                                                "expected": str(final_output_path),
+                                                "expected_outputs": expected_outputs,
+                                            }
+                                            term_outputs.append(exc_info["message"])
+                        exec_time = time.time() - exec_start
+                        exec_result = ExecutionResult(
+                            term_outputs,
+                            exec_time,
+                            exc_type,
+                            exc_info,
+                            None,
+                        )
+                    except Exception as exc:
+                        exec_time = time.time() - exec_start
+                        exec_result = ExecutionResult(
+                            term_outputs + [str(exc)],
+                            exec_time,
+                            "EnvironmentError",
+                            {"message": str(exc)},
+                            None,
+                        )
+                    finally:
+                        if isinstance(active_env, ExecutionEnvironment):
+                            active_env.stop()
+            else:
+                exec_result = process_interpreter.run(child_node.code, True)
+                process_interpreter.cleanup_session()
 
             print("Parsing execution results")
             worker_agent.parse_exec_result(
-                node=child_node, exec_result=exec_result, workspace=working_dir
+                node=child_node, exec_result=exec_result, workspace=str(workspace_path)
             )
 
             # Add check for saved data files
-            data_files = [f for f in os.listdir(working_dir) if f.endswith(".npy")]
+            data_dir = workspace_path if cfg.exec.phase_mode == "split" else Path(working_dir)
+            data_files = list(data_dir.rglob("*.npy")) if data_dir.exists() else []
+            expected_output_file = workspace_path / "artifacts" / "final" / "output.npy"
+            if expected_output_file.exists() and expected_output_file not in data_files:
+                data_files.append(expected_output_file)
             if not data_files:
                 logger.warning(
                     "No .npy files found in working directory. Data may not have been saved properly."
@@ -1626,6 +2212,7 @@ class ParallelAgent:
             # if experiment was successful, generate and run plotting code
             if not child_node.is_buggy:
                 try:
+                    plots_workdir = str(workspace_path) if cfg.exec.phase_mode == "split" else working_dir
                     retry_count = 0
                     while True:
                         if seed_eval:
@@ -1648,7 +2235,7 @@ class ParallelAgent:
                                 plot_code_from_prev_stage = None
 
                             plotting_code = worker_agent._generate_plotting_code(
-                                child_node, working_dir, plot_code_from_prev_stage
+                                child_node, plots_workdir, plot_code_from_prev_stage
                             )
                         plot_exec_result = plot_interpreter.run(plotting_code, True)
                         plot_interpreter.cleanup_session()
@@ -1671,7 +2258,7 @@ class ParallelAgent:
 
                     print("[blue]Plotting result:[/blue] ", plot_exec_result)
                     # Track generated plots
-                    plots_dir = Path(working_dir)
+                    plots_dir = Path(plots_workdir)
                     if plots_dir.exists():
                         print("Plots directory exists, saving plots to node")
                         # Save the plotting code first
@@ -1755,6 +2342,11 @@ class ParallelAgent:
             traceback.print_exc()
             raise
         finally:
+            if exec_env:
+                try:
+                    exec_env.stop()
+                except Exception as exc:
+                    logger.warning("Failed to stop execution environment: %s", exc)
             if plot_interpreter:
                 plot_interpreter.cleanup_session()
             if process_interpreter:
@@ -2026,10 +2618,11 @@ class ParallelAgent:
         futures = []
         for node_data in node_data_list:
             gpu_id = None
+            worker_idx = len(futures)
             if self.gpu_manager is not None:
                 try:
                     # Get current process ID for GPU assignment
-                    process_id = f"worker_{len(futures)}"
+                    process_id = f"worker_{worker_idx}"
                     gpu_id = self.gpu_manager.acquire_gpu(process_id)
                     logger.info(f"Assigned GPU {gpu_id} to process {process_id}")
                 except RuntimeError as e:
@@ -2083,6 +2676,7 @@ class ParallelAgent:
                     best_stage2_plot_code,
                     best_stage3_plot_code,
                     seed_eval,
+                    worker_idx,
                 )
             )
 

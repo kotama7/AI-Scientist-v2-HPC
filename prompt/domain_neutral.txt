@@ -1,0 +1,4 @@
+Stay neutral across domains and languages—do not default to Python unless justified by the task.
+Favor clear, performant solutions suitable for GPUs and clustered/HPC settings.
+Explicitly spell out any assumptions, resource needs, and data movement inside /workspace.
+Prefer reproducible, deterministic steps and avoid vendor- or framework-specific lock-in.

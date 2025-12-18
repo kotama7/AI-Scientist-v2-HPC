@@ -1,0 +1,52 @@
+You must return JSON only (no prose, no code fences). Model output drives a 4-phase pipeline: download (commands), coding (workspace tree + files), compile (build_plan + commands), run (commands + expected_outputs). Always include constraints as shown.
+
+Required JSON skeleton:
+{
+  "phase_artifacts": {
+    "download": {"commands": [], "notes": "short"},
+    "coding": {
+      "workspace": {
+        "root": "/workspace",
+        "tree": ["workspace/", "workspace/src/", "workspace/artifacts/final/"],
+        "files": [
+          {"path":"src/main.c","mode":"0644","encoding":"utf-8","content":"..."},
+          {"path":"Makefile","mode":"0644","encoding":"utf-8","content":"..."}
+        ]
+      },
+      "notes": "short"
+    },
+    "compile": {
+      "build_plan": {
+        "language": "c"|"cpp"|"python"|"other",
+        "compiler_selected": "<one of available_compilers.name>",
+        "cflags": [],
+        "ldflags": [],
+        "workdir": "/workspace",
+        "output": "bin/a.out"
+      },
+      "commands": ["... use {compiler_selected} when templating commands ..."],
+      "notes": "short"
+    },
+    "run": {
+      "commands": [],
+      "expected_outputs": ["artifacts/final/output.npy"],
+      "notes": "short"
+    }
+  },
+  "constraints": {
+    "allow_sudo_in_singularity": true,
+    "allow_apt_get_in_singularity": true,
+    "write_only_under_workspace": true,
+    "no_absolute_paths": true,
+    "no_parent_traversal": true,
+    "python_output_must_use_numpy": true,
+    "non_python_output_must_use_cnpy": true
+  }
+}
+
+Notes:
+- Always list the workspace tree and all files to create; keep paths relative to /workspace without parent traversal.
+- Provide multiple files when useful (headers, scripts, Makefile, data loaders).
+- compiler_selected must come from available_compilers; do not invent compilers or swap away from the selected one.
+- Run must generate /workspace/artifacts/final/output.npy (numpy.save for Python, cnpy for non-Python; tools/npy_writer helper is allowed).
+- Do not mention or rely on language adapters, interpreter adapters, or external routers; produce direct commands/files only.
