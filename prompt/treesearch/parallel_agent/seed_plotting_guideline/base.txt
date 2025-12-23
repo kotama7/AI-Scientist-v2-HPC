@@ -4,6 +4,7 @@ The code should start with:
   import numpy as np
   import os
   working_dir = os.path.join(os.getcwd(), 'working')
+Return only runnable Python code (no JSON or schemas).
 Create standard visualizations of experiment results
 Save all plots to working_dir
 Include training/validation curves if available

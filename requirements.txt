@@ -6,13 +6,11 @@ openai
 matplotlib
 pypdf
 pymupdf4llm
-seaborn
 # Common Requirements
 numpy
 transformers
 datasets
 tiktoken
-wandb
 tqdm
 rich
 humanize

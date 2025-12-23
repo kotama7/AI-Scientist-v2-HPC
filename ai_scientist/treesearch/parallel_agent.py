@@ -2,7 +2,6 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import List, Optional, Set, Any, Callable, cast, Dict, Tuple
 import json
 import random
-import subprocess
 import os
 from queue import Queue
 import logging
@@ -20,6 +19,8 @@ from .utils.phase_execution import (
     SingularityWorkerContainer,
     collect_available_compilers,
     collect_available_libs,
+    summarize_command_output,
+    run_in_container,
 )
 from .utils.phase_plan import (
     PhasePlanError,
@@ -48,6 +49,7 @@ BASE_SYSTEM_PROMPT = load_prompt("base_system").rstrip("\n")
 DOMAIN_NEUTRAL_PROMPT = load_prompt("domain_neutral").rstrip("\n")
 ENVIRONMENT_INJECTION_TEMPLATE = load_prompt("environment_injection").rstrip("\n")
 AI_OPTIONAL_PROMPT = load_prompt("ai_optional").rstrip("\n")
+PHASE1_ITERATIVE_INSTALLER_PROMPT = load_prompt("phase1_iterative_installer").rstrip("\n")
 
 IMPLEMENTATION_GUIDELINE_PRE = tuple(
     load_prompt_lines(PROMPT_BASE + "implementation_guideline/pre")
@@ -153,6 +155,15 @@ MAX_METRIC_PARSE_RETRIES = 3
 METRICS_PROMPT_INTRO = load_prompt(
     PROMPT_BASE + "metrics_prompt/introduction"
 ).rstrip("\n")
+
+
+def _normalize_language(language: str | None) -> str:
+    lang = str(language or "").strip().lower()
+    if not lang:
+        return "python"
+    if lang in {"c++", "cxx"}:
+        return "cpp"
+    return lang
 
 HYPERPARAM_PROMPT_INTRO = load_prompt(
     PROMPT_BASE + "hyperparam_tuning_prompt/introduction"
@@ -433,11 +444,33 @@ class MinimalAgent:
 
     @property
     def code_language(self) -> str:
-        return getattr(self.cfg.exec, "language", "python")
+        return _normalize_language(getattr(self.cfg.exec, "language", "python"))
 
     @property
     def phase_mode(self) -> str:
         return getattr(self.cfg.exec, "phase_mode", "single")
+
+    def _language_requirements(self) -> list[str]:
+        lang = self.code_language
+        if lang == "python":
+            return []
+        if lang == "cpp":
+            return [
+                "Implement the solution in C++ (use ```cpp``` code blocks).",
+                "Do not use Python for the main implementation.",
+                'Use .cpp sources and set build_plan.language to "cpp" in split-phase.',
+            ]
+        return [
+            f"Implement the solution in {lang}.",
+            "Do not use Python for the main implementation.",
+        ]
+
+    def _format_response_format(self, response_format: str) -> str:
+        lang = self.code_language
+        if lang == "python":
+            return response_format
+        updated = response_format.replace("```python", f"```{lang}")
+        return updated.replace("python", lang)
 
     @property
     def _prompt_environment(self):
@@ -488,7 +521,50 @@ class MinimalAgent:
     def _prompt_impl_guideline(self):
         if self.phase_mode == "split":
             domain_guideline = DOMAIN_NEUTRAL_PROMPT.splitlines()
+            language_notes = self._language_requirements()
+            if language_notes:
+                domain_guideline = language_notes + domain_guideline
             return {"Implementation guideline": domain_guideline}
+
+        if self.code_language != "python":
+            impl_guideline: list[str] = []
+            language_notes = self._language_requirements()
+            if language_notes:
+                impl_guideline.extend(language_notes)
+            else:
+                impl_guideline.append(f"Implement the solution in {self.code_language}.")
+            impl_guideline.append("Keep the program self-contained and runnable as-is.")
+            impl_guideline.append("Write outputs under ./working (create the directory if needed).")
+            impl_guideline.append(
+                "Save experiment data to working/experiment_data.npy using cnpy or a compatible .npy writer."
+            )
+            if self.evaluation_metrics:
+                impl_guideline.append(
+                    f"Track and report these additional metrics: {self.evaluation_metrics}"
+                )
+            if hasattr(self.cfg.experiment, "num_syn_datasets"):
+                num_syn_datasets = self.cfg.experiment.num_syn_datasets
+                if num_syn_datasets > 1:
+                    formatted_dataset_guideline = [
+                        line.format(num_syn_datasets=num_syn_datasets)
+                        for line in IMPLEMENTATION_GUIDELINE_DATASET
+                    ]
+                    impl_guideline.extend(formatted_dataset_guideline)
+            dataset_source = getattr(self.cfg.experiment, "dataset_source", "huggingface")
+            dataset_source_key = dataset_source.lower()
+            dataset_guidance = DATA_SOURCE_GUIDELINES.get(dataset_source_key)
+            if dataset_guidance is None:
+                dataset_guidance = DATA_SOURCE_GUIDELINES["huggingface"]
+            impl_guideline.extend(dataset_guidance)
+            if self.cfg.agent.k_fold_validation > 1:
+                impl_guideline.append(
+                    f"The evaluation should be based on {self.cfg.agent.k_fold_validation}-fold cross-validation but only if that's an appropriate evaluation for the task at hand."
+                )
+            impl_guideline.append(
+                "Be aware of the running time of the code, it should complete within "
+                f"{humanize.naturaldelta(self.cfg.exec.timeout)}."
+            )
+            return {"Implementation guideline": impl_guideline}
 
         impl_guideline = list(IMPLEMENTATION_GUIDELINE_PRE)
 
@@ -533,7 +609,7 @@ class MinimalAgent:
     def _prompt_resp_fmt(self):
         if self.phase_mode == "split":
             return {"Response format": RESPONSE_FORMAT_SPLIT_PHASE}
-        return {"Response format": RESPONSE_FORMAT_DEFAULT}
+        return {"Response format": self._format_response_format(RESPONSE_FORMAT_DEFAULT)}
 
     @property
     def _prompt_phase_guidance(self):
@@ -544,8 +620,9 @@ class MinimalAgent:
                 "Use the 4-phase plan: Phase 1 download/install, Phase 2 coding, Phase 3 compile, Phase 4 run.",
                 "Phase 1 may use sudo/apt-get inside Singularity with writable-tmpfs/overlay; if unavailable install under /workspace.",
                 "All paths are relative to /workspace; no absolute paths or parent traversal.",
+                "In download/install, probe with `command -v ...`/`which ...` before installing (e.g., git, cmake); avoid redundant installs.",
                 "compile commands must honor build_plan.compiler_selected chosen from available_compilers (do not invent compilers or switch).",
-                "Run phase must generate /workspace/artifacts/final/output.npy (Python uses numpy save; non-Python must use cnpy).",
+                "Run phase must generate /workspace/working/experiment_data.npy (Python uses numpy save; non-Python must use cnpy).",
                 "Do not rely on language adapters, interpreter adapters, or external routers; commands run directly in the worker.",
             ]
         }
@@ -567,15 +644,15 @@ class MinimalAgent:
 
     @property
     def _prompt_debug_resp_fmt(self):
-        return {"Response format": RESPONSE_FORMAT_DEBUG}
+        return {"Response format": self._format_response_format(RESPONSE_FORMAT_DEBUG)}
 
     @property
     def _prompt_hyperparam_tuning_resp_fmt(self):
-        return {"Response format": RESPONSE_FORMAT_HPARAM}
+        return {"Response format": self._format_response_format(RESPONSE_FORMAT_HPARAM)}
 
     @property
     def _prompt_ablation_resp_fmt(self):
-        return {"Response format": RESPONSE_FORMAT_ABLATION}
+        return {"Response format": self._format_response_format(RESPONSE_FORMAT_ABLATION)}
 
     def _draft(self) -> Node:
         prompt: Any = {
@@ -760,69 +837,92 @@ class MinimalAgent:
             ablation_name=ablation_idea.name,
         )
 
-    def generate_phase_artifacts(self, prompt, retries: int = 3) -> dict:
-        """Query the LLM for split-phase output and validate the JSON structure."""
-        last_error = ""
-        last_response = ""
-        for _ in range(retries):
-            completion_text = query(
-                system_message=prompt,
-                user_message=None,
-                model=self.cfg.agent.code.model,
-                temperature=self.cfg.agent.code.temp,
+    def _validate_phase_language(self, artifacts: dict) -> None:
+        required = self.code_language
+        if required == "python":
+            return
+        phase_data = artifacts.get("phase_artifacts") or artifacts
+        if not isinstance(phase_data, dict):
+            raise PhasePlanError("phase_artifacts must be an object.")
+        compile_section = phase_data.get("compile", {})
+        build_plan = compile_section.get("build_plan", {}) if isinstance(compile_section, dict) else {}
+        actual = _normalize_language(build_plan.get("language"))
+        if not actual or actual != required:
+            raise PhasePlanError(
+                f"build_plan.language must be '{required}', got '{actual or 'missing'}'."
             )
-            try:
-                return extract_phase_artifacts(completion_text)
-            except PhasePlanError as exc:
-                last_error = str(exc)
-                last_response = completion_text
-                prompt["Parsing Feedback"] = (
-                    "The previous response was invalid JSON: "
-                    f"{last_error}.\n"
-                    "Raw response was:\n"
-                    "<<<RAW_RESPONSE_START>>>\n"
-                    f"{completion_text}\n"
-                    "<<<RAW_RESPONSE_END>>>\n"
-                    "Return strict JSON following the Response format with download/coding/compile/run."
-                )
-        # Fallback: return a minimal placeholder plan to keep execution moving
-        fallback = {
+
+    def _fallback_phase_artifacts(self, last_error: str) -> dict:
+        lang = self.code_language
+        if lang == "cpp":
+            file_path = "src/main.cpp"
+            content = (
+                "// Fallback placeholder due to LLM parse failure\n"
+                f"// Error: {last_error}\n"
+                "#include <iostream>\n\n"
+                "int main() {\n"
+                "    std::cout << \"Placeholder execution; no real code generated\" << std::endl;\n"
+                "    return 0;\n"
+                "}\n"
+            )
+            compile_plan = {
+                "language": "cpp",
+                "compiler_selected": "g++",
+                "cflags": ["-std=c++17", "-O2"],
+                "ldflags": [],
+                "workdir": "/workspace",
+                "output": "bin/a.out",
+            }
+            compile_commands = [
+                "{compiler_selected} -std=c++17 -O2 src/main.cpp -o bin/a.out"
+            ]
+            run_commands = ["./bin/a.out"]
+            compile_notes = "fallback compile plan"
+        else:
+            file_path = "src/main.py"
+            content = (
+                "# Fallback placeholder due to LLM parse failure\n"
+                f"# Error: {last_error}\n"
+                "print('Placeholder execution; no real code generated')\n"
+            )
+            compile_plan = {
+                "language": "python",
+                "compiler_selected": "python",
+                "cflags": [],
+                "ldflags": [],
+                "workdir": "/workspace",
+                "output": "working/experiment_data.npy",
+            }
+            compile_commands = []
+            run_commands = ["python src/main.py"]
+            compile_notes = "no compile needed for placeholder"
+
+        return {
             "phase_artifacts": {
                 "download": {"commands": [], "notes": f"fallback after parse error: {last_error}"},
                 "coding": {
                     "workspace": {
                         "root": "/workspace",
-                        "tree": ["workspace/", "workspace/src/"],
+                        "tree": ["workspace/", "workspace/src/", "workspace/working/"],
                         "files": [
                             {
-                                "path": "src/main.py",
+                                "path": file_path,
                                 "mode": "0644",
                                 "encoding": "utf-8",
-                                "content": (
-                                    "# Fallback placeholder due to LLM parse failure\n"
-                                    f"# Error: {last_error}\n"
-                                    "print('Placeholder execution; no real code generated')\n"
-                                ),
+                                "content": content,
                             }
                         ],
                     },
                     "notes": "fallback coding plan",
                 },
                 "compile": {
-                    "build_plan": {
-                        "language": "python",
-                        "compiler_selected": "python",
-                        "cflags": [],
-                        "ldflags": [],
-                        "workdir": "/workspace",
-                        "output": "artifacts/final/output.npy",
-                    },
-                    "commands": [],
-                    "notes": "no compile needed for placeholder",
+                    "build_plan": compile_plan,
+                    "commands": compile_commands,
+                    "notes": compile_notes,
                 },
                 "run": {
-                    "commands": ["python src/main.py"],
-                    "expected_outputs": ["artifacts/final/output.npy"],
+                    "commands": run_commands,
+                    "expected_outputs": ["working/experiment_data.npy"],
                     "notes": "fallback run",
                 },
             },
@@ -836,7 +936,39 @@ class MinimalAgent:
                 "non_python_output_must_use_cnpy": True,
             },
         }
-        return fallback
+
+    def generate_phase_artifacts(self, prompt, retries: int = 3) -> dict:
+        """Query the LLM for split-phase output and validate the JSON structure."""
+        last_error = ""
+        last_response = ""
+        for _ in range(retries):
+            completion_text = query(
+                system_message=prompt,
+                user_message=None,
+                model=self.cfg.agent.code.model,
+                temperature=self.cfg.agent.code.temp,
+            )
+            try:
+                artifacts = extract_phase_artifacts(
+                    completion_text,
+                    default_language=self.code_language,
+                )
+                self._validate_phase_language(artifacts)
+                return artifacts
+            except PhasePlanError as exc:
+                last_error = str(exc)
+                last_response = completion_text
+                prompt["Parsing Feedback"] = (
+                    "The previous response failed validation: "
+                    f"{last_error}.\n"
+                    "Raw response was:\n"
+                    "<<<RAW_RESPONSE_START>>>\n"
+                    f"{completion_text}\n"
+                    "<<<RAW_RESPONSE_END>>>\n"
+                    "Return strict JSON following the Response format with download/coding/compile/run."
+                )
+        # Fallback: return a minimal placeholder plan to keep execution moving
+        return self._fallback_phase_artifacts(last_error)
 
     def plan_and_code_query(
         self, prompt, retries=3, code_language: str | None = None
@@ -912,7 +1044,9 @@ class MinimalAgent:
         plotting_prompt = {
             "Instructions": {},
         }
-        plotting_prompt["Instructions"] |= self._prompt_resp_fmt
+        plotting_prompt["Instructions"] |= {
+            "Response format": RESPONSE_FORMAT_DEFAULT
+        }
         plotting_prompt["Instructions"] |= {
             "Plotting code guideline": prompt_guideline,
         }
@@ -1258,26 +1392,36 @@ class GPUManager:
             del self.gpu_assignments[process_id]
 
 
-def get_gpu_count() -> int:
-    """Get number of available NVIDIA GPUs without using torch"""
-    try:
-        # First try using nvidia-smi
-        nvidia_smi = subprocess.run(
-            ["nvidia-smi", "--query-gpu=gpu_name", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        gpus = nvidia_smi.stdout.strip().split("\n")
-        return len(gpus)
-    except (subprocess.SubprocessError, FileNotFoundError):
-        # If nvidia-smi fails, try environment variable
-        cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-        if cuda_visible_devices:
-            # Filter out empty strings and -1 values
-            devices = [d for d in cuda_visible_devices.split(",") if d and d != "-1"]
-            return len(devices)
-        return 0
+def get_gpu_count(
+    *,
+    singularity_image: str | None,
+    workspace_dir: Path | str,
+    workspace_mount: str,
+) -> int:
+    """Get number of available NVIDIA GPUs without running host commands."""
+    if singularity_image:
+        try:
+            bind_arg = f"{Path(workspace_dir).resolve()}:{workspace_mount}"
+            nvidia_smi = run_in_container(
+                worker_id=None,
+                image_path=singularity_image,
+                cmd="nvidia-smi --query-gpu=gpu_name --format=csv,noheader",
+                env={},
+                binds=[bind_arg],
+                use_nv=True,
+                pwd=workspace_mount,
+            )
+            if nvidia_smi.returncode == 0 and nvidia_smi.stdout.strip():
+                gpus = nvidia_smi.stdout.strip().split("\n")
+                return len(gpus)
+        except Exception:
+            pass
+
+    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible_devices:
+        devices = [d for d in cuda_visible_devices.split(",") if d and d != "-1"]
+        return len(devices)
+    return 0
 
 
 class ParallelAgent:
@@ -1307,7 +1451,11 @@ class ParallelAgent:
         )
         self.data_preview = None
         self.num_workers = cfg.agent.num_workers
-        self.num_gpus = get_gpu_count()
+        self.num_gpus = get_gpu_count(
+            singularity_image=getattr(self.cfg.exec, "singularity_image", None),
+            workspace_dir=self.cfg.workspace_dir,
+            workspace_mount=getattr(self.cfg.exec, "workspace_mount", "/workspace"),
+        )
         print(f"num_gpus: {self.num_gpus}")
         if self.num_gpus == 0:
             print("No GPUs detected, falling back to CPU-only mode")
@@ -1334,7 +1482,7 @@ class ParallelAgent:
 
     @property
     def code_language(self) -> str:
-        return getattr(self.cfg.exec, "language", "python")
+        return _normalize_language(getattr(self.cfg.exec, "language", "python"))
 
     def _define_global_metrics(self) -> str:
         """Define eval metric to be used across all experiments"""
@@ -1641,25 +1789,21 @@ class ParallelAgent:
                     printable_cmd = " ".join(raw_cmd) if isinstance(raw_cmd, list) else str(raw_cmd)
                     log.write(f"$ {printable_cmd}\n")
                     if env is None:
-                        if isinstance(raw_cmd, str):
-                            exec_cmd = ["bash", "-lc", raw_cmd]
-                        else:
-                            exec_cmd = list(raw_cmd)
-                        result = subprocess.run(
-                            exec_cmd,
-                            cwd=str(cwd) if cwd else None,
-                            env={**os.environ, **(extra_env or {})},
-                            capture_output=True,
-                            text=True,
-                        )
-                    else:
-                        result = env.run(raw_cmd, cwd=cwd, extra_env=extra_env)
+                        log.write("ERROR: No container execution environment available.\n")
+                        return False, outputs, {"message": "Container execution environment is required."}
+                    result = env.run(raw_cmd, cwd=cwd, extra_env=extra_env)
+                    log.write(f"exit_code={result.returncode}\n")
                     if result.stdout:
                         log.write(result.stdout)
-                        outputs.append(result.stdout)
                     if result.stderr:
                         log.write(result.stderr)
-                        outputs.append(result.stderr)
+                    summary = summarize_command_output(result.stdout, result.stderr)
+                    outputs.append(
+                        f"[{phase_name}] $ {printable_cmd}\n"
+                        f"exit_code={result.returncode}\n"
+                        f"stdout:\n{summary['stdout']}\n"
+                        f"stderr:\n{summary['stderr']}\n"
+                    )
                     if result.returncode != 0:
                         log.flush()
                         return False, outputs, result
@@ -1675,40 +1819,14 @@ class ParallelAgent:
         environment_context: dict[str, Any] = {}
         exec_env: ExecutionEnvironment | None = None
         if getattr(cfg.exec, "phase_mode", "single") == "split":
-            exec_env = ExecutionEnvironment(
-                workspace=workspace_path,
-                image=getattr(cfg.exec, "singularity_image", None),
-                runtime_preference="singularity",
-                workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
-                gpu_id=gpu_id,
-                instance_name=f"worker-{worker_id}" if worker_id is not None else None,
-                enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
-                overlay_path=getattr(cfg.exec, "container_overlay", None),
-                extra_start_args=getattr(cfg.exec, "container_extra_args", None),
-            )
-            env_started = False
-            try:
-                exec_env.start()
-                env_started = True
-            except Exception as exc:
-                logger.warning("Failed to start container instance; falling back to host. Details: %s", exc)
-            try:
-                available_compilers = collect_available_compilers(exec_env) if env_started else []
-                available_libs = collect_available_libs(exec_env) if env_started else []
-            except Exception as exc:
-                logger.warning("Failed to collect environment facts: %s", exc)
-                available_compilers = []
-                available_libs = []
+            image_path = getattr(cfg.exec, "singularity_image", None)
             environment_context = {
-                "available_compilers": available_compilers,
-                "available_libs": available_libs,
-                "container_runtime": exec_env.runtime if exec_env else None,
-                "singularity_image": str(exec_env.image) if exec_env and exec_env.image else None,
+                "available_compilers": [],
+                "available_libs": [],
+                "container_runtime": "singularity" if image_path else None,
+                "singularity_image": str(Path(image_path).resolve()) if image_path else None,
                 "workspace_mount": getattr(cfg.exec, "workspace_mount", "/workspace"),
             }
-            if exec_env:
-                exec_env.stop()
-                exec_env = None
 
         # Create minimal agent for worker process with the global metric definition
         worker_agent = MinimalAgent(
@@ -1729,8 +1847,6 @@ class ParallelAgent:
                 format_tb_ipython=cfg.exec.format_tb_ipython,
                 agent_file_name=cfg.exec.agent_file_name,
                 language=cfg.exec.language,
-                cpp_compile_flags=cfg.exec.cpp_compile_flags,
-                cpp_compiler=cfg.exec.cpp_compiler,
             )
         plot_interpreter: Optional[Interpreter] = None
         plot_agent_file_name = f"{Path(cfg.exec.agent_file_name).stem}_plot.py"
@@ -1873,9 +1989,12 @@ class ParallelAgent:
                     coding_workspace = coding_section.get("workspace", {})
                     compile_commands = compile_section.get("commands", [])
                     run_commands = run_section.get("commands", [])
-                    expected_outputs = run_section.get("expected_outputs") or ["artifacts/final/output.npy"]
-                    final_output_path = workspace_path / "artifacts" / "final" / "output.npy"
-                    final_output_path.parent.mkdir(parents=True, exist_ok=True)
+                    expected_outputs = run_section.get("expected_outputs") or ["working/experiment_data.npy"]
+                    expected_output_paths = [
+                        (workspace_path / Path(rel_path)) for rel_path in expected_outputs
+                    ]
+                    for path in expected_output_paths:
+                        path.parent.mkdir(parents=True, exist_ok=True)
                     available_compiler_names = [
                         c.get("name")
                         for c in environment_context.get("available_compilers", [])
@@ -1883,6 +2002,57 @@ class ParallelAgent:
                     ]
                     term_outputs.append(f"available_compilers: {available_compiler_names}")
                     selected_compiler = build_plan.get("compiler_selected")
+                    phase1_max_steps = int(getattr(cfg.exec, "phase1_max_steps", 12))
+
+                    def parse_phase1_iterative_response(raw_text: str) -> dict[str, Any]:
+                        cleaned = raw_text.strip()
+                        if "```" in cleaned:
+                            start = cleaned.find("{")
+                            end = cleaned.rfind("}")
+                            if start != -1 and end != -1 and end > start:
+                                cleaned = cleaned[start : end + 1]
+                        try:
+                            parsed = json.loads(cleaned)
+                        except json.JSONDecodeError:
+                            try:
+                                import ast
+
+                                parsed = ast.literal_eval(cleaned)
+                            except Exception as exc:  # pragma: no cover
+                                raise ValueError(f"Failed to parse Phase 1 response: {exc}") from exc
+                        if not isinstance(parsed, dict):
+                            raise ValueError("Phase 1 response must be a JSON object.")
+                        return parsed
+
+                    def phase1_iterative_driver(history: list[dict[str, Any]], step_idx: int, max_steps: int) -> dict[str, Any]:
+                        prompt: dict[str, Any] = {
+                            "Introduction": PHASE1_ITERATIVE_INSTALLER_PROMPT,
+                            "Task": task_desc,
+                            "Phase plan": {
+                                "download_commands_seed": download_commands,
+                                "compile_plan": build_plan,
+                                "compile_commands": compile_commands,
+                                "run_commands": run_commands,
+                            },
+                            "Constraints": phase_data.get("constraints", {}),
+                            "Progress": {
+                                "step": step_idx,
+                                "max_steps": max_steps,
+                                "history": history,
+                            },
+                        }
+                        env_block = worker_agent._prompt_environment
+                        if env_block:
+                            prompt["Environment"] = env_block.get("Environment injection", env_block)
+
+                        response_text = query(
+                            system_message=prompt,
+                            user_message=None,
+                            model=cfg.agent.code.model,
+                            temperature=cfg.agent.code.temp,
+                        )
+                        return parse_phase1_iterative_response(response_text)
+
                     try:
                         download_log_path = phase_log_dir / "download.log"
                         if worker_container:
@@ -1892,6 +2062,8 @@ class ParallelAgent:
                                 workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
                                 download_log=download_log_path,
                                 extra_env={"CUDA_VISIBLE_DEVICES": str(gpu_id)} if gpu_id is not None else None,
+                                iterative_driver=phase1_iterative_driver,
+                                max_steps=phase1_max_steps,
                             )
                             term_outputs.extend(outputs)
                             if success:
@@ -1909,20 +2081,9 @@ class ParallelAgent:
                                 exc_type = "DownloadError"
                                 exc_info = failure
                         else:
-                            success, outputs, failure = run_commands_with_logging(
-                                exec_env,
-                                download_commands,
-                                workspace_path,
-                                download_log_path,
-                                "download",
-                            )
-                            term_outputs.extend(outputs)
-                            if not success:
-                                exc_type = "DownloadError"
-                                exc_info = {
-                                    "returncode": getattr(failure, "returncode", None),
-                                    "stderr": getattr(failure, "stderr", ""),
-                                }
+                            exc_type = "EnvironmentError"
+                            exc_info = {"message": "Singularity image is required for split-phase execution."}
+                            term_outputs.append(exc_info["message"])
                         if exc_type is None and active_env is None and worker_container:
                             exc_type = "EnvironmentError"
                             exc_info = {"message": "Failed to initialize worker container."}
@@ -2027,14 +2188,20 @@ class ParallelAgent:
                                                 "returncode": getattr(failure, "returncode", None),
                                                 "stderr": getattr(failure, "stderr", ""),
                                             }
-                                        elif not final_output_path.exists():
-                                            exc_type = "RuntimeError"
-                                            exc_info = {
-                                                "message": "Expected output.npy missing after run phase.",
-                                                "expected": str(final_output_path),
-                                                "expected_outputs": expected_outputs,
-                                            }
-                                            term_outputs.append(exc_info["message"])
+                                        else:
+                                            missing_outputs = [
+                                                str(path)
+                                                for path in expected_output_paths
+                                                if not path.exists()
+                                            ]
+                                            if missing_outputs:
+                                                exc_type = "RuntimeError"
+                                                exc_info = {
+                                                    "message": "Expected output file(s) missing after run phase.",
+                                                    "missing": missing_outputs,
+                                                    "expected_outputs": expected_outputs,
+                                                }
+                                                term_outputs.append(exc_info["message"])
                         exec_time = time.time() - exec_start
                         exec_result = ExecutionResult(
                             term_outputs,
@@ -2067,7 +2234,7 @@ class ParallelAgent:
             # Add check for saved data files
             data_dir = workspace_path if cfg.exec.phase_mode == "split" else Path(working_dir)
             data_files = list(data_dir.rglob("*.npy")) if data_dir.exists() else []
-            expected_output_file = workspace_path / "artifacts" / "final" / "output.npy"
+            expected_output_file = workspace_path / "working" / "experiment_data.npy"
             if expected_output_file.exists() and expected_output_file not in data_files:
                 data_files.append(expected_output_file)
             if not data_files:
@@ -2258,8 +2425,10 @@ class ParallelAgent:
 
                     print("[blue]Plotting result:[/blue] ", plot_exec_result)
                     # Track generated plots
-                    plots_dir = Path(plots_workdir)
-                    if plots_dir.exists():
+                    plots_root = Path(plots_workdir)
+                    candidate_plot_dirs = [plots_root / "working", plots_root]
+                    existing_plot_dirs = [d for d in candidate_plot_dirs if d.exists()]
+                    if existing_plot_dirs:
                         print("Plots directory exists, saving plots to node")
                         # Save the plotting code first
                         base_dir = Path(cfg.workspace_dir).parent
@@ -2284,33 +2453,35 @@ class ParallelAgent:
                             f.write(child_node.code)
                         logger.info(f"Saved experiment code to {exp_code_path}")
                         # Move experiment data files to experiment_results directory
-                        for exp_data_file in plots_dir.glob("*.npy"):
-                            exp_data_path = exp_results_dir / exp_data_file.name
-                            exp_data_file.resolve().rename(exp_data_path)
-                            logger.info(f"Saved experiment data to {exp_data_path}")
+                        for plots_dir in existing_plot_dirs:
+                            for exp_data_file in plots_dir.glob("*.npy"):
+                                exp_data_path = exp_results_dir / exp_data_file.name
+                                exp_data_file.resolve().rename(exp_data_path)
+                                logger.info(f"Saved experiment data to {exp_data_path}")
 
-                        for plot_file in plots_dir.glob("*.png"):
-                            # Get the base directory (parent of workspaces/logs)
-                            base_dir = Path(cfg.workspace_dir).parent.parent
-                            run_name = Path(cfg.workspace_dir).name
+                        for plots_dir in existing_plot_dirs:
+                            for plot_file in plots_dir.glob("*.png"):
+                                # Get the base directory (parent of workspaces/logs)
+                                base_dir = Path(cfg.workspace_dir).parent.parent
+                                run_name = Path(cfg.workspace_dir).name
 
-                            # Create the final path in logs directory
-                            final_path = exp_results_dir / plot_file.name
-                            plot_file.resolve().rename(final_path)
+                                # Create the final path in logs directory
+                                final_path = exp_results_dir / plot_file.name
+                                plot_file.resolve().rename(final_path)
 
-                            # Create a web-friendly relative path starting from logs directory
-                            web_path = f"../../logs/{Path(cfg.workspace_dir).name}/experiment_results/experiment_{child_node.id}_proc_{os.getpid()}/{plot_file.name}"
+                                # Create a web-friendly relative path starting from logs directory
+                                web_path = f"../../logs/{Path(cfg.workspace_dir).name}/experiment_results/experiment_{child_node.id}_proc_{os.getpid()}/{plot_file.name}"
 
-                            child_node.plots.append(web_path)  # For visualization
-                            child_node.plot_paths.append(
-                                str(final_path.absolute())
-                            )  # For programmatic access
+                                child_node.plots.append(web_path)  # For visualization
+                                child_node.plot_paths.append(
+                                    str(final_path.absolute())
+                                )  # For programmatic access
 
-                            logger.info(
-                                f"[green]Generated plot: {plot_file.stem}[/green]"
-                            )
-                            logger.debug(f"Plot absolute path: {final_path.absolute()}")
-                            logger.debug(f"Plot web path: {web_path}")
+                                logger.info(
+                                    f"[green]Generated plot: {plot_file.stem}[/green]"
+                                )
+                                logger.debug(f"Plot absolute path: {final_path.absolute()}")
+                                logger.debug(f"Plot web path: {web_path}")
                 except Exception as e:
                     logger.error(
                         f"Error generating plots for node {child_node.id}: {str(e)}"

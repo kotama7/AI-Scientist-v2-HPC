@@ -65,6 +65,44 @@ def remove_accents_and_clean(s):
     return ascii_str
 
 
+def extract_latex_snippet(text: str) -> str:
+    if not text:
+        return ""
+
+    fenced_latex = re.findall(
+        r"```[ \t]*latex[ \t]*\r?\n(.*?)```",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    for match in fenced_latex:
+        if match.strip():
+            return match.strip()
+
+    fenced_any = re.findall(
+        r"```[ \t]*[a-zA-Z0-9_-]*[ \t]*\r?\n(.*?)```",
+        text,
+        flags=re.DOTALL,
+    )
+    for match in fenced_any:
+        if match.strip():
+            return match.strip()
+
+    open_fence = re.search(
+        r"```[ \t]*latex[ \t]*\r?\n", text, flags=re.IGNORECASE
+    )
+    if not open_fence:
+        open_fence = re.search(r"```[ \t]*[a-zA-Z0-9_-]*[ \t]*\r?\n", text)
+    if open_fence:
+        remainder = text[open_fence.end() :].strip()
+        if remainder:
+            return remainder
+
+    if "\\documentclass" in text or "\\begin{document}" in text:
+        return text.strip()
+
+    return ""
+
+
 def compile_latex(cwd, pdf_file, timeout=30):
     print("GENERATING LATEX")
 
@@ -827,10 +865,10 @@ def perform_writeup(
             print_debug=False,
         )
 
-        latex_code_match = re.search(r"```latex(.*?)```", response, re.DOTALL)
-        if not latex_code_match:
+        latex_code = extract_latex_snippet(response)
+        if not latex_code:
             return False
-        updated_latex_code = latex_code_match.group(1).strip()
+        updated_latex_code = latex_code
         with open(writeup_file, "w") as f:
             f.write(updated_latex_code)
 
@@ -892,11 +930,8 @@ def perform_writeup(
             )
 
             # 2nd run:
-            reflection_code_match = re.search(
-                r"```latex(.*?)```", reflection_response, re.DOTALL
-            )
-            if reflection_code_match:
-                reflected_latex_code = reflection_code_match.group(1).strip()
+            reflected_latex_code = extract_latex_snippet(reflection_response)
+            if reflected_latex_code:
                 if reflected_latex_code != current_latex:
                     final_text = reflected_latex_code
                     cleanup_map = {
@@ -944,11 +979,8 @@ def perform_writeup(
                 )
                 break
 
-            reflection_code_match = re.search(
-                r"```latex(.*?)```", reflection_response, re.DOTALL
-            )
-            if reflection_code_match:
-                reflected_latex_code = reflection_code_match.group(1).strip()
+            reflected_latex_code = extract_latex_snippet(reflection_response)
+            if reflected_latex_code:
                 if reflected_latex_code != current_latex:
                     final_text = reflected_latex_code
                     cleanup_map = {
@@ -997,11 +1029,8 @@ def perform_writeup(
 
         print(f"reflection step {i+1}")
 
-        reflection_code_match = re.search(
-            r"```latex(.*?)```", reflection_response, re.DOTALL
-        )
-        if reflection_code_match:
-            reflected_latex_code = reflection_code_match.group(1).strip()
+        reflected_latex_code = extract_latex_snippet(reflection_response)
+        if reflected_latex_code:
             if reflected_latex_code != current_latex:
                 final_text = reflected_latex_code
                 cleanup_map = {

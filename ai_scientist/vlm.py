@@ -7,6 +7,7 @@ import openai
 import os
 from PIL import Image
 from ai_scientist.utils.token_tracker import track_token_usage
+from ai_scientist.utils.model_params import build_token_params
 
 MAX_NUM_TOKENS = 4096
 
@@ -16,6 +17,7 @@ AVAILABLE_VLMS = [
     "gpt-4o-2024-11-20",
     "gpt-4o-mini-2024-07-18",
     "gpt-4o",
+    "gpt-5.2",
     "o3-mini",
 
     # Ollama models
@@ -73,7 +75,7 @@ def make_llm_call(client, model, temperature, system_message, prompt):
                 *prompt,
             ],
             temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
+            **build_token_params(model, MAX_NUM_TOKENS),
             n=1,
             stop=None,
             seed=0,
@@ -113,7 +115,7 @@ def make_vlm_call(client, model, temperature, system_message, prompt):
                 *prompt,
             ],
             temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
+            **build_token_params(model, MAX_NUM_TOKENS),
         )
     elif "o1" in model or "o3" in model:
         return client.chat.completions.create(
@@ -210,6 +212,7 @@ def create_client(model: str) -> tuple[Any, str]:
         "gpt-4o-mini-2024-07-18",
         "gpt-4o",
         "o3-mini",
+        "gpt-5.2",
     ]:
         print(f"Using OpenAI API with model {model}.")
         return openai.OpenAI(), model
@@ -332,7 +335,7 @@ def get_batch_responses_from_vlm(
                     *new_msg_history,
                 ],
                 temperature=temperature,
-                max_tokens=MAX_NUM_TOKENS,
+                **build_token_params(model, MAX_NUM_TOKENS),
                 n=n_responses,
                 seed=0,
             )

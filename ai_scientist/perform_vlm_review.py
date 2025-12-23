@@ -8,6 +8,7 @@ from ai_scientist.vlm import (
     get_batch_responses_from_vlm,
     extract_json_between_markers,
 )
+from ai_scientist.utils.model_params import build_token_params
 
 from ai_scientist.perform_llm_review import load_paper
 from ai_scientist.prompt_loader import load_prompt
@@ -318,7 +319,7 @@ def detect_duplicate_figures(client, client_model, pdf_path):
         response = client.chat.completions.create(
             model=client_model,
             messages=messages,
-            max_tokens=1000,
+            **build_token_params(client_model, 1000),
         )
 
         analysis = response.choices[0].message.content

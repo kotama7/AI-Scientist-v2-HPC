@@ -1,5 +1,6 @@
 from . import backend_anthropic, backend_openai
 from .utils import FunctionSpec, OutputType, PromptType, compile_prompt_to_md
+from ai_scientist.utils.model_params import build_token_params
 
 def get_ai_client(model: str, **model_kwargs):
     """
@@ -48,7 +49,7 @@ def query(
 
     # Handle models with beta limitations
     # ref: https://platform.openai.com/docs/guides/reasoning/beta-limitations
-    if model.startswith("o1"):
+    if model.startswith(("o1", "o3")):
         if system_message and user_message is None:
             user_message = system_message
         elif system_message is None and user_message:
@@ -60,11 +61,11 @@ def query(
         system_message = None
         # model_kwargs["temperature"] = 0.5
         model_kwargs["reasoning_effort"] = "high"
-        model_kwargs["max_completion_tokens"] = 100000  # max_tokens
+        model_kwargs |= build_token_params(model, 100000)  # max_tokens
         # remove 'temperature' from model_kwargs
         model_kwargs.pop("temperature", None)
     else:
-        model_kwargs["max_tokens"] = max_tokens
+        model_kwargs |= build_token_params(model, max_tokens)
 
     query_func = backend_anthropic.query if "claude-" in model else backend_openai.query
     output, req_time, in_tok_count, out_tok_count, info = query_func(

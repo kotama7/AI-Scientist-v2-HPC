@@ -37,6 +37,54 @@ _STAGE_DATASET_GOALS = {
 logger = logging.getLogger(__name__)
 
 
+def _normalize_task_desc_keys(task_desc: Dict[str, Any]) -> Dict[str, Any]:
+    key_aliases = {
+        "title": "Title",
+        "abstract": "Abstract",
+        "short hypothesis": "Short Hypothesis",
+        "experiments": "Experiments",
+        "risk factors and limitations": "Risk Factors and Limitations",
+        "risk factors & limitations": "Risk Factors and Limitations",
+        "risk factors and limitation": "Risk Factors and Limitations",
+        "code": "Code",
+        "code to use": "Code",
+        "code to potentially use": "Code",
+        "task goal": "Task goal",
+        "task evaluation": "Task evaluation",
+    }
+    normalized: Dict[str, Any] = {}
+    for key, value in task_desc.items():
+        key_str = str(key).strip()
+        normalized_key = re.sub(r"[_\s]+", " ", key_str).lower()
+        canonical_key = key_aliases.get(normalized_key, key_str)
+        if canonical_key not in normalized or normalized[canonical_key] in ("", None):
+            normalized[canonical_key] = value
+    return normalized
+
+
+def _coerce_task_desc(task_desc: Any) -> Dict[str, Any]:
+    if isinstance(task_desc, dict):
+        parsed = task_desc
+    elif isinstance(task_desc, str):
+        stripped = task_desc.strip()
+        if not stripped:
+            raise ValueError("task_desc is empty")
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = parse_markdown_to_dict(stripped)
+            if not parsed:
+                raise ValueError(
+                    "task_desc must be JSON or markdown with section headings"
+                )
+    else:
+        raise TypeError(f"Unsupported task_desc type: {type(task_desc)}")
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"task_desc must parse to a dict, got: {type(parsed)}")
+    return _normalize_task_desc_keys(parsed)
+
+
 stage_config_spec = FunctionSpec(
     name="generate_stage_config",
     description="Generate configuration for the next experimental stage",
@@ -140,8 +188,8 @@ class StageTransition:
 
 
 class AgentManager:
-    def __init__(self, task_desc: str, cfg: Any, workspace_dir: Path):
-        self.task_desc = json.loads(task_desc)
+    def __init__(self, task_desc: Any, cfg: Any, workspace_dir: Path):
+        self.task_desc = _coerce_task_desc(task_desc)
         for k in [
             "Title",
             "Abstract",

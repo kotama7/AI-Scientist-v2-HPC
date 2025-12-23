@@ -7,3 +7,4 @@ Environment context (from inside the worker container):
 - available_libs: {available_libs}
 
 Select compiler_selected from available_compiler_names. If nothing fits, plan installs in download phase (sudo/apt-get with --writable-tmpfs/overlay or source build under /workspace).
+All commands are executed inside the container; do not suggest host-only actions or wrap commands with singularity/apptainer.

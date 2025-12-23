@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import jsonschema
 from dataclasses_json import DataClassJsonMixin
 
-PromptType = str | dict | list
+PromptType = str | int | float | bool | dict | list
 FunctionCallType = dict
 OutputType = str | FunctionCallType
 
@@ -56,6 +56,9 @@ def compile_prompt_to_md(prompt: PromptType, _header_depth: int = 1) -> str:
         if isinstance(prompt, str):
             return prompt.strip() + "\n"
 
+        if isinstance(prompt, (int, float, bool)):
+            return f"{prompt}\n"
+
         if isinstance(prompt, list):
             # Handle empty list case
             if not prompt:
@@ -66,7 +69,7 @@ def compile_prompt_to_md(prompt: PromptType, _header_depth: int = 1) -> str:
                 return prompt
 
             try:
-                result = "\n".join([f"- {s.strip()}" for s in prompt] + ["\n"])
+                result = "\n".join([f"- {str(s).strip()}" for s in prompt] + ["\n"])
                 return result
             except Exception as e:
                 logger.error(f"Error processing list items: {e}")

@@ -82,11 +82,8 @@ class ExecConfig:
     format_tb_ipython: bool
     language: str = "python"
     env_packages_template: str | None = None
-    cpp_compile_flags: list[str] | None = None
-    cpp_compiler: str = "g++"
     phase_mode: str = "split"
     singularity_image: str | None = None
-    container_runtime: str | None = None
     workspace_mount: str = "/workspace"
     writable_tmpfs: bool = True
     container_overlay: str | None = None
@@ -95,6 +92,7 @@ class ExecConfig:
     keep_sandbox: bool = False
     use_fakeroot: bool = True
     writable_mode: str = "auto"
+    phase1_max_steps: int = 12
 
 
 @dataclass
@@ -104,12 +102,6 @@ class ExperimentConfig:
 
 
 @dataclass
-class PromptAdapterConfig:
-    model: str
-    temp: float
-    max_tokens: Optional[int] = None
-
-
 @dataclass
 class Config(Hashable):
     data_dir: Path
@@ -132,7 +124,6 @@ class Config(Hashable):
     agent: AgentConfig
     experiment: ExperimentConfig
     debug: DebugConfig
-    prompt_adapter: Optional[PromptAdapterConfig] = None
 
 
 def _get_next_logindex(dir: Path) -> int:

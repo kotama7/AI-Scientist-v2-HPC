@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 logger = logging.getLogger("ai-scientist")
 
@@ -28,8 +28,75 @@ def detect_container_runtime(preferred: str | None = None) -> str | None:
     return None
 
 
+def summarize_text(text: str, *, max_lines: int = 20, max_chars: int = 2000) -> str:
+    """Summarize command output for LLM consumption (full output is logged separately)."""
+    if not text:
+        return ""
+    lines = text.splitlines()
+    total_lines = len(lines)
+    if total_lines > max_lines:
+        lines = lines[-max_lines:]
+        text = f"... ({total_lines - max_lines} lines truncated) ...\n" + "\n".join(lines)
+    else:
+        text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[-max_chars:]
+        text = f"... (truncated to last {max_chars} chars) ...\n{text}"
+    return text
+
+
+def summarize_command_output(stdout: str, stderr: str, *, max_lines: int = 20, max_chars: int = 2000) -> dict[str, str]:
+    return {
+        "stdout": summarize_text(stdout, max_lines=max_lines, max_chars=max_chars),
+        "stderr": summarize_text(stderr, max_lines=max_lines, max_chars=max_chars),
+    }
+
+
+def run_in_container(
+    *,
+    worker_id: int | None,
+    image_path: Path | str,
+    cmd: str | Sequence[str],
+    env: Mapping[str, str] | None,
+    binds: Sequence[str] | None,
+    use_nv: bool,
+    pwd: str | None = None,
+    extra_args: Sequence[str] | None = None,
+    runtime: str = "singularity",
+) -> subprocess.CompletedProcess[str]:
+    """Run a single command inside a Singularity container."""
+    if runtime != "singularity":
+        raise CommandExecutionError(f"Unsupported runtime: {runtime}")
+    if not shutil.which(runtime):
+        raise CommandExecutionError("Singularity runtime not found.")
+    if not image_path:
+        raise CommandExecutionError("Container image path is required.")
+
+    exec_cmd: list[str] = [runtime, "exec"]
+    if use_nv:
+        exec_cmd.append("--nv")
+    if extra_args:
+        exec_cmd.extend(list(extra_args))
+    if binds:
+        for bind in binds:
+            exec_cmd.extend(["--bind", bind])
+    if pwd:
+        exec_cmd.extend(["--pwd", pwd])
+    if env:
+        for key, value in env.items():
+            exec_cmd.extend(["--env", f"{key}={value}"])
+
+    exec_cmd.append(str(image_path))
+    if isinstance(cmd, str):
+        exec_cmd.extend(["bash", "-lc", cmd])
+    else:
+        exec_cmd.extend([str(part) for part in cmd])
+
+    return subprocess.run(exec_cmd, capture_output=True, text=True)
+
+
 class ExecutionEnvironment:
-    """Thin wrapper to run commands either on host or inside a Singularity instance."""
+    """Thin wrapper to run commands inside a Singularity instance (host exec disabled)."""
 
     def __init__(
         self,
@@ -54,6 +121,12 @@ class ExecutionEnvironment:
         self.instance_name: str | None = instance_name
         self._stopped = False
         self._started = False
+        self._use_instance = str(os.environ.get("AI_SCIENTIST_USE_INSTANCE", "")).lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         self.enable_writable_tmpfs = enable_writable_tmpfs
         self.overlay_path = Path(overlay_path).resolve() if overlay_path else None
         self.extra_start_args = list(extra_start_args) if extra_start_args else []
@@ -68,10 +141,11 @@ class ExecutionEnvironment:
 
     @property
     def using_container(self) -> bool:
-        return bool(self.runtime and self.instance_name and self._started)
+        return bool(self.runtime and self.instance_name and self._started and self._use_instance)
 
     def _build_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = dict(extra) if extra else {}
+        env.setdefault("PATH", os.environ.get("SINGULARITYENV_PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"))
         if self.gpu_id is not None:
             env.setdefault("CUDA_VISIBLE_DEVICES", str(self.gpu_id))
         return env
@@ -79,15 +153,18 @@ class ExecutionEnvironment:
     def start(self) -> None:
         if self._started or self._stopped:
             return
+        if not self._use_instance:
+            logger.info("AI_SCIENTIST_USE_INSTANCE not set; skipping instance start and using direct singularity exec.")
+            return
 
         if not self.image:
-            logger.info("No container image configured; running on host environment.")
+            logger.info("No container image configured; instance start skipped.")
             return
         if not self.image.exists():
-            logger.warning("Container image %s not found; running on host.", self.image)
+            logger.warning("Container image %s not found; instance start skipped.", self.image)
             return
         if not self.runtime:
-            logger.warning("No Singularity runtime found; running on host.")
+            logger.warning("No Singularity runtime found; instance start skipped.")
             return
 
         if not self.instance_name:
@@ -110,12 +187,13 @@ class ExecutionEnvironment:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             self.instance_name = None
-            raise CommandExecutionError(
-                f"Failed to start {self.runtime} instance",
-                returncode=result.returncode,
-                stdout=result.stdout,
-                stderr=result.stderr,
+            self._use_instance = False
+            logger.warning(
+                "Failed to start %s instance; will fallback to direct singularity exec. Details: %s",
+                self.runtime,
+                result.stderr.strip() or result.stdout.strip(),
             )
+            return
         self._started = True
 
     def stop(self) -> None:
@@ -149,35 +227,22 @@ class ExecutionEnvironment:
         check: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         env_vars = self._build_env(extra_env)
-        if self.using_container:
-            container_cwd = self._map_cwd(cwd)
-            env_args: list[str] = []
-            for key, value in env_vars.items():
-                env_args.extend(["--env", f"{key}={value}"])
+        if not (self.runtime and self.image):
+            raise CommandExecutionError("Container runtime not available; host execution is disabled.")
 
-            exec_cmd: list[str] = [self.runtime, "exec", "--nv"]
-            if container_cwd:
-                exec_cmd.extend(["--pwd", container_cwd])
-            exec_cmd.extend(env_args)
-            exec_cmd.append(f"instance://{self.instance_name}")
-
-            if isinstance(command, str):
-                exec_cmd.extend(["bash", "-lc", command])
-            else:
-                exec_cmd.extend(command)
-            result = subprocess.run(exec_cmd, capture_output=True, text=True)
-        else:
-            if isinstance(command, str):
-                cmd = ["bash", "-lc", command]
-            else:
-                cmd = list(command)
-            result = subprocess.run(
-                cmd,
-                cwd=str(cwd) if cwd else None,
-                env={**os.environ, **env_vars},
-                capture_output=True,
-                text=True,
-            )
+        container_cwd = self._map_cwd(cwd)
+        bind_arg = f"{self.workspace}:{self.workspace_mount}"
+        image_ref = f"instance://{self.instance_name}" if self.using_container else str(self.image)
+        result = run_in_container(
+            worker_id=None,
+            image_path=image_ref,
+            cmd=command if isinstance(command, str) else list(command),
+            env=env_vars,
+            binds=[bind_arg],
+            use_nv=True,
+            pwd=container_cwd,
+            runtime=self.runtime,
+        )
 
         if check and result.returncode != 0:
             raise CommandExecutionError(
@@ -246,6 +311,7 @@ class SingularityWorkerContainer:
         extra_logs: Sequence[Path] | None = None,
     ) -> None:
         self._log(f"[{step}] $ {cmd_repr}\n", extra_logs)
+        self._log(f"[{step}] exit_code={result.returncode}\n", extra_logs)
         if result.stdout:
             self._log(result.stdout, extra_logs)
         if result.stderr:
@@ -283,6 +349,12 @@ class SingularityWorkerContainer:
             flags.extend(["--overlay", f"{self.overlay_path}:rw"])
         return flags
 
+    def _phase1_prelude(self) -> str:
+        return (
+            "mkdir -p /var/lib/apt/lists/partial || true; "
+            "chmod 755 /var/lib/apt/lists /var/lib/apt/lists/partial || true"
+        )
+
     def _exec_commands(
         self,
         image: Path,
@@ -294,14 +366,12 @@ class SingularityWorkerContainer:
         step: str,
         extra_env: Mapping[str, str] | None,
         log_files: Sequence[Path],
+        stop_on_failure: bool = True,
     ) -> tuple[bool, list[str], dict | None]:
         outputs: list[str] = []
         env_vars = {"DEBIAN_FRONTEND": "noninteractive"}
         if extra_env:
             env_vars.update(extra_env)
-        env_args: list[str] = []
-        for key, value in env_vars.items():
-            env_args.extend(["--env", f"{key}={value}"])
 
         common_flags: list[str] = []
         if self.use_fakeroot:
@@ -316,44 +386,169 @@ class SingularityWorkerContainer:
         bind_arg = f"{self.workspace}:{self.workspace_mount}"
 
         # Prepend a small prelude to avoid apt failures on missing partial dir
-        prelude = (
-            "mkdir -p /var/lib/apt/lists/partial || true; "
-            "chmod 755 /var/lib/apt/lists /var/lib/apt/lists/partial || true"
-        )
-        full_commands: list[str] = [prelude]
+        full_commands: list[str] = [self._phase1_prelude()]
         for raw_cmd in commands or []:
             full_commands.append(" ".join(raw_cmd) if isinstance(raw_cmd, (list, tuple)) else str(raw_cmd))
 
+        failure: dict | None = None
         for shell_cmd in full_commands:
-            full_cmd = [
-                self.runtime,
-                "exec",
-                *common_flags,
-                "--bind",
-                bind_arg,
-                "--pwd",
-                self.workspace_mount,
-                *env_args,
-                str(image),
-                "bash",
-                "-lc",
-                shell_cmd,
-            ]
-            result = subprocess.run(full_cmd, capture_output=True, text=True)
-            self._write_command_result(result=result, cmd_repr=" ".join(full_cmd), step=step, extra_logs=log_files)
-            if result.stdout:
-                outputs.append(result.stdout)
-            if result.stderr:
-                outputs.append(result.stderr)
+            result = run_in_container(
+                worker_id=None,
+                image_path=image,
+                cmd=shell_cmd,
+                env=env_vars,
+                binds=[bind_arg],
+                use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+                pwd=self.workspace_mount,
+                extra_args=common_flags,
+                runtime=self.runtime,
+            )
+            self._write_command_result(result=result, cmd_repr=shell_cmd, step=step, extra_logs=log_files)
+            summary = summarize_command_output(result.stdout, result.stderr)
+            summary_blob = (
+                f"[{step}] $ {shell_cmd}\n"
+                f"exit_code={result.returncode}\n"
+                f"stdout:\n{summary['stdout']}\n"
+                f"stderr:\n{summary['stderr']}\n"
+            )
+            outputs.append(summary_blob)
             if result.returncode != 0:
-                failure = {
+                failure = failure or {
                     "step": step,
                     "returncode": result.returncode,
                     "stderr": result.stderr,
                 }
                 self._log(f"[{step}] failed with code {result.returncode}\n", log_files)
-                return False, outputs, failure
-        return True, outputs, None
+                if stop_on_failure:
+                    return False, outputs, failure
+        return failure is None, outputs, failure
+
+    def _run_iterative_phase1(
+        self,
+        image: Path,
+        *,
+        step: str,
+        iterative_driver: Callable[[list[dict[str, Any]], int, int], dict[str, Any]],
+        max_steps: int,
+        extra_env: Mapping[str, str] | None,
+        log_files: Sequence[Path],
+        use_tmpfs: bool,
+        use_overlay: bool,
+    ) -> tuple[bool, list[str], dict | None, list[str]]:
+        outputs: list[str] = []
+        history: list[dict[str, Any]] = []
+        commands_executed: list[str] = []
+        env_vars = {"DEBIAN_FRONTEND": "noninteractive"}
+        if extra_env:
+            env_vars.update(extra_env)
+        bind_arg = f"{self.workspace}:{self.workspace_mount}"
+
+        common_flags: list[str] = []
+        if self.use_fakeroot:
+            common_flags.append("--fakeroot")
+        if use_tmpfs:
+            common_flags.append("--writable-tmpfs")
+        if use_overlay and self.overlay_path:
+            common_flags.extend(["--overlay", f"{self.overlay_path}:rw"])
+
+        fallback_flags: list[str] = []
+        if self.use_fakeroot:
+            fallback_flags.append("--fakeroot")
+
+        prelude_cmd = self._phase1_prelude()
+        prelude_res = run_in_container(
+            worker_id=None,
+            image_path=image,
+            cmd=prelude_cmd,
+            env=env_vars,
+            binds=[bind_arg],
+            use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+            pwd=self.workspace_mount,
+            extra_args=common_flags,
+            runtime=self.runtime,
+        )
+        self._write_command_result(result=prelude_res, cmd_repr=prelude_cmd, step=f"{step}-prelude", extra_logs=log_files)
+
+        last_returncode: int | None = None
+        for idx in range(1, max_steps + 1):
+            try:
+                response = iterative_driver(history, idx, max_steps)
+            except Exception as exc:
+                failure = {"step": step, "message": f"Phase 1 iterative driver failed: {exc}"}
+                self._log(f"[{step}] iterative driver error: {exc}\n", log_files)
+                return False, outputs, failure, commands_executed
+            command = str(response.get("command", "")).strip()
+            done = bool(response.get("done", False))
+            if done:
+                if last_returncode not in (None, 0):
+                    failure = {
+                        "step": step,
+                        "message": "Phase 1 marked done but last command failed.",
+                        "returncode": last_returncode,
+                    }
+                    self._log(f"[{step}] done=true after failure\n", log_files)
+                    return False, outputs, failure, commands_executed
+                return True, outputs, None, commands_executed
+            if not command:
+                failure = {"step": step, "message": "Phase 1 command missing from LLM response."}
+                self._log(f"[{step}] missing command from iterative driver\n", log_files)
+                return False, outputs, failure, commands_executed
+
+            result = run_in_container(
+                worker_id=None,
+                image_path=image,
+                cmd=command,
+                env=env_vars,
+                binds=[bind_arg],
+                use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+                pwd=self.workspace_mount,
+                extra_args=common_flags,
+                runtime=self.runtime,
+            )
+            stderr_lower = (result.stderr or "").lower()
+            if result.returncode != 0 and ("fuse" in stderr_lower or "allow_other" in stderr_lower) and common_flags != fallback_flags:
+                self._log(f"[{step}] retrying without tmpfs/overlay due to FUSE/allow_other error\n", log_files)
+                result = run_in_container(
+                    worker_id=None,
+                    image_path=image,
+                    cmd=command,
+                    env=env_vars,
+                    binds=[bind_arg],
+                    use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+                    pwd=self.workspace_mount,
+                    extra_args=fallback_flags,
+                    runtime=self.runtime,
+                )
+                common_flags = fallback_flags
+
+            self._write_command_result(result=result, cmd_repr=command, step=step, extra_logs=log_files)
+            summary = summarize_command_output(result.stdout, result.stderr)
+            summary_blob = (
+                f"[{step}] $ {command}\n"
+                f"exit_code={result.returncode}\n"
+                f"stdout:\n{summary['stdout']}\n"
+                f"stderr:\n{summary['stderr']}\n"
+            )
+            outputs.append(summary_blob)
+            history.append(
+                {
+                    "step": idx,
+                    "command": command,
+                    "exit_code": result.returncode,
+                    "stdout_summary": summary["stdout"],
+                    "stderr_summary": summary["stderr"],
+                }
+            )
+            commands_executed.append(command)
+            last_returncode = result.returncode
+
+        failure = {
+            "step": step,
+            "message": "Phase 1 hit max_steps without done=true.",
+            "max_steps": max_steps,
+        }
+        self._log(f"[{step}] max_steps reached without done\n", log_files)
+        return False, outputs, failure, commands_executed
 
     def prepare_phase1(
         self,
@@ -363,12 +558,18 @@ class SingularityWorkerContainer:
         workspace_mount: str,
         download_log: Path,
         extra_env: Mapping[str, str] | None = None,
+        iterative_driver: Callable[[list[dict[str, Any]], int, int], dict[str, Any]] | None = None,
+        max_steps: int = 12,
     ) -> tuple[bool, list[str], dict | None]:
         """Run Phase 1 using base.sif first, persist to sandbox, and build worker SIF."""
         outputs: list[str] = []
         log_files = [download_log]
         self.workspace = workspace.resolve()
         self.workspace_mount = workspace_mount
+        phase1_env = dict(extra_env) if extra_env else None
+        if phase1_env and "CUDA_VISIBLE_DEVICES" in phase1_env:
+            # Phase 1 doesn't need GPU access; skip --nv to avoid noisy warnings.
+            phase1_env.pop("CUDA_VISIBLE_DEVICES", None)
         if not self.runtime:
             msg = "Singularity runtime not available; cannot prepare worker container."
             self._log(msg + "\n", log_files)
@@ -382,6 +583,11 @@ class SingularityWorkerContainer:
         self._ensure_base_copy()
         if not self.base_copy.exists():
             msg = f"Base image copy missing: {self.base_copy}"
+            self._log(msg + "\n", log_files)
+            return False, outputs + [msg], {"message": msg}
+
+        if iterative_driver and max_steps < 1:
+            msg = "Phase 1 iterative loop requires max_steps >= 1."
             self._log(msg + "\n", log_files)
             return False, outputs + [msg], {"message": msg}
 
@@ -401,71 +607,106 @@ class SingularityWorkerContainer:
             self._log("[sandbox-build] failed while creating sandbox\n", log_files)
             return False, outputs + [build_res.stderr], failure
 
+        commands_to_apply: Sequence[str | Sequence[str]] = download_commands
+
         # Step 0-2: run Phase 1 on base.sif (non-persistent)
         tmpfs_flags = self._base_exec_flags()
         use_tmpfs = "--writable-tmpfs" in tmpfs_flags
         use_overlay = any(flag.startswith("--overlay") for flag in tmpfs_flags)
-        base_success, base_outputs, base_failure = self._exec_commands(
-            self.base_copy,
-            download_commands,
-            writable=False,
-            use_tmpfs=use_tmpfs,
-            use_overlay=use_overlay,
-            step="phase1-base",
-            extra_env=extra_env,
-            log_files=log_files,
-        )
-        outputs.extend(base_outputs)
-        if not base_success:
-            stderr = base_failure.get("stderr", "") if base_failure else ""
-            if "fuse" in stderr.lower() or "allow_other" in stderr.lower():
-                self._log("[phase1-base] retrying without tmpfs/overlay due to FUSE/allow_other error\n", log_files)
-                base_success, base_outputs, base_failure = self._exec_commands(
-                    self.base_copy,
-                    download_commands,
-                    writable=False,
-                    use_tmpfs=False,
-                    use_overlay=False,
-                    step="phase1-base-retry",
-                    extra_env=extra_env,
-                    log_files=log_files,
-                )
-                outputs.extend(base_outputs)
-            if not base_success and ("read-only file system" in stderr.lower() or "read only file system" in stderr.lower()):
-                self._log("[phase1-base] continuing despite read-only filesystem; changes will be applied in sandbox\n", log_files)
-                base_success = True
+        self._log(f"[phase1-base] image={self.base_copy}\n", log_files)
+        if iterative_driver:
+            base_success, base_outputs, base_failure, commands_to_apply = self._run_iterative_phase1(
+                self.base_copy,
+                step="phase1-base",
+                iterative_driver=iterative_driver,
+                max_steps=max_steps,
+                extra_env=phase1_env,
+                log_files=log_files,
+                use_tmpfs=use_tmpfs,
+                use_overlay=use_overlay,
+            )
+            outputs.extend(base_outputs)
             if not base_success:
                 return False, outputs, base_failure
+        else:
+            base_success, base_outputs, base_failure = self._exec_commands(
+                self.base_copy,
+                download_commands,
+                writable=False,
+                use_tmpfs=use_tmpfs,
+                use_overlay=use_overlay,
+                step="phase1-base",
+                extra_env=phase1_env,
+                log_files=log_files,
+            )
+            outputs.extend(base_outputs)
+            if not base_success:
+                stderr = base_failure.get("stderr", "") if base_failure else ""
+                if "fuse" in stderr.lower() or "allow_other" in stderr.lower():
+                    self._log("[phase1-base] retrying without tmpfs/overlay due to FUSE/allow_other error\n", log_files)
+                    base_success, base_outputs, base_failure = self._exec_commands(
+                        self.base_copy,
+                        download_commands,
+                        writable=False,
+                        use_tmpfs=False,
+                        use_overlay=False,
+                        step="phase1-base-retry",
+                        extra_env=phase1_env,
+                        log_files=log_files,
+                    )
+                    outputs.extend(base_outputs)
+                if not base_success and ("read-only file system" in stderr.lower() or "read only file system" in stderr.lower()):
+                    self._log("[phase1-base] continuing despite read-only filesystem; changes will be applied in sandbox\n", log_files)
+                    base_success = True
+                if not base_success:
+                    return False, outputs, base_failure
 
         # Step 0-3: apply Phase 1 to sandbox (persistent)
-        sandbox_success, sandbox_outputs, sandbox_failure = self._exec_commands(
-            self.sandbox_dir,
-            download_commands,
-            writable=True,
-            use_tmpfs=False,
-            use_overlay=False,
-            step="phase1-sandbox",
-            extra_env=extra_env,
-            log_files=log_files,
-        )
-        outputs.extend(sandbox_outputs)
-        if not sandbox_success:
-            stderr = sandbox_failure.get("stderr", "") if sandbox_failure else ""
-            if "fuse" in stderr.lower() or "allow_other" in stderr.lower():
-                self._log("[phase1-sandbox] retrying without overlay/tmpfs due to FUSE/allow_other error\n", log_files)
-                sandbox_success, sandbox_outputs, sandbox_failure = self._exec_commands(
-                    self.sandbox_dir,
-                    download_commands,
-                    writable=True,
-                    use_tmpfs=False,
-                    use_overlay=False,
-                    step="phase1-sandbox-retry",
-                    extra_env=extra_env,
-                    log_files=log_files,
-                )
-                outputs.extend(sandbox_outputs)
+        self._log(f"[phase1-sandbox] image={self.sandbox_dir}\n", log_files)
+        if iterative_driver:
+            sandbox_success, sandbox_outputs, sandbox_failure = self._exec_commands(
+                self.sandbox_dir,
+                commands_to_apply,
+                writable=True,
+                use_tmpfs=False,
+                use_overlay=False,
+                step="phase1-sandbox",
+                extra_env=phase1_env,
+                log_files=log_files,
+                stop_on_failure=False,
+            )
+            outputs.extend(sandbox_outputs)
             if not sandbox_success:
                 return False, outputs, sandbox_failure
+        else:
+            sandbox_success, sandbox_outputs, sandbox_failure = self._exec_commands(
+                self.sandbox_dir,
+                download_commands,
+                writable=True,
+                use_tmpfs=False,
+                use_overlay=False,
+                step="phase1-sandbox",
+                extra_env=phase1_env,
+                log_files=log_files,
+            )
+            outputs.extend(sandbox_outputs)
+            if not sandbox_success:
+                stderr = sandbox_failure.get("stderr", "") if sandbox_failure else ""
+                if "fuse" in stderr.lower() or "allow_other" in stderr.lower():
+                    self._log("[phase1-sandbox] retrying without overlay/tmpfs due to FUSE/allow_other error\n", log_files)
+                    sandbox_success, sandbox_outputs, sandbox_failure = self._exec_commands(
+                        self.sandbox_dir,
+                        download_commands,
+                        writable=True,
+                        use_tmpfs=False,
+                        use_overlay=False,
+                        step="phase1-sandbox-retry",
+                        extra_env=phase1_env,
+                        log_files=log_files,
+                    )
+                    outputs.extend(sandbox_outputs)
+                if not sandbox_success:
+                    return False, outputs, sandbox_failure
 
         # Step 0-4: build worker.sif
         build_worker_cmd = [self.runtime, "build", "--force"]

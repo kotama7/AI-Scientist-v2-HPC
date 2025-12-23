@@ -34,11 +34,56 @@ def build_aggregator_prompt(combined_summaries_str, idea_text):
 def extract_code_snippet(text: str) -> str:
     """
     Look for a Python code block in triple backticks in the LLM response.
-    Return only that code. If no code block is found, return the entire text.
+    Return only that code. If no code block is found, return an empty string.
     """
-    pattern = r"```(?:python)?(.*?)```"
-    matches = re.findall(pattern, text, flags=re.DOTALL)
-    return matches[0].strip() if matches else text.strip()
+    if not text:
+        return ""
+
+    fenced_python = re.findall(
+        r"```[ \t]*(?:python)?[ \t]*\r?\n(.*?)```",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    for match in fenced_python:
+        if match.strip():
+            return match.strip()
+
+    fenced_any = re.findall(
+        r"```[ \t]*[a-zA-Z0-9_-]*[ \t]*\r?\n(.*?)```",
+        text,
+        flags=re.DOTALL,
+    )
+    for match in fenced_any:
+        if match.strip():
+            return match.strip()
+
+    open_fence = re.search(
+        r"```[ \t]*(?:python)?[ \t]*(?:\r?\n)?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not open_fence:
+        open_fence = re.search(r"```[ \t]*[a-zA-Z0-9_-]*[ \t]*(?:\r?\n)?", text)
+    if open_fence:
+        remainder = text[open_fence.end() :].strip()
+        if remainder:
+            return remainder
+
+    text_strip = text.strip()
+    if not text_strip:
+        return ""
+
+    if text_strip.startswith("#!/usr/bin/env python") or text_strip.startswith(
+        "#!/usr/bin/python"
+    ):
+        return text_strip
+
+    if "import " in text_strip:
+        python_markers = ("def ", "class ", "plt.", "np.", "os.", "if __name__")
+        if any(marker in text_strip for marker in python_markers):
+            return text_strip
+
+    return ""
 
 
 def run_aggregator_script(

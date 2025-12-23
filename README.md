@@ -139,13 +139,11 @@ Key tree search configuration parameters in `bfts_config.yaml`:
     -   `debug_prob`: The probability of attempting to debug a failing node.
     -   `num_drafts`: The number of initial root nodes (i.e., the number of independent trees to grow) during Stage 1.
 
-Example command to run AI-Scientist-v2 using a generated idea file (e.g., `my_research_topic.json`). Please review `bfts_config.yaml` for detailed tree search parameters (the default config includes `claude-3-5-sonnet` for experiments). Do not set `load_code` if you do not want to initialize experimentation with a code snippet.
+Example command to run AI-Scientist-v2 using a generated idea file (e.g., `my_research_topic.json`). Please review `bfts_config.yaml` for detailed tree search parameters (the default config includes `claude-3-5-sonnet` for experiments).
 
 ```bash
 python launch_scientist_bfts.py \
  --load_ideas "ai_scientist/ideas/my_research_topic.json" \
- --load_code \
- --add_dataset_ref \
  --model_writeup o1-preview-2024-09-12 \
  --model_citation gpt-4o-2024-11-20 \
  --model_review gpt-4o-2024-11-20 \
@@ -207,8 +205,8 @@ Everything required to orchestrate a cluster run lives in this directory. The st
 - Provide a container image with `--singularity_image` (or `exec.singularity_image`); the runner now uses Singularity only. For each worker it runs Phase 1 inside the user-provided `base.sif`, mirrors the installs into a sandbox, and seals a `worker-<i>.sif` under `runs/<run_id>/workers/worker-<i>/container/`. Phases 2–4 always execute inside that worker image with `--nv` and `CUDA_VISIBLE_DEVICES` pinned sequentially (`worker-i` → GPU `i`). Writable installs during Phase 1 prefer `--writable-tmpfs` (set `exec.writable_tmpfs=false` to disable) and can use optional overlays (`exec.container_overlay`).
 - The coding phase materializes the LLM-specified workspace tree/files under `/workspace` (relative paths only; no parent traversal).
 - Compile commands respect the LLM `build_plan.compiler_selected`, which must be chosen from `available_compilers` discovered inside the container. The runner never swaps the compiler; an invalid/missing selection fails the compile phase.
-- Split-mode prompts enforce machine-readable JSON output, including `coding.workspace.tree` and `coding.workspace.files`. Legacy language adapters remain available only when `phase_mode=single`.
-- Switch modes via `--phase_mode split|single`; force Singularity with `--container_runtime singularity` if auto-detection is not desired.
+- Split-mode prompts enforce machine-readable JSON output, including `coding.workspace.tree` and `coding.workspace.files`. The split runner does not use language adapter layers.
+- Switch modes via `--phase_mode split|single`; Singularity is the only supported container runtime.
 - Expected LLM output (JSON only) follows the schema:
   ```json
   {
@@ -216,7 +214,7 @@ Everything required to orchestrate a cluster run lives in this directory. The st
       "download": {"commands": [], "notes": ""},
       "coding": {"workspace": {"root": "/workspace", "tree": [], "files": []}},
       "compile": {"build_plan": {"compiler_selected": "", "output": "bin/a.out"}, "commands": []},
-      "run": {"commands": [], "expected_outputs": ["artifacts/final/output.npy"]}
+      "run": {"commands": [], "expected_outputs": ["working/experiment_data.npy"]}
     },
     "constraints": {
       "allow_sudo_in_singularity": true,
@@ -229,6 +227,13 @@ Everything required to orchestrate a cluster run lives in this directory. The st
     }
   }
   ```
+
+### Smoke tests
+
+Run the lightweight split-path checks from the repo root:
+```bash
+python -m unittest tests/test_smoke_split.py
+```
 
 
 ## Citing The AI Scientist-v2

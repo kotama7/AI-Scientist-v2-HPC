@@ -7,7 +7,7 @@ import yaml
 
 
 def idea_to_markdown(
-    data: dict, output_path: str, load_code: str, code_fence: str = "python"
+    data: dict, output_path: str, load_code: str | None = None, code_fence: str = "python"
 ) -> None:
     """
     Convert a dictionary into a markdown file.
@@ -15,7 +15,7 @@ def idea_to_markdown(
     Args:
         data: Dictionary containing the data to convert
         output_path: Path where the markdown file will be saved
-        load_code: Path to a code file to include in the markdown
+        load_code: Optional path to a code file to include in the markdown
     """
     with open(output_path, "w", encoding="utf-8") as f:
         for key, value in data.items():
@@ -38,7 +38,9 @@ def idea_to_markdown(
         # Add the code to the markdown file
         if load_code:
             # Assert that the code file exists before trying to open it
-            assert os.path.exists(load_code), f"Code path at {load_code} must exist if using the 'load_code' flag. This is an optional code prompt that you may choose to include; if not, please do not set 'load_code'."
+            assert os.path.exists(load_code), (
+                f"Code path at {load_code} must exist when load_code is provided."
+            )
             f.write(f"## Code To Potentially Use\n\n")
             f.write(f"Use the following code as context for your experiments:\n\n")
             with open(load_code, "r") as code_file:
@@ -54,11 +56,8 @@ def edit_bfts_config_file(
     language: str | None = None,
     agent_file_name: str | None = None,
     env_packages_template: str | None = None,
-    cpp_compile_flags: Sequence[str] | None = None,
-    cpp_compiler: str | None = None,
     phase_mode: str | None = None,
     singularity_image: str | None = None,
-    container_runtime: str | None = None,
     num_workers: int | None = None,
     writable_tmpfs: bool | None = None,
     container_overlay: str | None = None,
@@ -67,6 +66,7 @@ def edit_bfts_config_file(
     keep_sandbox: bool | None = None,
     use_fakeroot: bool | None = None,
     writable_mode: str | None = None,
+    phase1_max_steps: int | None = None,
 ) -> str:
     """
     Edit the bfts_config.yaml file to point to the idea.md file
@@ -103,16 +103,10 @@ def edit_bfts_config_file(
         exec_cfg["agent_file_name"] = agent_file_name
     if env_packages_template is not None:
         exec_cfg["env_packages_template"] = env_packages_template
-    if cpp_compile_flags is not None:
-        exec_cfg["cpp_compile_flags"] = list(cpp_compile_flags)
-    if cpp_compiler is not None:
-        exec_cfg["cpp_compiler"] = cpp_compiler
     if phase_mode is not None:
         exec_cfg["phase_mode"] = phase_mode
     if singularity_image is not None:
         exec_cfg["singularity_image"] = singularity_image
-    if container_runtime is not None:
-        exec_cfg["container_runtime"] = container_runtime
     if writable_tmpfs is not None:
         exec_cfg["writable_tmpfs"] = bool(writable_tmpfs)
     if container_overlay is not None:
@@ -127,6 +121,8 @@ def edit_bfts_config_file(
         exec_cfg["use_fakeroot"] = bool(use_fakeroot)
     if writable_mode is not None:
         exec_cfg["writable_mode"] = writable_mode
+    if phase1_max_steps is not None:
+        exec_cfg["phase1_max_steps"] = int(phase1_max_steps)
     if num_workers is not None:
         config.setdefault("agent", {})
         config["agent"]["num_workers"] = int(num_workers)

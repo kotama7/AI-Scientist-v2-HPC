@@ -18,8 +18,46 @@ def _strip_json_wrappers(raw_text: str) -> str:
     return cleaned
 
 
-def extract_phase_artifacts(raw_text: str) -> Dict[str, Any]:
+def extract_phase_artifacts(raw_text: str, *, default_language: str = "c") -> Dict[str, Any]:
     """Parse and validate the JSON returned by the LLM for split-phase execution."""
+    def normalize_language(value: str | None) -> str:
+        lang = str(value or "").strip().lower()
+        if not lang:
+            return "c"
+        if lang in {"c++", "cxx"}:
+            return "cpp"
+        return lang
+
+    def placeholder_source(lang: str) -> tuple[str, str]:
+        if lang == "cpp":
+            return (
+                "src/main.cpp",
+                (
+                    "// Auto-generated fallback to keep pipeline alive\n"
+                    "int main() {\n"
+                    "    return 0;\n"
+                    "}\n"
+                ),
+            )
+        if lang == "python":
+            return (
+                "src/main.py",
+                (
+                    "# Auto-generated fallback to keep pipeline alive\n"
+                    "print('Placeholder code; LLM omitted files')\n"
+                ),
+            )
+        return (
+            "src/main.c",
+            (
+                "/* Auto-generated fallback to keep pipeline alive */\n"
+                "int main(void) {\n"
+                "    return 0;\n"
+                "}\n"
+            ),
+        )
+
+    default_language = normalize_language(default_language)
     cleaned = _strip_json_wrappers(raw_text)
     try:
         parsed = json.loads(cleaned)
@@ -63,23 +101,21 @@ def extract_phase_artifacts(raw_text: str) -> Dict[str, Any]:
     coding = phase["coding"]
     workspace = coding.get("workspace", {})
     if not isinstance(workspace, dict) or not workspace.get("files"):
+        placeholder_path, placeholder_content = placeholder_source(default_language)
         workspace = {
             "root": "/workspace",
-            "tree": ["workspace/", "workspace/src/", "workspace/artifacts/final/"],
+            "tree": ["workspace/", "workspace/src/", "workspace/working/"],
             "files": [
                 {
-                    "path": "src/main.py",
+                    "path": placeholder_path,
                     "mode": "0644",
                     "encoding": "utf-8",
-                    "content": (
-                        "# Auto-generated fallback to keep pipeline alive\n"
-                        "print('Placeholder code; LLM omitted files')\n"
-                    ),
+                    "content": placeholder_content,
                 }
             ],
         }
     workspace.setdefault("root", "/workspace")
-    workspace.setdefault("tree", ["workspace/", "workspace/artifacts/final/"])
+    workspace.setdefault("tree", ["workspace/", "workspace/working/"])
     coding["workspace"] = workspace
 
     compile_section = phase["compile"]
@@ -88,12 +124,15 @@ def extract_phase_artifacts(raw_text: str) -> Dict[str, Any]:
         build_plan = build_plan[0]
     if not isinstance(build_plan, dict):
         build_plan = {}
-    build_plan.setdefault("language", "c")
+    build_plan.setdefault("language", default_language)
     build_plan.setdefault("compiler_selected", "")
     build_plan.setdefault("cflags", [])
     build_plan.setdefault("ldflags", [])
     build_plan.setdefault("workdir", "/workspace")
-    build_plan.setdefault("output", "bin/a.out")
+    if default_language == "python":
+        build_plan.setdefault("output", "working/experiment_data.npy")
+    else:
+        build_plan.setdefault("output", "bin/a.out")
     compile_section["build_plan"] = build_plan
 
     if not build_plan.get("compiler_selected"):
@@ -102,7 +141,7 @@ def extract_phase_artifacts(raw_text: str) -> Dict[str, Any]:
     run_section = phase["run"]
     expected_outputs = run_section.get("expected_outputs")
     if not expected_outputs:
-        run_section["expected_outputs"] = ["artifacts/final/output.npy"]
+        run_section["expected_outputs"] = ["working/experiment_data.npy"]
 
     constraints = parsed.get("constraints")
     if isinstance(constraints, list) and constraints:

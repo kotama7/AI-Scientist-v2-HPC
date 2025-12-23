@@ -1,14 +1,22 @@
 import json
 import os
 import re
+from datetime import datetime
 from typing import Any
 from ai_scientist.utils.token_tracker import track_token_usage
+from ai_scientist.utils.model_params import build_token_params
 
 import anthropic
 import backoff
 import openai
 
 MAX_NUM_TOKENS = 4096
+DEFAULT_MAX_COMPLETION_TOKENS = int(
+    os.environ.get("AI_SCIENTIST_MAX_COMPLETION_TOKENS", str(MAX_NUM_TOKENS))
+)
+GPT5_MAX_COMPLETION_TOKENS = int(
+    os.environ.get("AI_SCIENTIST_GPT5_MAX_COMPLETION_TOKENS", "8192")
+)
 
 AVAILABLE_LLMS = [
     "claude-3-5-sonnet-20240620",
@@ -23,6 +31,7 @@ AVAILABLE_LLMS = [
     "gpt-4.1-2025-04-14",
     "gpt-4.1-mini",
     "gpt-4.1-mini-2025-04-14",
+    "gpt-5.2",
     "o1",
     "o1-2024-12-17",
     "o1-preview-2024-09-12",
@@ -73,6 +82,165 @@ AVAILABLE_LLMS = [
 ]
 
 
+def _default_completion_tokens(model: str) -> int:
+    normalized = (model or "").lower()
+    if normalized.startswith("gpt-5"):
+        return GPT5_MAX_COMPLETION_TOKENS
+    return DEFAULT_MAX_COMPLETION_TOKENS
+
+
+def _token_param(model: str, *, n_tokens: int | None = None) -> dict[str, int]:
+    """Return the correct token budget kwarg for the given model."""
+    token_budget = _default_completion_tokens(model) if n_tokens is None else n_tokens
+    return build_token_params(model, token_budget)
+
+
+def _normalize_openai_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        for key in ("text", "content", "value", "output_text"):
+            value = content.get(key)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (list, dict)):
+                nested = _normalize_openai_content(value)
+                if nested:
+                    return nested
+        refusal = content.get("refusal")
+        if isinstance(refusal, str) and refusal:
+            return refusal
+        return ""
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            normalized = _normalize_openai_content(part)
+            if normalized:
+                parts.append(normalized)
+        return "".join(parts)
+    text = getattr(content, "text", None)
+    if isinstance(text, str):
+        return text
+    return ""
+
+
+def _extract_openai_message_text(message: Any) -> str:
+    if message is None:
+        return ""
+    if isinstance(message, dict):
+        return _normalize_openai_content(message.get("content"))
+    return _normalize_openai_content(getattr(message, "content", None))
+
+
+def _extract_openai_refusal(message: Any) -> str:
+    if isinstance(message, dict):
+        refusal = message.get("refusal")
+    else:
+        refusal = getattr(message, "refusal", None)
+    if isinstance(refusal, str) and refusal.strip():
+        return refusal
+    return ""
+
+
+def _extract_openai_response_text(response: Any) -> str:
+    if isinstance(response, dict):
+        error = response.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message
+        choices = response.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or choices[0].get("delta") or {}
+            content = _extract_openai_message_text(message)
+            if content:
+                return content
+            refusal = _extract_openai_refusal(message)
+            if refusal:
+                return refusal
+
+        output_text = response.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+
+        output = response.get("output")
+        if isinstance(output, list):
+            parts = []
+            for item in output:
+                text = _normalize_openai_content(item)
+                if text:
+                    parts.append(text)
+            if parts:
+                return "".join(parts)
+
+    if hasattr(response, "choices") and response.choices:
+        message = response.choices[0].message
+        content = _extract_openai_message_text(message)
+        if content:
+            return content
+        refusal = _extract_openai_refusal(message)
+        if refusal:
+            return refusal
+
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    output = getattr(response, "output", None)
+    if isinstance(output, list):
+        parts = []
+        for item in output:
+            if isinstance(item, dict):
+                item_content = item.get("content")
+            else:
+                item_content = getattr(item, "content", None)
+            text = _normalize_openai_content(item_content)
+            if text:
+                parts.append(text)
+        if parts:
+            return "".join(parts)
+
+    if hasattr(response, "model_dump"):
+        try:
+            response_dict = response.model_dump()
+        except Exception:
+            response_dict = None
+        if isinstance(response_dict, dict):
+            return _extract_openai_response_text(response_dict)
+
+    return ""
+
+
+def _dump_empty_llm_response(model: str, response: Any) -> str | None:
+    if response is None:
+        return None
+    root_dir = os.environ.get("AI_SCIENTIST_ROOT") or os.getcwd()
+    dump_dir = os.path.join(root_dir, "logs", "llm_empty")
+    try:
+        os.makedirs(dump_dir, exist_ok=True)
+    except OSError:
+        return None
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    safe_model = re.sub(r"[^a-zA-Z0-9_.-]+", "_", model or "unknown")
+    dump_path = os.path.join(dump_dir, f"{safe_model}_{timestamp}.json")
+    payload = {"model": model, "timestamp": timestamp}
+    if hasattr(response, "model_dump"):
+        try:
+            payload["response"] = response.model_dump()
+        except Exception:
+            payload["repr"] = repr(response)
+    elif isinstance(response, dict):
+        payload["response"] = response
+    else:
+        payload["repr"] = repr(response)
+    try:
+        with open(dump_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, indent=2)
+        return dump_path
+    except OSError:
+        return None
+
+
 # Get N responses from a single message, used for ensembling.
 @backoff.on_exception(
     backoff.expo,
@@ -113,7 +281,7 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
         )
-        content = [r.message.content for r in response.choices]
+        content = [_extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
         ]
@@ -126,12 +294,12 @@ def get_batch_responses_from_llm(
                 *new_msg_history,
             ],
             temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
+            **_token_param(model),
             n=n_responses,
             stop=None,
             seed=0,
         )
-        content = [r.message.content for r in response.choices]
+        content = [_extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
         ]
@@ -148,7 +316,7 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
         )
-        content = [r.message.content for r in response.choices]
+        content = [_extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
         ]
@@ -165,7 +333,7 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
         )
-        content = [r.message.content for r in response.choices]
+        content = [_extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
         ]
@@ -182,7 +350,7 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
         )
-        content = [r.message.content for r in response.choices]
+        content = [_extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
         ]
@@ -236,7 +404,7 @@ def make_llm_call(client, model, temperature, system_message, prompt):
                 *prompt,
             ],
             temperature=temperature,
-            max_tokens=MAX_NUM_TOKENS,
+            **_token_param(model),
             n=1,
             stop=None,
             seed=0,
@@ -249,6 +417,7 @@ def make_llm_call(client, model, temperature, system_message, prompt):
                 *prompt,
             ],
             temperature=1,
+            **_token_param(model),
             n=1,
             seed=0,
         )
@@ -280,6 +449,7 @@ def get_response_from_llm(
     msg = prompt
     if msg_history is None:
         msg_history = []
+    raw_response = None
 
     if "claude" in model:
         new_msg_history = msg_history + [
@@ -300,6 +470,7 @@ def get_response_from_llm(
             system=system_message,
             messages=new_msg_history,
         )
+        raw_response = response
         # response = make_llm_call(client, model, temperature, system_message=system_message, prompt=new_msg_history)
         content = response.content[0].text
         new_msg_history = new_msg_history + [
@@ -326,7 +497,8 @@ def get_response_from_llm(
             n=1,
             stop=None,
         )
-        content = response.choices[0].message.content
+        raw_response = response
+        content = _extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif "gpt" in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
@@ -337,7 +509,8 @@ def get_response_from_llm(
             system_message=system_message,
             prompt=new_msg_history,
         )
-        content = response.choices[0].message.content
+        raw_response = response
+        content = _extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif "o1" in model or "o3" in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
@@ -348,7 +521,8 @@ def get_response_from_llm(
             system_message=system_message,
             prompt=new_msg_history,
         )
-        content = response.choices[0].message.content
+        raw_response = response
+        content = _extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif model == "deepseek-coder-v2-0724":
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
@@ -363,7 +537,8 @@ def get_response_from_llm(
             n=1,
             stop=None,
         )
-        content = response.choices[0].message.content
+        raw_response = response
+        content = _extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif model == "deepcoder-14b":
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
@@ -379,7 +554,8 @@ def get_response_from_llm(
                 n=1,
                 stop=None,
             )
-            content = response.choices[0].message.content
+            raw_response = response
+            content = _extract_openai_response_text(response)
         except Exception as e:
             # Fallback to direct API call if OpenAI client doesn't work with HuggingFace
             import requests
@@ -403,6 +579,7 @@ def get_response_from_llm(
                 headers=headers,
                 json=payload
             )
+            raw_response = response
             if response.status_code == 200:
                 content = response.json()["generated_text"]
             else:
@@ -422,7 +599,8 @@ def get_response_from_llm(
             n=1,
             stop=None,
         )
-        content = response.choices[0].message.content
+        raw_response = response
+        content = _extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif 'gemini' in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
@@ -436,7 +614,8 @@ def get_response_from_llm(
             max_tokens=MAX_NUM_TOKENS,
             n=1,
         )
-        content = response.choices[0].message.content
+        raw_response = response
+        content = _extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     else:
         raise ValueError(f"Model {model} not supported.")
@@ -449,6 +628,11 @@ def get_response_from_llm(
         print(content)
         print("*" * 21 + " LLM END " + "*" * 21)
         print()
+
+    if not content:
+        dump_path = _dump_empty_llm_response(model, raw_response)
+        if dump_path:
+            print(f"Empty LLM response dumped to: {dump_path}")
 
     return content, new_msg_history
 

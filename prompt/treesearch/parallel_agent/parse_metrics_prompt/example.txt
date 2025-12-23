@@ -1,6 +1,25 @@
 
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-experiment_data = np.load(os.path.join(os.getcwd(), 'experiment_data.npy'), allow_pickle=True).item()
+cwd = os.getcwd()
+working_dir = cwd if os.path.basename(cwd) == "working" else os.path.join(cwd, "working")
+paths = [
+    os.path.join(working_dir, "experiment_data.npy"),
+    os.path.join(cwd, "experiment_data.npy"),
+    os.path.join(cwd, "artifacts", "final", "output.npy"),
+    os.path.join(working_dir, "artifacts", "final", "output.npy"),
+]
 
+npy_path = None
+for p in paths:
+    if os.path.isfile(p):
+        npy_path = p
+        break
+
+if npy_path is None:
+    raise FileNotFoundError("Could not find experiment_data.npy or output.npy")
+
+loaded = np.load(npy_path, allow_pickle=True)
+experiment_data = loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded

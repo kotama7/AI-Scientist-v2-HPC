@@ -1,5 +1,10 @@
-0. Make sure to get the working directory from os.path.join(os.getcwd(), 'working')
-1. Load the experiment_data.npy file, which is located in the working directory
+0. Resolve the working directory robustly: if os.path.basename(os.getcwd()) == "working" use os.getcwd(), otherwise use os.path.join(os.getcwd(), "working").
+1. Load experiment_data.npy from the working directory. If it is missing, fall back to common outputs (prefer experiment_data.npy over output.npy) by checking:
+   - os.path.join(os.getcwd(), "experiment_data.npy")
+   - os.path.join(os.getcwd(), "artifacts", "final", "output.npy")
+   - os.path.join(working_dir, "artifacts", "final", "output.npy")
+   - a recursive search under working_dir (then os.getcwd()) for experiment_data.npy or output.npy
+   If nothing is found, raise FileNotFoundError listing the attempted paths.
 2. Extract metrics for each dataset. Make sure to refer to the original code to understand the structure of the data.
 3. Always print the name of the dataset before printing the metrics
 4. Always print the name of the metric before printing the value by specifying the metric name clearly. Avoid vague terms like 'train,' 'val,' or 'test.' Instead, use precise labels such as 'train accuracy,' 'validation loss,' or 'test F1 score,' etc.

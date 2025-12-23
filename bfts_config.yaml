@@ -16,53 +16,12 @@ exp_name: run # a random experiment name will be generated if not provided
 
 # settings for code execution
 exec:
+  singularity_image: /home/users/takanori.kotama/workplace/docker/ai-scientist-worker-nv.sif
   timeout: 3600
   agent_file_name: runfile.py
   format_tb_ipython: False
   language: cpp
-  cpp_compiler: g++
-  cpp_compile_flags: [
-    -O2,
-    -std=c++20,
-    -fopenmp,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/libtorch/include/torch/csrc/api/include,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/targets/x86_64-linux/include,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/python3.11,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/eigen3,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/xtensor,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/xtl,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/include/matplotlibcpp,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/external/libtorch-cu124/include,
-    -I/home/users/takanori.kotama/miniconda3/envs/ai_scientist/external/libtorch-cu124/include/torch/csrc/api/include,
-    -L/home/users/takanori.kotama/miniconda3/envs/ai_scientist/lib,
-    -L/home/users/takanori.kotama/miniconda3/envs/ai_scientist/external/libtorch-cu124/lib,
-    -L/home/users/takanori.kotama/miniconda3/envs/ai_scientist/libtorch/lib,
-    -L/usr/lib64,
-    -L/lib64,
-    -lcnpy,
-    -lcudart,
-    -lmkl_rt,
-    -lcublas,
-    -lopenblas,
-    -lpython3.11,
-    -lpthread,
-    -ltorch,
-    -ltorch_cpu,
-    -ltorch_cuda,
-    -lc10,
-    -lnuma,
-    -ldl,
-    -lspdlog,
-    -lfmt,
-    -lm,
-    -lhwloc,
-    -lpthread,
-    -lstdc++fs
-  ]
   phase_mode: split
-  singularity_image: null
-  container_runtime: null
   workspace_mount: "/workspace"
   writable_tmpfs: true
   container_overlay: null
@@ -71,17 +30,13 @@ exec:
   keep_sandbox: false
   use_fakeroot: true
   writable_mode: auto
+  phase1_max_steps: 12
 
 generate_report: True
 # LLM settings for final report from journal
 report:
-  model: gpt-4o
+  model: gpt-5.2
   temp: 1.0
-
-prompt_adapter:
-  model: gpt-4o
-  temp: 0.2
-  max_tokens: 4096
 
 experiment:
   num_syn_datasets: 1
@@ -114,19 +69,19 @@ agent:
 
   # LLM settings for coding
   code:
-    model: gpt-4o
+    model: gpt-5.2
     temp: 1.0
     max_tokens: null
 
   # LLM settings for evaluating program output / tracebacks
   feedback:
-    model: gpt-4o
+    model: gpt-5.2
     # gpt-4o
     temp: 0.5
     max_tokens: null
 
   vlm_feedback:
-    model: gpt-4o
+    model: gpt-5.2
     temp: 0.5
     max_tokens: null
 
@@ -139,9 +94,9 @@ agent:
   # If not specified, the default behavior will be used.
 
   summary:
-    model: gpt-4o
+    model: gpt-5.2
     temp: 0.3
 
   select_node:
-    model: gpt-4o
+    model: gpt-5.2
     temp: 0.3

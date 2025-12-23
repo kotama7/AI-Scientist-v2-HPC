@@ -5,7 +5,7 @@ Return JSON only (no prose, no markdown fences). Use this schema to drive the 4-
     "coding": {
       "workspace": {
         "root": "/workspace",
-        "tree": ["workspace/", "workspace/src/", "workspace/artifacts/final/"],
+        "tree": ["workspace/", "workspace/src/", "workspace/working/"],
         "files": [
           {"path":"src/main.c","mode":"0644","encoding":"utf-8","content":"..."},
           {"path":"Makefile","mode":"0644","encoding":"utf-8","content":"..."}
@@ -27,7 +27,7 @@ Return JSON only (no prose, no markdown fences). Use this schema to drive the 4-
     },
     "run": {
       "commands": ["..."],
-      "expected_outputs": ["artifacts/final/output.npy"],
+      "expected_outputs": ["working/experiment_data.npy"],
       "notes": "short"
     }
   },
@@ -44,8 +44,11 @@ Return JSON only (no prose, no markdown fences). Use this schema to drive the 4-
 
 Rules and reminders:
 - Follow the four phases in order. Phase 1 handles downloads/installs (sudo/apt-get allowed inside Singularity with writable-tmpfs/overlay; if unavailable, install under /workspace such as pip --target /workspace/.pydeps or source builds).
+- All commands will be executed inside Singularity containers; never suggest host-only actions or host package installs.
+- Do not wrap commands with singularity/apptainer; provide the inner command only.
 - Keep every path relative to /workspace; never emit absolute paths or parent traversal.
-- coding must list the workspace tree and every file to create; include artifacts/final/ so /workspace/artifacts/final/output.npy can be written.
+- In download/install, probe for tools before installing (e.g., `command -v git || sudo apt-get update && sudo apt-get install -y git`); avoid redundant installs.
+- coding must list the workspace tree and every file to create; include working/ so /workspace/working/experiment_data.npy can be written.
 - compile must honor build_plan.compiler_selected taken from available_compilers; do not invent compilers or switch away from compiler_selected.
-- run must produce /workspace/artifacts/final/output.npy. If language is python, call numpy.save; otherwise use cnpy (tools/npy_writer helper is allowed; no Python post-processing for non-Python languages).
+- run must produce /workspace/working/experiment_data.npy. If language is python, call numpy.save; otherwise use cnpy (tools/npy_writer helper is allowed; no Python post-processing for non-Python languages).
 - Never mention or depend on language adapters, interpreter adapters, or external routers.

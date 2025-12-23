@@ -1,4 +1,0 @@
-Structure the experiment so every dataset dependency stays local.
-- Reuse files already staged in the workspace or passed through `data_dir`, and explain the file paths the C++ code should expect.
-- When fresh samples are needed, design procedures that synthesize data with C++ numerics libraries (Eigen, xtensor, or libtorch) and save them through `cnpy`.
-- Avoid proposing Hugging Face or other remote services; the plan must remain reproducible without network access.
