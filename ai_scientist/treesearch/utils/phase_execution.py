@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -50,6 +52,34 @@ def summarize_command_output(stdout: str, stderr: str, *, max_lines: int = 20, m
         "stdout": summarize_text(stdout, max_lines=max_lines, max_chars=max_chars),
         "stderr": summarize_text(stderr, max_lines=max_lines, max_chars=max_chars),
     }
+
+
+def extract_download_info(command: str) -> dict[str, str] | None:
+    """Extract download URL and destination from curl/wget commands for logging."""
+    command = command.strip()
+    # Match curl -o or --output patterns
+    curl_match = re.search(
+        r'curl\s+.*?(?:-o|--output)\s+([^\s]+).*?(https?://[^\s"]+)|'
+        r'curl\s+.*?(https?://[^\s"]+).*?(?:-o|--output)\s+([^\s]+)',
+        command,
+    )
+    if curl_match:
+        if curl_match.group(1) and curl_match.group(2):
+            return {"url": curl_match.group(2), "dest": curl_match.group(1)}
+        elif curl_match.group(3) and curl_match.group(4):
+            return {"url": curl_match.group(3), "dest": curl_match.group(4)}
+    # Match wget -O or --output-document patterns
+    wget_match = re.search(
+        r'wget\s+.*?(?:-O|--output-document)\s+([^\s]+).*?(https?://[^\s"]+)|'
+        r'wget\s+.*?(https?://[^\s"]+).*?(?:-O|--output-document)\s+([^\s]+)',
+        command,
+    )
+    if wget_match:
+        if wget_match.group(1) and wget_match.group(2):
+            return {"url": wget_match.group(2), "dest": wget_match.group(1)}
+        elif wget_match.group(3) and wget_match.group(4):
+            return {"url": wget_match.group(3), "dest": wget_match.group(4)}
+    return None
 
 
 def run_in_container(
@@ -146,6 +176,17 @@ class ExecutionEnvironment:
     def _build_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = dict(extra) if extra else {}
         env.setdefault("PATH", os.environ.get("SINGULARITYENV_PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"))
+        pydeps_path = f"{self.workspace_mount}/.pydeps"
+        existing_pythonpath = (
+            env.get("PYTHONPATH")
+            or os.environ.get("SINGULARITYENV_PYTHONPATH")
+            or os.environ.get("PYTHONPATH", "")
+        )
+        if existing_pythonpath:
+            if pydeps_path not in existing_pythonpath.split(os.pathsep):
+                env["PYTHONPATH"] = f"{pydeps_path}{os.pathsep}{existing_pythonpath}"
+        else:
+            env["PYTHONPATH"] = pydeps_path
         if self.gpu_id is not None:
             env.setdefault("CUDA_VISIBLE_DEVICES", str(self.gpu_id))
         return env
@@ -271,6 +312,7 @@ class SingularityWorkerContainer:
         writable_mode: str = "auto",
         enable_writable_tmpfs: bool = True,
         overlay_path: Path | str | None = None,
+        resource_binds: Sequence[str] | None = None,
     ) -> None:
         self.runtime = detect_container_runtime("singularity")
         if isinstance(base_image, str) and not base_image.strip():
@@ -292,6 +334,7 @@ class SingularityWorkerContainer:
         self.writable_mode = writable_mode if writable_mode in {"auto", "tmpfs", "overlay", "none"} else "auto"
         self.enable_writable_tmpfs = enable_writable_tmpfs
         self.overlay_path = Path(overlay_path).resolve() if overlay_path else None
+        self.resource_binds = list(resource_binds) if resource_binds else []
 
     def _log(self, message: str, extra_logs: Sequence[Path] | None = None) -> None:
         logs = [self.build_log]
@@ -367,11 +410,18 @@ class SingularityWorkerContainer:
         extra_env: Mapping[str, str] | None,
         log_files: Sequence[Path],
         stop_on_failure: bool = True,
-    ) -> tuple[bool, list[str], dict | None]:
+    ) -> tuple[bool, list[str], dict | None, int | None]:
         outputs: list[str] = []
         env_vars = {"DEBIAN_FRONTEND": "noninteractive"}
         if extra_env:
             env_vars.update(extra_env)
+        pydeps_path = f"{self.workspace_mount}/.pydeps"
+        existing_pythonpath = env_vars.get("PYTHONPATH", "")
+        if existing_pythonpath:
+            if pydeps_path not in existing_pythonpath.split(os.pathsep):
+                env_vars["PYTHONPATH"] = f"{pydeps_path}{os.pathsep}{existing_pythonpath}"
+        else:
+            env_vars["PYTHONPATH"] = pydeps_path
 
         common_flags: list[str] = []
         if self.use_fakeroot:
@@ -384,6 +434,7 @@ class SingularityWorkerContainer:
             common_flags.extend(["--overlay", f"{self.overlay_path}:rw"])
 
         bind_arg = f"{self.workspace}:{self.workspace_mount}"
+        all_binds = [bind_arg] + self.resource_binds
 
         # Prepend a small prelude to avoid apt failures on missing partial dir
         full_commands: list[str] = [self._phase1_prelude()]
@@ -391,13 +442,14 @@ class SingularityWorkerContainer:
             full_commands.append(" ".join(raw_cmd) if isinstance(raw_cmd, (list, tuple)) else str(raw_cmd))
 
         failure: dict | None = None
+        last_returncode: int | None = None
         for shell_cmd in full_commands:
             result = run_in_container(
                 worker_id=None,
                 image_path=image,
                 cmd=shell_cmd,
                 env=env_vars,
-                binds=[bind_arg],
+                binds=all_binds,
                 use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
                 pwd=self.workspace_mount,
                 extra_args=common_flags,
@@ -412,6 +464,7 @@ class SingularityWorkerContainer:
                 f"stderr:\n{summary['stderr']}\n"
             )
             outputs.append(summary_blob)
+            last_returncode = result.returncode
             if result.returncode != 0:
                 failure = failure or {
                     "step": step,
@@ -420,8 +473,8 @@ class SingularityWorkerContainer:
                 }
                 self._log(f"[{step}] failed with code {result.returncode}\n", log_files)
                 if stop_on_failure:
-                    return False, outputs, failure
-        return failure is None, outputs, failure
+                    return False, outputs, failure, last_returncode
+        return failure is None, outputs, failure, last_returncode
 
     def _run_iterative_phase1(
         self,
@@ -432,6 +485,7 @@ class SingularityWorkerContainer:
         max_steps: int,
         extra_env: Mapping[str, str] | None,
         log_files: Sequence[Path],
+        steps_log: Path | None,
         use_tmpfs: bool,
         use_overlay: bool,
     ) -> tuple[bool, list[str], dict | None, list[str]]:
@@ -441,7 +495,15 @@ class SingularityWorkerContainer:
         env_vars = {"DEBIAN_FRONTEND": "noninteractive"}
         if extra_env:
             env_vars.update(extra_env)
+        pydeps_path = f"{self.workspace_mount}/.pydeps"
+        existing_pythonpath = env_vars.get("PYTHONPATH", "")
+        if existing_pythonpath:
+            if pydeps_path not in existing_pythonpath.split(os.pathsep):
+                env_vars["PYTHONPATH"] = f"{pydeps_path}{os.pathsep}{existing_pythonpath}"
+        else:
+            env_vars["PYTHONPATH"] = pydeps_path
         bind_arg = f"{self.workspace}:{self.workspace_mount}"
+        all_binds = [bind_arg] + self.resource_binds
 
         common_flags: list[str] = []
         if self.use_fakeroot:
@@ -461,7 +523,7 @@ class SingularityWorkerContainer:
             image_path=image,
             cmd=prelude_cmd,
             env=env_vars,
-            binds=[bind_arg],
+            binds=all_binds,
             use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
             pwd=self.workspace_mount,
             extra_args=common_flags,
@@ -470,6 +532,7 @@ class SingularityWorkerContainer:
         self._write_command_result(result=prelude_res, cmd_repr=prelude_cmd, step=f"{step}-prelude", extra_logs=log_files)
 
         last_returncode: int | None = None
+        is_base_phase = "phase1-base" in step
         for idx in range(1, max_steps + 1):
             try:
                 response = iterative_driver(history, idx, max_steps)
@@ -480,6 +543,21 @@ class SingularityWorkerContainer:
             command = str(response.get("command", "")).strip()
             done = bool(response.get("done", False))
             if done:
+                if steps_log:
+                    steps_log.parent.mkdir(parents=True, exist_ok=True)
+                    with open(steps_log, "a", encoding="utf-8") as fh:
+                        fh.write(
+                            json.dumps(
+                                {
+                                    "step": idx,
+                                    "command": command,
+                                    "done": True,
+                                    "notes": response.get("notes", ""),
+                                    "exit_code": last_returncode,
+                                }
+                            )
+                            + "\n"
+                        )
                 if last_returncode not in (None, 0):
                     failure = {
                         "step": step,
@@ -494,12 +572,35 @@ class SingularityWorkerContainer:
                 self._log(f"[{step}] missing command from iterative driver\n", log_files)
                 return False, outputs, failure, commands_executed
 
+            if is_base_phase and "apt-get" in command:
+                summary_blob = (
+                    f"[{step}] $ {command}\n"
+                    "exit_code=0\n"
+                    "stdout:\nSKIPPED: apt-get commands run only in sandbox\n"
+                    "stderr:\n\n"
+                )
+                outputs.append(summary_blob)
+                history.append(
+                    {
+                        "step": idx,
+                        "command": command,
+                        "exit_code": 0,
+                        "stdout_summary": "SKIPPED: apt-get commands run only in sandbox",
+                        "stderr_summary": "",
+                        "notes": response.get("notes", ""),
+                    }
+                )
+                commands_executed.append(command)
+                last_returncode = 0
+                self._log(f"[{step}] skipped apt-get in base phase\n", log_files)
+                continue
+
             result = run_in_container(
                 worker_id=None,
                 image_path=image,
                 cmd=command,
                 env=env_vars,
-                binds=[bind_arg],
+                binds=all_binds,
                 use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
                 pwd=self.workspace_mount,
                 extra_args=common_flags,
@@ -513,7 +614,7 @@ class SingularityWorkerContainer:
                     image_path=image,
                     cmd=command,
                     env=env_vars,
-                    binds=[bind_arg],
+                    binds=all_binds,
                     use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
                     pwd=self.workspace_mount,
                     extra_args=fallback_flags,
@@ -537,10 +638,36 @@ class SingularityWorkerContainer:
                     "exit_code": result.returncode,
                     "stdout_summary": summary["stdout"],
                     "stderr_summary": summary["stderr"],
+                    "notes": response.get("notes", ""),
                 }
             )
+            if steps_log:
+                steps_log.parent.mkdir(parents=True, exist_ok=True)
+                with open(steps_log, "a", encoding="utf-8") as fh:
+                    fh.write(
+                        json.dumps(
+                            {
+                                "step": idx,
+                                "command": command,
+                                "done": False,
+                                "notes": response.get("notes", ""),
+                                "exit_code": result.returncode,
+                                "stdout_summary": summary["stdout"],
+                                "stderr_summary": summary["stderr"],
+                            }
+                        )
+                        + "\n"
+                    )
             commands_executed.append(command)
             last_returncode = result.returncode
+
+            # Log download commands for audit trail
+            download_info = extract_download_info(command)
+            if download_info and result.returncode == 0:
+                self._log(
+                    f"[{step}] DOWNLOAD: url={download_info['url']} dest={download_info['dest']}\n",
+                    log_files,
+                )
 
         failure = {
             "step": step,
@@ -557,6 +684,7 @@ class SingularityWorkerContainer:
         workspace: Path,
         workspace_mount: str,
         download_log: Path,
+        steps_log: Path | None = None,
         extra_env: Mapping[str, str] | None = None,
         iterative_driver: Callable[[list[dict[str, Any]], int, int], dict[str, Any]] | None = None,
         max_steps: int = 12,
@@ -622,6 +750,7 @@ class SingularityWorkerContainer:
                 max_steps=max_steps,
                 extra_env=phase1_env,
                 log_files=log_files,
+                steps_log=steps_log,
                 use_tmpfs=use_tmpfs,
                 use_overlay=use_overlay,
             )
@@ -629,7 +758,7 @@ class SingularityWorkerContainer:
             if not base_success:
                 return False, outputs, base_failure
         else:
-            base_success, base_outputs, base_failure = self._exec_commands(
+            base_success, base_outputs, base_failure, _ = self._exec_commands(
                 self.base_copy,
                 download_commands,
                 writable=False,
@@ -644,7 +773,7 @@ class SingularityWorkerContainer:
                 stderr = base_failure.get("stderr", "") if base_failure else ""
                 if "fuse" in stderr.lower() or "allow_other" in stderr.lower():
                     self._log("[phase1-base] retrying without tmpfs/overlay due to FUSE/allow_other error\n", log_files)
-                    base_success, base_outputs, base_failure = self._exec_commands(
+                    base_success, base_outputs, base_failure, _ = self._exec_commands(
                         self.base_copy,
                         download_commands,
                         writable=False,
@@ -664,7 +793,7 @@ class SingularityWorkerContainer:
         # Step 0-3: apply Phase 1 to sandbox (persistent)
         self._log(f"[phase1-sandbox] image={self.sandbox_dir}\n", log_files)
         if iterative_driver:
-            sandbox_success, sandbox_outputs, sandbox_failure = self._exec_commands(
+            sandbox_success, sandbox_outputs, sandbox_failure, sandbox_last_rc = self._exec_commands(
                 self.sandbox_dir,
                 commands_to_apply,
                 writable=True,
@@ -676,10 +805,13 @@ class SingularityWorkerContainer:
                 stop_on_failure=False,
             )
             outputs.extend(sandbox_outputs)
+            if not sandbox_success and sandbox_last_rc == 0:
+                self._log("[phase1-sandbox] completed with earlier errors but final command succeeded\n", log_files)
+                sandbox_success = True
             if not sandbox_success:
                 return False, outputs, sandbox_failure
         else:
-            sandbox_success, sandbox_outputs, sandbox_failure = self._exec_commands(
+            sandbox_success, sandbox_outputs, sandbox_failure, _ = self._exec_commands(
                 self.sandbox_dir,
                 download_commands,
                 writable=True,
@@ -694,7 +826,7 @@ class SingularityWorkerContainer:
                 stderr = sandbox_failure.get("stderr", "") if sandbox_failure else ""
                 if "fuse" in stderr.lower() or "allow_other" in stderr.lower():
                     self._log("[phase1-sandbox] retrying without overlay/tmpfs due to FUSE/allow_other error\n", log_files)
-                    sandbox_success, sandbox_outputs, sandbox_failure = self._exec_commands(
+                    sandbox_success, sandbox_outputs, sandbox_failure, _ = self._exec_commands(
                         self.sandbox_dir,
                         download_commands,
                         writable=True,

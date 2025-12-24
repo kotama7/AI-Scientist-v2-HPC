@@ -77,6 +77,20 @@ def generate_temp_free_idea(
     num_reflections: int = 5,
     reload_ideas: bool = True,
 ) -> List[Dict]:
+    def parse_json_from_text(text):
+        text = text.strip()
+        if not text:
+            raise ValueError("Empty JSON text.")
+        decoder = json.JSONDecoder()
+        try:
+            return decoder.raw_decode(text)[0]
+        except json.JSONDecodeError:
+            # Try to recover by parsing from the first JSON object/array.
+            start_match = re.search(r"[\{\[]", text)
+            if not start_match:
+                raise
+            return decoder.raw_decode(text[start_match.start() :])[0]
+
     idea_str_archive = []
     # load ideas from file
     if reload_ideas and osp.exists(idea_fname):
@@ -154,7 +168,7 @@ def generate_temp_free_idea(
                         tool = tools_dict[action]
                         # Parse arguments
                         try:
-                            arguments_json = json.loads(arguments_text)
+                            arguments_json = parse_json_from_text(arguments_text)
                         except json.JSONDecodeError:
                             raise ValueError(f"Invalid arguments JSON for {action}.")
 
@@ -168,7 +182,7 @@ def generate_temp_free_idea(
                     elif action == "FinalizeIdea":
                         # Parse arguments
                         try:
-                            arguments_json = json.loads(arguments_text)
+                            arguments_json = parse_json_from_text(arguments_text)
                             idea = arguments_json.get("idea")
                             if not idea:
                                 raise ValueError("Missing 'idea' in arguments.")

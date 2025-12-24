@@ -3,6 +3,7 @@ from typing import List, Optional, Set, Any, Callable, cast, Dict, Tuple
 import json
 import random
 import os
+import shutil
 from queue import Queue
 import logging
 import humanize
@@ -19,6 +20,7 @@ from .utils.phase_execution import (
     SingularityWorkerContainer,
     collect_available_compilers,
     collect_available_libs,
+    summarize_text,
     summarize_command_output,
     run_in_container,
 )
@@ -27,6 +29,12 @@ from .utils.phase_plan import (
     apply_workspace_plan,
     combine_sources_for_display,
     extract_phase_artifacts,
+)
+from .utils.resource import (
+    ResourceConfig,
+    load_resources,
+    build_local_binds,
+    build_resources_context,
 )
 import pickle
 from dataclasses import asdict
@@ -50,6 +58,8 @@ DOMAIN_NEUTRAL_PROMPT = load_prompt("domain_neutral").rstrip("\n")
 ENVIRONMENT_INJECTION_TEMPLATE = load_prompt("environment_injection").rstrip("\n")
 AI_OPTIONAL_PROMPT = load_prompt("ai_optional").rstrip("\n")
 PHASE1_ITERATIVE_INSTALLER_PROMPT = load_prompt("phase1_iterative_installer").rstrip("\n")
+PHASE0_WHOLE_PLANNING_PROMPT = load_prompt("phase0_whole_planning").rstrip("\n")
+ENVIRONMENT_RESOURCES_INJECTION_TEMPLATE = load_prompt("environment_resources_injection").rstrip("\n")
 
 IMPLEMENTATION_GUIDELINE_PRE = tuple(
     load_prompt_lines(PROMPT_BASE + "implementation_guideline/pre")
@@ -61,6 +71,7 @@ IMPLEMENTATION_GUIDELINE_DATASET = tuple(
     load_prompt_lines(PROMPT_BASE + "implementation_guideline/dataset")
 )
 DATA_SOURCE_GUIDELINES = {
+    "auto": tuple(load_prompt_lines(PROMPT_BASE + "data_source/auto")),
     "huggingface": tuple(load_prompt_lines(PROMPT_BASE + "data_source/huggingface")),
     "local": tuple(load_prompt_lines(PROMPT_BASE + "data_source/local")),
 }
@@ -164,6 +175,370 @@ def _normalize_language(language: str | None) -> str:
     if lang in {"c++", "cxx"}:
         return "cpp"
     return lang
+
+
+def _strip_json_wrappers(raw_text: str) -> str:
+    cleaned = raw_text.strip()
+    if "```" in cleaned:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start : end + 1]
+    return cleaned
+
+
+def _parse_json_object(raw_text: str, *, context: str) -> dict[str, Any]:
+    cleaned = _strip_json_wrappers(raw_text)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        try:
+            import ast
+
+            parsed = ast.literal_eval(cleaned)
+        except Exception as exc:  # pragma: no cover
+            raise ValueError(f"{context}: failed to parse JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{context}: response must be a JSON object.")
+    return parsed
+
+
+def _normalize_phase0_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    plan_blob = plan.get("plan") if isinstance(plan.get("plan"), dict) else plan
+    if not isinstance(plan_blob, dict):
+        plan_blob = {}
+    plan_blob.setdefault("goal_summary", "")
+    plan_blob.setdefault("implementation_strategy", [])
+    plan_blob.setdefault("dependencies", {"apt": [], "pip": [], "source": []})
+    deps = plan_blob.get("dependencies")
+    if not isinstance(deps, dict):
+        deps = {"apt": [], "pip": [], "source": []}
+    deps.setdefault("apt", [])
+    deps.setdefault("pip", [])
+    deps.setdefault("source", [])
+    plan_blob["dependencies"] = deps
+    phase_guidance = plan_blob.get("phase_guidance")
+    if not isinstance(phase_guidance, dict):
+        phase_guidance = {}
+    phase_guidance.setdefault("phase1", {"targets": [], "preferred_commands": [], "done_conditions": []})
+    phase_guidance.setdefault("phase2", {"targets": [], "notes": ""})
+    phase_guidance.setdefault("phase3", {"compiler_selection_policy": "", "notes": ""})
+    phase_guidance.setdefault("phase4", {"output_policy": "", "validation": []})
+    plan_blob["phase_guidance"] = phase_guidance
+    plan_blob.setdefault("risks_and_mitigations", [])
+    return {"plan": plan_blob}
+
+
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _summarize_file(path: Path, *, max_lines: int = 40, max_chars: int = 3000) -> str:
+    text = _read_text(path)
+    return summarize_text(text, max_lines=max_lines, max_chars=max_chars)
+
+
+def _find_previous_run_dir(current_log_dir: Path) -> Path | None:
+    parent = current_log_dir.parent
+    current_name = current_log_dir.name
+    try:
+        current_index = int(current_name.split("-", 1)[0])
+    except (ValueError, IndexError):
+        current_index = None
+    candidates: list[tuple[int, Path]] = []
+    for entry in parent.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            idx = int(entry.name.split("-", 1)[0])
+        except (ValueError, IndexError):
+            continue
+        if current_index is None or idx < current_index:
+            candidates.append((idx, entry))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[-1][1]
+
+
+def _summarize_phase1_steps(path: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "total_steps": 0,
+        "failed_steps": [],
+        "dependencies": {"apt": set(), "pip": set(), "source": set()},
+        "recent_commands": [],
+    }
+    text = _read_text(path)
+    if not text:
+        return summary
+    entries = []
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    summary["total_steps"] = len(entries)
+    for entry in entries:
+        cmd = str(entry.get("command", "")).strip()
+        if not cmd:
+            continue
+        exit_code = entry.get("exit_code")
+        if exit_code not in (0, None):
+            summary["failed_steps"].append(
+                {
+                    "step": entry.get("step"),
+                    "command": cmd,
+                    "exit_code": exit_code,
+                    "stderr_summary": entry.get("stderr_summary", ""),
+                }
+            )
+        if "apt-get" in cmd and "install" in cmd:
+            segment = cmd.split("install", 1)[-1]
+            packages = segment.replace("-y", " ").split()
+            summary["dependencies"]["apt"].update([p for p in packages if p and not p.startswith("-")])
+        if "pip install" in cmd:
+            segment = cmd.split("pip install", 1)[-1]
+            packages = [p for p in segment.split() if not p.startswith("-")]
+            summary["dependencies"]["pip"].update(packages)
+        if "git clone" in cmd:
+            summary["dependencies"]["source"].add(cmd)
+    summary["recent_commands"] = [
+        {"step": e.get("step"), "command": e.get("command"), "exit_code": e.get("exit_code")}
+        for e in entries[-5:]
+    ]
+    summary["dependencies"] = {
+        key: sorted(value) for key, value in summary["dependencies"].items()
+    }
+    return summary
+
+
+def _extract_error_lines(text: str, *, max_lines: int = 12) -> list[str]:
+    if not text:
+        return []
+    hits = []
+    for line in text.splitlines():
+        lower = line.lower()
+        if "error" in lower or "failed" in lower or "undefined reference" in lower or "not found" in lower:
+            hits.append(line.strip())
+    return hits[-max_lines:]
+
+
+def _summarize_phase_logs(phase_log_dir: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    if not phase_log_dir.exists():
+        return summary
+    node_dirs = [d for d in phase_log_dir.iterdir() if d.is_dir() and d.name.startswith("node_")]
+    if not node_dirs:
+        return summary
+    node_dirs.sort(key=lambda d: d.stat().st_mtime)
+    latest = node_dirs[-1]
+    compile_log = latest / "compile.log"
+    run_log = latest / "run.log"
+    if compile_log.exists():
+        compile_text = _read_text(compile_log)
+        summary["compile_log_summary"] = _summarize_file(compile_log)
+        summary["compile_errors"] = _extract_error_lines(compile_text)
+    if run_log.exists():
+        run_text = _read_text(run_log)
+        summary["run_log_summary"] = _summarize_file(run_log)
+        summary["run_errors"] = _extract_error_lines(run_text)
+    return summary
+
+
+def _summarize_journal_outputs(prev_log_dir: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    journal_files = list(prev_log_dir.rglob("journal.json"))
+    if not journal_files:
+        return summary
+    journal_files.sort(key=lambda p: p.stat().st_mtime)
+    latest = journal_files[-1]
+    raw = _read_text(latest)
+    if not raw:
+        return summary
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return summary
+    nodes = parsed.get("nodes") if isinstance(parsed, dict) else None
+    if not isinstance(nodes, list):
+        return summary
+    phase_node = None
+    for node in nodes:
+        if isinstance(node, dict) and node.get("phase_artifacts"):
+            phase_node = node
+    if not phase_node:
+        return summary
+    artifacts = phase_node.get("phase_artifacts", {})
+    if isinstance(artifacts, dict) and artifacts.get("phase_artifacts"):
+        artifacts = artifacts.get("phase_artifacts")
+    coding = artifacts.get("coding", {}) if isinstance(artifacts, dict) else {}
+    workspace = coding.get("workspace", {}) if isinstance(coding, dict) else {}
+    files = workspace.get("files", []) if isinstance(workspace, dict) else []
+    file_paths = [f.get("path") for f in files if isinstance(f, dict) and f.get("path")]
+    tree = workspace.get("tree", []) if isinstance(workspace, dict) else []
+    compile_section = artifacts.get("compile", {}) if isinstance(artifacts, dict) else {}
+    build_plan = compile_section.get("build_plan", {}) if isinstance(compile_section, dict) else {}
+    summary = {
+        "workspace_tree": tree[:20],
+        "file_paths": file_paths[:20],
+        "build_plan": {
+            "language": build_plan.get("language"),
+            "compiler_selected": build_plan.get("compiler_selected"),
+            "workdir": build_plan.get("workdir"),
+            "output": build_plan.get("output"),
+        },
+    }
+    return summary
+
+
+def _resolve_run_root(cfg: Config) -> Path:
+    run_root_env = os.environ.get("AI_SCIENTIST_RUN_ROOT")
+    if run_root_env:
+        run_root = Path(run_root_env).expanduser().resolve()
+    else:
+        run_root = Path(cfg.log_dir).parent.parent / "runs" / cfg.exp_name
+    run_root.mkdir(parents=True, exist_ok=True)
+    return run_root
+
+
+def _copy_artifact(src: Path, dest_dir: Path, *, name: str | None = None) -> None:
+    if not src.exists():
+        return
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / (name or src.name)
+    try:
+        shutil.copy2(src, dest_path)
+    except OSError:
+        pass
+
+
+def _save_phase_execution_artifacts(
+    *,
+    exp_results_dir: Path,
+    phase_log_dir: Path | None,
+    run_root: Path | None,
+    worker_label: str,
+) -> None:
+    artifacts_dir = exp_results_dir / "phase_artifacts"
+    if phase_log_dir and phase_log_dir.exists():
+        for log_name in ("download.log", "coding.log", "compile.log", "run.log"):
+            _copy_artifact(phase_log_dir / log_name, artifacts_dir, name=log_name)
+    if run_root:
+        plans_dir = run_root / "workers" / worker_label / "plans"
+        _copy_artifact(plans_dir / "phase0_plan.json", artifacts_dir)
+        _copy_artifact(plans_dir / "phase0_history_full.json", artifacts_dir)
+        _copy_artifact(run_root / "workers" / worker_label / "phase1_steps.jsonl", artifacts_dir)
+
+
+def _run_python_in_container(
+    env: ExecutionEnvironment,
+    *,
+    code: str,
+    file_path: Path,
+    cwd: Path,
+) -> ExecutionResult:
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(code, encoding="utf-8")
+    exec_start = time.time()
+    result = env.run(["bash", "-lc", f"python3 {file_path.name}"], cwd=cwd)
+    exec_time = time.time() - exec_start
+    term_out: list[str] = []
+    if result.stdout:
+        term_out.append(result.stdout)
+    if result.stderr:
+        term_out.append(result.stderr)
+    if result.returncode != 0:
+        return ExecutionResult(
+            term_out,
+            exec_time,
+            "RuntimeError",
+            {"returncode": result.returncode, "stderr": result.stderr},
+            None,
+        )
+    return ExecutionResult(term_out, exec_time, None, None, None)
+
+
+def _collect_phase0_history(
+    *,
+    current_log_dir: Path,
+    worker_label: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    summary: dict[str, Any] = {
+        "phase_summaries": {},
+        "phase1_steps_summary": {},
+        "compile_log_summary": "",
+        "compile_errors": [],
+        "run_log_summary": "",
+        "run_errors": [],
+        "llm_output_summary": {},
+    }
+    full: dict[str, Any] = {
+        "previous_log_dir": None,
+        "previous_run_root": None,
+        "phase_summaries": {},
+        "phase1_steps": "",
+        "compile_log": "",
+        "run_log": "",
+        "journal_source": "",
+    }
+    prev_log_dir = _find_previous_run_dir(current_log_dir)
+    if not prev_log_dir:
+        return summary, full
+
+    full["previous_log_dir"] = str(prev_log_dir)
+    prev_run_root = current_log_dir.parent.parent / "runs" / prev_log_dir.name
+    full["previous_run_root"] = str(prev_run_root)
+
+    phase_summaries = {}
+    for phase in ("phase0", "phase1", "phase2", "phase3", "phase4"):
+        matches = []
+        matches.extend(prev_log_dir.rglob(f"*{phase}*summary*.txt"))
+        matches.extend(prev_log_dir.rglob(f"*{phase}*summary*.json"))
+        if not matches:
+            continue
+        matches.sort(key=lambda p: p.stat().st_mtime)
+        latest = matches[-1]
+        phase_summaries[phase] = _summarize_file(latest)
+        full["phase_summaries"][phase] = _read_text(latest)
+    summary["phase_summaries"] = phase_summaries
+
+    steps_path = prev_run_root / "workers" / worker_label / "phase1_steps.jsonl"
+    if not steps_path.exists():
+        candidates = list(prev_log_dir.rglob("phase1_steps.jsonl"))
+        if candidates:
+            candidates.sort(key=lambda p: p.stat().st_mtime)
+            steps_path = candidates[-1]
+    if steps_path.exists():
+        summary["phase1_steps_summary"] = _summarize_phase1_steps(steps_path)
+        full["phase1_steps"] = _read_text(steps_path)
+
+    phase_log_summary = _summarize_phase_logs(prev_log_dir / "phase_logs")
+    summary.update(phase_log_summary)
+    latest_phase_dir = prev_log_dir / "phase_logs"
+    if latest_phase_dir.exists():
+        node_dirs = [d for d in latest_phase_dir.iterdir() if d.is_dir() and d.name.startswith("node_")]
+        if node_dirs:
+            node_dirs.sort(key=lambda d: d.stat().st_mtime)
+            latest = node_dirs[-1]
+            compile_log = latest / "compile.log"
+            run_log = latest / "run.log"
+            if compile_log.exists():
+                full["compile_log"] = _read_text(compile_log)
+            if run_log.exists():
+                full["run_log"] = _read_text(run_log)
+
+    summary["llm_output_summary"] = _summarize_journal_outputs(prev_log_dir)
+    journal_files = list(prev_log_dir.rglob("journal.json"))
+    if journal_files:
+        journal_files.sort(key=lambda p: p.stat().st_mtime)
+        full["journal_source"] = str(journal_files[-1])
+
+    return summary, full
 
 HYPERPARAM_PROMPT_INTRO = load_prompt(
     PROMPT_BASE + "hyperparam_tuning_prompt/introduction"
@@ -433,6 +808,8 @@ class MinimalAgent:
         stage=None,
         stage_name=None,
         environment_context: dict | None = None,
+        phase0_plan: dict | None = None,
+        phase0_history: dict | None = None,
     ):
         self.task_desc = task_desc
         self.memory_summary = memory_summary
@@ -441,6 +818,8 @@ class MinimalAgent:
         self.stage_name = stage_name
         self.data_preview = None
         self.environment_context = environment_context or {}
+        self.phase0_plan = phase0_plan
+        self.phase0_history = phase0_history or {}
 
     @property
     def code_language(self) -> str:
@@ -484,6 +863,9 @@ class MinimalAgent:
                 "container_runtime": self.environment_context.get("container_runtime") or "host",
                 "singularity_image": self.environment_context.get("singularity_image") or "none",
                 "workspace_mount": self.environment_context.get("workspace_mount", "/workspace"),
+                "cpu_info": self.environment_context.get("cpu_info", "unknown"),
+                "memory_info": self.environment_context.get("memory_info", "unknown"),
+                "gpu_info": self.environment_context.get("gpu_info", "unknown"),
             }
             rendered_message = format_prompt("environment_injection", **payload)
             return {"Environment injection": rendered_message}
@@ -550,11 +932,13 @@ class MinimalAgent:
                         for line in IMPLEMENTATION_GUIDELINE_DATASET
                     ]
                     impl_guideline.extend(formatted_dataset_guideline)
-            dataset_source = getattr(self.cfg.experiment, "dataset_source", "huggingface")
-            dataset_source_key = dataset_source.lower()
-            dataset_guidance = DATA_SOURCE_GUIDELINES.get(dataset_source_key)
-            if dataset_guidance is None:
-                dataset_guidance = DATA_SOURCE_GUIDELINES["huggingface"]
+            dataset_source = getattr(self.cfg.experiment, "dataset_source", None)
+            dataset_source_key = (
+                str(dataset_source).lower() if dataset_source not in (None, "") else "auto"
+            )
+            dataset_guidance = DATA_SOURCE_GUIDELINES.get(
+                dataset_source_key, DATA_SOURCE_GUIDELINES["auto"]
+            )
             impl_guideline.extend(dataset_guidance)
             if self.cfg.agent.k_fold_validation > 1:
                 impl_guideline.append(
@@ -577,11 +961,13 @@ class MinimalAgent:
                 ]
                 impl_guideline.extend(formatted_dataset_guideline)
 
-        dataset_source = getattr(self.cfg.experiment, "dataset_source", "huggingface")
-        dataset_source_key = dataset_source.lower()
-        dataset_guidance = DATA_SOURCE_GUIDELINES.get(dataset_source_key)
-        if dataset_guidance is None:
-            dataset_guidance = DATA_SOURCE_GUIDELINES["huggingface"]
+        dataset_source = getattr(self.cfg.experiment, "dataset_source", None)
+        dataset_source_key = (
+            str(dataset_source).lower() if dataset_source not in (None, "") else "auto"
+        )
+        dataset_guidance = DATA_SOURCE_GUIDELINES.get(
+            dataset_source_key, DATA_SOURCE_GUIDELINES["auto"]
+        )
         impl_guideline.extend(dataset_guidance)
 
         impl_guideline.extend(IMPLEMENTATION_GUIDELINE_POST)
@@ -617,7 +1003,7 @@ class MinimalAgent:
             return {}
         return {
             "Phase workflow": [
-                "Use the 4-phase plan: Phase 1 download/install, Phase 2 coding, Phase 3 compile, Phase 4 run.",
+                "Use the 5-phase plan: Phase 0 whole planning, Phase 1 download/install, Phase 2 coding, Phase 3 compile, Phase 4 run.",
                 "Phase 1 may use sudo/apt-get inside Singularity with writable-tmpfs/overlay; if unavailable install under /workspace.",
                 "All paths are relative to /workspace; no absolute paths or parent traversal.",
                 "In download/install, probe with `command -v ...`/`which ...` before installing (e.g., git, cmake); avoid redundant installs.",
@@ -627,6 +1013,33 @@ class MinimalAgent:
             ]
         }
 
+    def _phase0_plan_snippet(self, *, include_phase1: bool, include_phase2_4: bool) -> dict[str, Any] | None:
+        if not self.phase0_plan:
+            return None
+        plan_blob = self.phase0_plan.get("plan") if isinstance(self.phase0_plan, dict) else None
+        if not isinstance(plan_blob, dict):
+            return None
+        snippet: dict[str, Any] = {
+            "goal_summary": plan_blob.get("goal_summary", ""),
+            "implementation_strategy": plan_blob.get("implementation_strategy", []),
+            "dependencies": plan_blob.get("dependencies", {}),
+        }
+        phase_guidance = plan_blob.get("phase_guidance", {})
+        guidance: dict[str, Any] = {}
+        if isinstance(phase_guidance, dict):
+            if include_phase1:
+                guidance["phase1"] = phase_guidance.get("phase1", {})
+            if include_phase2_4:
+                guidance["phase2"] = phase_guidance.get("phase2", {})
+                guidance["phase3"] = phase_guidance.get("phase3", {})
+                guidance["phase4"] = phase_guidance.get("phase4", {})
+        if guidance:
+            snippet["phase_guidance"] = guidance
+        risks = plan_blob.get("risks_and_mitigations")
+        if risks:
+            snippet["risks_and_mitigations"] = risks
+        return snippet
+
     def _apply_split_prompt_layers(self, prompt: dict[str, Any]) -> dict[str, Any]:
         """Inject common split-phase system guidance and environment context."""
         prompt = {"System": BASE_SYSTEM_PROMPT, **prompt}
@@ -634,6 +1047,9 @@ class MinimalAgent:
         env_block = self._prompt_environment
         if env_block:
             prompt["Environment"] = env_block.get("Environment injection", env_block)
+        phase0_snippet = self._phase0_plan_snippet(include_phase1=False, include_phase2_4=True)
+        if phase0_snippet:
+            prompt["Phase 0 plan"] = phase0_snippet
         prompt["Instructions"] |= self._prompt_phase_guidance
         prompt["Instructions"] |= self._prompt_resp_fmt
         prompt["Instructions"] |= self._prompt_impl_guideline
@@ -1023,8 +1439,18 @@ class MinimalAgent:
             ),
         )
 
-        node.analysis = response["summary"]
-        node.is_buggy = response["is_bug"] or node.exc_type is not None
+        is_bug = True
+        summary = ""
+        if isinstance(response, dict):
+            is_bug = bool(response.get("is_bug", False))
+            summary = response.get("summary") or ""
+        else:
+            logger.warning(
+                "Execution review returned non-dict response: %s", type(response)
+            )
+
+        node.analysis = summary
+        node.is_buggy = is_bug or node.exc_type is not None
         print(
             "[red]Checking if response contains metric name and description[/red]",
             flush=True,
@@ -1827,6 +2253,145 @@ class ParallelAgent:
                 "singularity_image": str(Path(image_path).resolve()) if image_path else None,
                 "workspace_mount": getattr(cfg.exec, "workspace_mount", "/workspace"),
             }
+            if image_path:
+                info_env = ExecutionEnvironment(
+                    workspace=workspace_path,
+                    image=image_path,
+                    runtime_preference="singularity",
+                    workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
+                    gpu_id=None,
+                    enable_writable_tmpfs=False,
+                    overlay_path=None,
+                    extra_start_args=None,
+                )
+                try:
+                    environment_context["available_compilers"] = collect_available_compilers(info_env)
+                except Exception as exc:
+                    logger.warning("Failed to collect compilers: %s", exc)
+                try:
+                    environment_context["available_libs"] = collect_available_libs(info_env)
+                except Exception as exc:
+                    logger.warning("Failed to collect libs: %s", exc)
+                try:
+                    os_release_res = info_env.run(["bash", "-lc", "cat /etc/os-release"], cwd=workspace_path)
+                    environment_context["os_release"] = summarize_text(os_release_res.stdout, max_lines=20, max_chars=1200)
+                except Exception as exc:
+                    logger.warning("Failed to read OS release: %s", exc)
+                try:
+                    cpu_res = info_env.run(["bash", "-lc", "lscpu"], cwd=workspace_path)
+                    environment_context["cpu_info"] = summarize_text(cpu_res.stdout, max_lines=60, max_chars=3000)
+                except Exception as exc:
+                    logger.warning("Failed to read CPU info: %s", exc)
+                try:
+                    mem_res = info_env.run(["bash", "-lc", "free -h && echo '---' && cat /proc/meminfo | head -n 20"], cwd=workspace_path)
+                    environment_context["memory_info"] = summarize_text(mem_res.stdout, max_lines=40, max_chars=2000)
+                except Exception as exc:
+                    logger.warning("Failed to read memory info: %s", exc)
+                try:
+                    gpu_res = info_env.run(
+                        ["bash", "-lc", "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L || echo 'nvidia-smi not available'"],
+                        cwd=workspace_path,
+                    )
+                    environment_context["gpu_info"] = summarize_text(gpu_res.stdout, max_lines=20, max_chars=1200)
+                except Exception as exc:
+                    logger.warning("Failed to read GPU info: %s", exc)
+                try:
+                    net_res = info_env.run(
+                        ["bash", "-lc", "command -v getent >/dev/null 2>&1 && getent hosts github.com >/dev/null 2>&1 && echo ok || echo fail"],
+                        cwd=workspace_path,
+                    )
+                    environment_context["network_access"] = "available" if "ok" in (net_res.stdout or "") else "blocked"
+                except Exception as exc:
+                    logger.warning("Failed to probe network access: %s", exc)
+                    environment_context["network_access"] = "unknown"
+
+        run_root: Path | None = None
+        phase0_plan: dict | None = None
+        phase0_history_summary: dict | None = None
+        worker_label = f"worker-{worker_id if worker_id is not None else 0}"
+        if getattr(cfg.exec, "phase_mode", "single") == "split":
+            run_root = _resolve_run_root(cfg)
+            plans_dir = run_root / "workers" / worker_label / "plans"
+            plans_dir.mkdir(parents=True, exist_ok=True)
+            phase0_plan_path = plans_dir / "phase0_plan.json"
+            phase0_history_path = plans_dir / "phase0_history_full.json"
+
+            history_summary, history_full = _collect_phase0_history(
+                current_log_dir=Path(cfg.log_dir),
+                worker_label=worker_label,
+            )
+            history_full["environment_context"] = environment_context
+            phase0_history_path.write_text(json.dumps(history_full, indent=2), encoding="utf-8")
+
+            history_injection = format_prompt(
+                "environment_history_injection",
+                phase_summaries=json.dumps(history_summary.get("phase_summaries", {}), indent=2),
+                phase1_steps_summary=json.dumps(history_summary.get("phase1_steps_summary", {}), indent=2),
+                compile_log_summary=history_summary.get("compile_log_summary", ""),
+                compile_errors=json.dumps(history_summary.get("compile_errors", []), indent=2),
+                run_log_summary=history_summary.get("run_log_summary", ""),
+                run_errors=json.dumps(history_summary.get("run_errors", []), indent=2),
+                llm_output_summary=json.dumps(history_summary.get("llm_output_summary", {}), indent=2),
+                environment_info=json.dumps(
+                    {
+                        "os_release": environment_context.get("os_release", ""),
+                        "cpu_info": environment_context.get("cpu_info", ""),
+                        "memory_info": environment_context.get("memory_info", ""),
+                        "gpu_info": environment_context.get("gpu_info", ""),
+                        "available_compilers": environment_context.get("available_compilers", []),
+                        "available_libs": environment_context.get("available_libs", []),
+                        "network_access": environment_context.get("network_access", "unknown"),
+                        "container_runtime": environment_context.get("container_runtime"),
+                        "singularity_image": environment_context.get("singularity_image"),
+                        "workspace_mount": environment_context.get("workspace_mount"),
+                    },
+                    indent=2,
+                ),
+                history_full_path=str(phase0_history_path),
+            )
+
+            if phase0_plan_path.exists():
+                try:
+                    phase0_plan = json.loads(phase0_plan_path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    logger.warning("Failed to load existing Phase 0 plan: %s", exc)
+                    phase0_plan = None
+            if phase0_plan is None:
+                phase0_prompt: dict[str, Any] = {
+                    "Introduction": PHASE0_WHOLE_PLANNING_PROMPT,
+                    "Task": task_desc,
+                    "History": history_injection,
+                    "Environment": {
+                        "os_release": environment_context.get("os_release", ""),
+                        "available_compilers": environment_context.get("available_compilers", []),
+                        "available_libs": environment_context.get("available_libs", []),
+                        "network_access": environment_context.get("network_access", "unknown"),
+                        "container_runtime": environment_context.get("container_runtime"),
+                        "singularity_image": environment_context.get("singularity_image"),
+                        "workspace_mount": environment_context.get("workspace_mount", "/workspace"),
+                    },
+                }
+                try:
+                    phase0_response = query(
+                        system_message=phase0_prompt,
+                        user_message=None,
+                        model=cfg.agent.code.model,
+                        temperature=cfg.agent.code.temp,
+                    )
+                    phase0_plan = _normalize_phase0_plan(
+                        _parse_json_object(phase0_response, context="Phase 0 plan")
+                    )
+                except Exception as exc:
+                    logger.warning("Phase 0 planning failed: %s", exc)
+                    phase0_plan = _normalize_phase0_plan({})
+                try:
+                    phase0_plan_path.write_text(
+                        json.dumps(phase0_plan, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to write Phase 0 plan: %s", exc)
+            phase0_history_summary = history_summary
 
         # Create minimal agent for worker process with the global metric definition
         worker_agent = MinimalAgent(
@@ -1836,6 +2401,8 @@ class ParallelAgent:
             evaluation_metrics=evaluation_metrics,
             stage_name=stage_name,
             environment_context=environment_context,
+            phase0_plan=phase0_plan,
+            phase0_history=phase0_history_summary,
         )
 
         process_interpreter: Optional[Interpreter] = None
@@ -1952,12 +2519,21 @@ class ParallelAgent:
                     term_outputs: list[str] = []
                     exc_type = None
                     exc_info = None
-                    run_root_env = os.environ.get("AI_SCIENTIST_RUN_ROOT")
-                    if run_root_env:
-                        run_root = Path(run_root_env).expanduser().resolve()
-                    else:
-                        run_root = Path(cfg.log_dir).parent.parent / "runs" / cfg.exp_name
-                    run_root.mkdir(parents=True, exist_ok=True)
+                    if run_root is None:
+                        run_root = _resolve_run_root(cfg)
+                    
+                    # Load resources configuration if specified
+                    resources_config: ResourceConfig | None = None
+                    resource_binds: list[str] = []
+                    resources_path = getattr(cfg.exec, "resources", None)
+                    if resources_path:
+                        try:
+                            resources_config = load_resources(resources_path)
+                            resource_binds = build_local_binds(resources_config)
+                            term_outputs.append(f"Loaded resources from {resources_path}")
+                        except Exception as exc:
+                            term_outputs.append(f"Warning: Failed to load resources: {exc}")
+                    
                     worker_container: SingularityWorkerContainer | None = None
                     if getattr(cfg.exec, "singularity_image", None):
                         worker_container = SingularityWorkerContainer(
@@ -1972,6 +2548,7 @@ class ParallelAgent:
                             writable_mode=getattr(cfg.exec, "writable_mode", "auto"),
                             enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
                             overlay_path=getattr(cfg.exec, "container_overlay", None),
+                            resource_binds=resource_binds,
                         )
                     active_env: ExecutionEnvironment | None = None
                     def norm_section(val, default):
@@ -2041,9 +2618,31 @@ class ParallelAgent:
                                 "history": history,
                             },
                         }
+                        phase0_snippet = worker_agent._phase0_plan_snippet(
+                            include_phase1=True, include_phase2_4=False
+                        )
+                        if phase0_snippet:
+                            prompt["Phase 0 plan"] = phase0_snippet
+                            phase_guidance = phase0_snippet.get("phase_guidance", {}).get("phase1", {})
+                            if phase_guidance:
+                                prompt["Phase 0 guidance for Phase 1"] = {
+                                    "targets": phase_guidance.get("targets", []),
+                                    "preferred_commands": phase_guidance.get("preferred_commands", []),
+                                    "done_conditions": phase_guidance.get("done_conditions", []),
+                                }
                         env_block = worker_agent._prompt_environment
                         if env_block:
                             prompt["Environment"] = env_block.get("Environment injection", env_block)
+                        
+                        # Inject resources context if available
+                        if resources_config and resources_config.has_resources():
+                            resources_ctx = build_resources_context(resources_config)
+                            prompt["Resources"] = {
+                                "local_mounts": resources_ctx.get("local_mounts", []),
+                                "github_resources": resources_ctx.get("github_resources", []),
+                                "huggingface_resources": resources_ctx.get("huggingface_resources", []),
+                                "notes": "Local mounts are already bind-mounted. GitHub/HF resources need to be fetched.",
+                            }
 
                         response_text = query(
                             system_message=prompt,
@@ -2055,12 +2654,17 @@ class ParallelAgent:
 
                     try:
                         download_log_path = phase_log_dir / "download.log"
+                        steps_log_path = None
+                        if run_root is not None:
+                            steps_log_path = run_root / "workers" / worker_label / "phase1_steps.jsonl"
+                            steps_log_path.parent.mkdir(parents=True, exist_ok=True)
                         if worker_container:
                             success, outputs, failure = worker_container.prepare_phase1(
                                 download_commands,
                                 workspace=workspace_path,
                                 workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
                                 download_log=download_log_path,
+                                steps_log=steps_log_path,
                                 extra_env={"CUDA_VISIBLE_DEVICES": str(gpu_id)} if gpu_id is not None else None,
                                 iterative_driver=phase1_iterative_driver,
                                 max_steps=phase1_max_steps,
@@ -2297,10 +2901,22 @@ class ParallelAgent:
 
                     try:
                         # Execute the parsing code
-                        metrics_exec_result = parse_interpreter.run(
-                            parse_metrics_code, True
+                        use_container_python = (
+                            cfg.exec.phase_mode == "split"
+                            and isinstance(active_env, ExecutionEnvironment)
                         )
-                        parse_interpreter.cleanup_session()
+                        if use_container_python:
+                            metrics_exec_result = _run_python_in_container(
+                                active_env,
+                                code=parse_metrics_code,
+                                file_path=workspace_path / parse_agent_file_name,
+                                cwd=workspace_path,
+                            )
+                        else:
+                            metrics_exec_result = parse_interpreter.run(
+                                parse_metrics_code, True
+                            )
+                            parse_interpreter.cleanup_session()
                         child_node.parse_term_out = metrics_exec_result.term_out
                         child_node.parse_exc_type = metrics_exec_result.exc_type
                         child_node.parse_exc_info = metrics_exec_result.exc_info
@@ -2404,8 +3020,20 @@ class ParallelAgent:
                             plotting_code = worker_agent._generate_plotting_code(
                                 child_node, plots_workdir, plot_code_from_prev_stage
                             )
-                        plot_exec_result = plot_interpreter.run(plotting_code, True)
-                        plot_interpreter.cleanup_session()
+                        use_container_python = (
+                            cfg.exec.phase_mode == "split"
+                            and isinstance(active_env, ExecutionEnvironment)
+                        )
+                        if use_container_python:
+                            plot_exec_result = _run_python_in_container(
+                                active_env,
+                                code=plotting_code,
+                                file_path=workspace_path / plot_agent_file_name,
+                                cwd=workspace_path,
+                            )
+                        else:
+                            plot_exec_result = plot_interpreter.run(plotting_code, True)
+                            plot_interpreter.cleanup_session()
                         child_node.absorb_plot_exec_result(plot_exec_result)
                         child_node.plot_exec_result = plot_exec_result
                         if child_node.plot_exc_type and retry_count < 3:
@@ -2497,6 +3125,23 @@ class ParallelAgent:
                         logger.error(
                             f"Error analyzing plots for node {child_node.id}: {str(e)}"
                         )
+
+            if (
+                cfg.exec.phase_mode == "split"
+                and not child_node.is_buggy
+                and child_node.is_buggy_plots is False
+                and child_node.exp_results_dir
+            ):
+                try:
+                    exp_results_dir = Path(child_node.exp_results_dir)
+                    _save_phase_execution_artifacts(
+                        exp_results_dir=exp_results_dir,
+                        phase_log_dir=phase_log_dir,
+                        run_root=run_root,
+                        worker_label=worker_label,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to save phase artifacts: %s", exc)
 
             # Convert result node to dict
             print("Converting result to dict")

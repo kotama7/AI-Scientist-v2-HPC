@@ -40,7 +40,7 @@ report:
 
 experiment:
   num_syn_datasets: 1
-  dataset_source: local
+  # dataset_source: local  # set to "local" or "huggingface"; omit to let the LLM decide
 
 debug:
   stage4: False

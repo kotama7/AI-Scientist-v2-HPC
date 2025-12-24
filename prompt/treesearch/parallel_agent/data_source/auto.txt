@@ -1,0 +1,4 @@
+Choose the data source that best fits the task and environment.
+- Check for locally available datasets under the provided data or working directories before downloading anything.
+- If suitable local data is missing, select a reputable external source (e.g., Hugging Face) and document the download and caching steps.
+- When neither local data nor a good external dataset exists, describe how to synthesize data and justify the design.

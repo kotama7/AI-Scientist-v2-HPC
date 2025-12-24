@@ -1,0 +1,9 @@
+Previous run history (summarized; full logs saved at {history_full_path}):
+- phase_summaries: {phase_summaries}
+- phase1_steps_summary: {phase1_steps_summary}
+- compile_log_summary: {compile_log_summary}
+- compile_errors: {compile_errors}
+- run_log_summary: {run_log_summary}
+- run_errors: {run_errors}
+- llm_output_summary: {llm_output_summary}
+- environment_info: {environment_info}

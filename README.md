@@ -3,8 +3,8 @@
     <img src="docs/logo_v1.png" width="215" alt="AI Scientist v2 Logo" />
   </a>
   <h1>
-    <b>The AI Scientist-v2: Workshop-Level Automated</b><br>
-    <b>Scientific Discovery via Agentic Tree Search</b>
+    <b>The AI Scientist-v2 (HPC Fork)</b><br>
+    <b>Split-Phase Execution with Singularity</b>
   </h1>
 </div>
 
@@ -14,231 +14,225 @@
   📂 <a href="https://github.com/SakanaAI/AI-Scientist-ICLR2025-Workshop-Experiment"> [ICLR2025 Workshop Experiment]</a>
 </p>
 
-Fully autonomous scientific research systems are becoming increasingly capable, with AI playing a pivotal role in transforming how scientific discoveries are made.
-We are excited to introduce The AI Scientist-v2, a generalized end-to-end agentic system that has generated the first workshop paper written entirely by AI and accepted through peer review.
-
-This system autonomously generates hypotheses, runs experiments, analyzes data, and writes scientific manuscripts. Unlike [its predecessor (AI Scientist-v1)](https://github.com/SakanaAI/AI-Scientist), the AI Scientist-v2 removes reliance on human-authored templates, generalizes across Machine Learning (ML) domains, and employs a progressive agentic tree search, guided by an experiment manager agent.
-
-> **Note:**
-> The AI Scientist-v2 doesn’t necessarily produce better papers than v1, especially when a strong starting template is available. v1 follows well-defined templates, leading to high success rates, while v2 takes a broader, more exploratory approach with lower success rates. v1 works best for tasks with clear objectives and a solid foundation, whereas v2 is designed for open-ended scientific exploration.
-
-> **Caution!**
-> This codebase will execute Large Language Model (LLM)-written code. There are various risks and challenges associated with this autonomy, including the potential use of dangerous packages, uncontrolled web access, and the possibility of spawning unintended processes. Ensure that you run this within a controlled sandbox environment (e.g., a Docker container). Use at your own discretion.
+This fork targets HPC environments with a Singularity-based, split-phase execution path. It orchestrates: idea generation/loading → BFTS tree search experiments → plot aggregation → LaTeX writeup → optional PDF review.
 
 ## Table of Contents
 
-1.  [Requirements](#requirements)
-    *   [Installation](#installation)
-    *   [Supported Models and API Keys](#supported-models-and-api-keys)
-2.  [Generate Research Ideas](#generate-research-ideas)
-3.  [Run AI Scientist-v2 Paper Generation Experiments](#run-ai-scientist-v2-paper-generation-experiments)
-4.  [Run on HPC Clusters](#run-on-hpc-clusters)
-5.  [Citing The AI Scientist-v2](#citing-the-ai-scientist-v2)
-6.  [Frequently Asked Questions](#frequently-asked-questions)
-7.  [Acknowledgement](#acknowledgement)
+1. [Requirements](#requirements)
+2. [Installation](#installation)
+3. [Credentials](#credentials)
+4. [Main Entry Points](#main-entry-points)
+5. [Quickstart](#quickstart)
+6. [Configuration](#configuration)
+7. [Execution Modes](#execution-modes)
+8. [Resource Files](#resource-files)
+9. [Outputs](#outputs)
+10. [Testing](#testing)
+11. [Citing The AI Scientist-v2](#citing-the-ai-scientist-v2)
 
 ## Requirements
 
-This code is designed to run on Linux with NVIDIA GPUs using CUDA and PyTorch.
+- Linux host (the launch script uses `psutil` for cleanup).
+- Python 3.11 for the control plane.
+- Singularity CLI (the code invokes `singularity`; Apptainer must be aliased or symlinked).
+- GPU + CUDA for the default config (`bfts_config.yaml` uses GPU workers).
+- LaTeX toolchain for writeups: `pdflatex`, `bibtex`, `chktex`.
+- `pdftotext` (from poppler) for PDF checks and reviews.
 
-### Installation
+## Installation
 
 ```bash
-# Create a new conda environment
 conda create -n ai_scientist python=3.11
 conda activate ai_scientist
 
-# Install PyTorch with CUDA support (adjust pytorch-cuda version for your setup)
-conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
-
-# Install PDF and LaTeX tools
-conda install anaconda::poppler
-conda install conda-forge::chktex
-
-# Install Python package requirements
+# Host-side requirements (control plane)
 pip install -r requirements.txt
+pip install psutil
+
+# Torch is imported by the launcher for GPU detection
+# (use a CUDA-enabled build for GPU clusters)
+conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
 ```
 
-Installation usually takes no more than one hour.
+### Singularity Image
 
-### Supported Models and API Keys
+The split-phase path requires a base SIF image. The default config expects
+`docker/ai-scientist-worker-nv.sif` (edit `bfts_config.yaml` or pass `--singularity_image`).
 
-#### OpenAI Models
+The image should include:
+- Python 3.11+
+- CUDA toolkit
+- Build tools (gcc, make, cmake)
+- Git
+- Any extra libs you want available during Phase 1 installs
 
-By default, the system uses the `OPENAI_API_KEY` environment variable for OpenAI models.
+If you plan to use Hugging Face resources, ensure `huggingface_hub` is installed inside the worker image.
 
-#### Gemini Models
+## Credentials
 
-By default, the system uses the `GEMINI_API_KEY` environment variable for Gemini models through OpenAI API.
+Set only the variables needed for the models you use:
 
-#### Claude Models via AWS Bedrock
-
-To use Claude models provided by Amazon Bedrock, install the necessary additional packages:
 ```bash
-pip install anthropic[bedrock]
+export OPENAI_API_KEY="..."
+export ANTHROPIC_API_KEY="..."        # Claude models
+export GEMINI_API_KEY="..."           # Gemini models (OpenAI-compatible endpoint)
+export OPENROUTER_API_KEY="..."       # Llama 3.1 via OpenRouter
+export DEEPSEEK_API_KEY="..."         # deepseek-coder-v2-0724
+export HUGGINGFACE_API_KEY="..."      # DeepCoder via Hugging Face API
+export OLLAMA_API_KEY="..."           # Optional; local Ollama endpoint
+export S2_API_KEY="..."               # Optional; Semantic Scholar
 ```
-Next, configure valid [AWS Credentials](https://docs.aws.amazon.com/cli/v1/userguide/cli-configure-envvars.html) and the target [AWS Region](https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html) by setting the following environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION_NAME`.
 
-#### Semantic Scholar API (Literature Search)
+## Main Entry Points
 
-Our code can optionally use a Semantic Scholar API Key (`S2_API_KEY`) for higher throughput during literature search [if you have one](https://www.semanticscholar.org/product/api). This is used during both the ideation and paper writing stages. The system should work without it, though you might encounter rate limits or reduced novelty checking during ideation. If you experience issues with Semantic Scholar, you can skip the citation phase during paper generation.
+- `ai_scientist/perform_ideation_temp_free.py`: generate idea JSON from a workshop description.
+- `launch_scientist_bfts.py`: run full pipeline (experiment, plots, writeup, review).
+- `ai_scientist/perform_plotting.py`: aggregate plots from an existing run.
+- `ai_scientist/perform_writeup.py` / `ai_scientist/perform_icbinb_writeup.py`: generate writeups from a run directory.
 
-#### Setting API Keys
+## Quickstart
 
-Ensure you provide the necessary API keys as environment variables for the models you intend to use. For example:
+### 1. Generate ideas (optional)
+
 ```bash
-export OPENAI_API_KEY="YOUR_OPENAI_KEY_HERE"
-export S2_API_KEY="YOUR_S2_KEY_HERE"
-# Set AWS credentials if using Bedrock
-# export AWS_ACCESS_KEY_ID="YOUR_AWS_ACCESS_KEY_ID"
-# export AWS_SECRET_ACCESS_KEY="YOUR_AWS_SECRET_KEY"
-# export AWS_REGION_NAME="your-aws-region"
+python ai_scientist/perform_ideation_temp_free.py \
+  --workshop-file ai_scientist/ideas/i_cant_believe_its_not_better.md \
+  --model gpt-4o-2024-05-13 \
+  --max-num-generations 3 \
+  --num-reflections 5
 ```
 
-## Generate Research Ideas
+This writes a JSON file next to the workshop file (same basename, `.json`).
 
-Before running the full AI Scientist-v2 experiment pipeline, you first use the `ai_scientist/perform_ideation_temp_free.py` script to generate potential research ideas. This script uses an LLM to brainstorm and refine ideas based on a high-level topic description you provide, interacting with tools like Semantic Scholar to check for novelty.
-
-1.  **Prepare a Topic Description:** Create a Markdown file (e.g., `my_research_topic.md`) describing the research area or theme you want the AI to explore. This file should contain sections like `Title`, `Keywords`, `TL;DR`, and `Abstract` to define the scope of the research. Refer to the example file `ai_scientist/ideas/i_cant_believe_its_not_better.md` for the expected structure and content format. Place your file in a location accessible by the script (e.g., the `ai_scientist/ideas/` directory).
-
-2.  **Run the Ideation Script:** Execute the script from the main project directory, pointing it to your topic description file and specifying the desired LLM.
-
-    ```bash
-    python ai_scientist/perform_ideation_temp_free.py \
-     --workshop-file "ai_scientist/ideas/my_research_topic.md" \
-     --model gpt-4o-2024-05-13 \
-     --max-num-generations 20 \
-     --num-reflections 5
-    ```
-    *   `--workshop-file`: Path to your topic description Markdown file.
-    *   `--model`: The LLM to use for generating ideas (ensure you have the corresponding API key set).
-    *   `--max-num-generations`: How many distinct research ideas to attempt generating.
-    *   `--num-reflections`: How many refinement steps the LLM should perform for each idea.
-
-3.  **Output:** The script will generate a JSON file named after your input Markdown file (e.g., `ai_scientist/ideas/my_research_topic.json`). This file will contain a list of structured research ideas, including hypotheses, proposed experiments, and related work analysis.
-
-4.  **Proceed to Experiments:** Once you have the generated JSON file containing research ideas, you can proceed to the next section to run the experiments.
-
-This ideation step guides the AI Scientist towards specific areas of interest and produces concrete research directions to be tested in the main experimental pipeline.
-
-## Run AI Scientist-v2 Paper Generation Experiments
-
-Using the JSON file generated in the previous ideation step, you can now launch the main AI Scientist-v2 pipeline. This involves running experiments via agentic tree search, analyzing results, and generating a paper draft.
-
-Specify the models used for the write-up and review phases via command-line arguments.
-The configuration for the best-first tree search (BFTS) is located in `bfts_config.yaml`. Adjust parameters in this file as needed.
-
-Key tree search configuration parameters in `bfts_config.yaml`:
-
--   `agent` config:
-    -   Set `num_workers` (number of parallel exploration paths) and `steps` (maximum number of nodes to explore). For example, if `num_workers=3` and `steps=21`, the tree search will explore up to 21 nodes, expanding 3 nodes concurrently at each step.
-    -   `num_seeds`: Should generally be the same as `num_workers` if `num_workers` is less than 3. Otherwise, set `num_seeds` to 3.
-    -   Note: Other agent parameters like `k_fold_validation`, `expose_prediction`, and `data_preview` are not used in the current version.
--   `search` config:
-    -   `max_debug_depth`: The maximum number of times the agent will attempt to debug a failing node before abandoning that search path.
-    -   `debug_prob`: The probability of attempting to debug a failing node.
-    -   `num_drafts`: The number of initial root nodes (i.e., the number of independent trees to grow) during Stage 1.
-
-Example command to run AI-Scientist-v2 using a generated idea file (e.g., `my_research_topic.json`). Please review `bfts_config.yaml` for detailed tree search parameters (the default config includes `claude-3-5-sonnet` for experiments).
+### 2. Run a full experiment
 
 ```bash
 python launch_scientist_bfts.py \
- --load_ideas "ai_scientist/ideas/my_research_topic.json" \
- --model_writeup o1-preview-2024-09-12 \
- --model_citation gpt-4o-2024-11-20 \
- --model_review gpt-4o-2024-11-20 \
- --model_agg_plots o3-mini-2025-01-31 \
- --num_cite_rounds 20
+  --writeup-type icbinb \
+  --load_ideas ai_scientist/ideas/i_cant_believe_its_not_better.json \
+  --idea_idx 0 \
+  --singularity_image /path/to/ai-scientist-worker-nv.sif \
+  --phase_mode split \
+  --num_workers 4 \
+  --model_writeup o1-preview-2024-09-12 \
+  --model_citation gpt-4o-2024-11-20 \
+  --model_review gpt-4o-2024-11-20 \
+  --model_agg_plots o3-mini-2025-01-31
 ```
 
-Once the initial experimental stage is complete, you will find a timestamped log folder inside the `experiments/` directory. Navigate to `experiments/"timestamp_ideaname"/logs/0-run/` within that folder to find the tree visualization file `unified_tree_viz.html`.
-After all experiment stages are complete, the writeup stage begins. The writeup stage typically takes about 20 to 30 minutes in total. Once it finishes, you should see `timestamp_ideaname.pdf` in the `timestamp_ideaname` folder.
-For this example run, all stages typically finish within several hours.
+Useful flags:
+- `--additional-information <file>`: append extra text to the idea prompt.
+- `--skip_writeup` / `--skip_review`: skip later stages.
+- `--attempt_id <n>`: disambiguate parallel runs of the same idea.
 
-## Run on HPC Clusters
+## Configuration
 
-Everything required to orchestrate a cluster run lives in this directory. The steps below mirror the workflow used to automate production runs and can be executed manually or wrapped in your preferred scheduler.
+The default configuration lives in `bfts_config.yaml`. The launcher copies it into each run directory and overrides fields such as `desc_file`, `workspace_dir`, and `log_dir`.
 
-1. **Activate the environment**  
-   ```bash
-   source ~/miniconda3/bin/activate
-   conda activate ai_scientist
-   export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$LD_LIBRARY_PATH"
-   ```
-   Adjust the conda path if you installed the environment elsewhere.
+Key sections:
 
-2. **Capture hardware information**  
-   ```bash
-   bash hard.sh > suppliment_information.txt
-   ```
-   The `hard.sh` script (located next to this README) records CPU layout, memory, accelerators, BLAS configuration, compiler flags, and package versions. The generated `suppliment_information.txt` feeds into the write-up phase via `--additional-information`.
+- `exec`
+  - `phase_mode`: `split` (default) or `single`.
+  - `singularity_image`: path to the base SIF.
+  - `language`: default is `cpp` (affects code generation constraints).
+  - `writable_mode`: `auto`, `tmpfs`, `overlay`, or `none`.
+  - `per_worker_sif`: build a worker SIF per GPU.
+  - `phase1_max_steps`: max iterative installer steps.
+- `agent`
+  - `num_workers`: parallel workers mapped to GPUs.
+  - `stages.*`: per-stage max iterations.
+  - `code`, `feedback`, `summary`: LLM model choices.
+- `report`
+  - `model`, `temp`: summary report generation.
 
-3. **Provide credentials**  
-   Export the API keys needed for your models:
-   ```bash
-   export OPENAI_API_KEY="..."
-   export S2_API_KEY="..."
-   # add other keys such as AWS credentials if required
-   ```
-   Replace these with your secure values or rely on your cluster’s secret-injection tooling.
+## Execution Modes
 
-4. **Launch AI Scientist-v2 from this directory**  
-   ```bash
-   python launch_scientist_bfts.py \
-     --writeup-type normal \
-     --load_ideas ai_scientist/ideas/i_cant_believe_its_not_better.json \
-     --model_writeup ollama/deepseek-r1:32b \
-     --model_writeup_small ollama/qwen2.5vl:32b \
-     --model_citation ollama/gpt-oss:120b \
-     --model_review ollama/qwen2.5vl:32b \
-     --model_agg_plots ollama/deepseek-r1:70b \
-     --model_agg_plots_ref 20 \
-     --num_cite_rounds 20 \
-     --additional-information "$(pwd)/suppliment_information.txt" \
-     --num_workers 4
-   ```
-   Replace the idea file, models, and additional flags according to your experiment. If you use a scheduler, wrap this command sequence in your site-specific submission script.
+### Split Mode (`exec.phase_mode=split`)
 
-### Split-phase HPC execution (default)
+Runs the experiment as four explicit phases inside Singularity:
 
-- `exec.phase_mode` now defaults to `split`, executing **download → coding → compile → run** in order and halting on failures. Each phase writes logs under `logs/<run>/phase_logs/node_<id>/{download,coding,compile,run}.log`.
-- Provide a container image with `--singularity_image` (or `exec.singularity_image`); the runner now uses Singularity only. For each worker it runs Phase 1 inside the user-provided `base.sif`, mirrors the installs into a sandbox, and seals a `worker-<i>.sif` under `runs/<run_id>/workers/worker-<i>/container/`. Phases 2–4 always execute inside that worker image with `--nv` and `CUDA_VISIBLE_DEVICES` pinned sequentially (`worker-i` → GPU `i`). Writable installs during Phase 1 prefer `--writable-tmpfs` (set `exec.writable_tmpfs=false` to disable) and can use optional overlays (`exec.container_overlay`).
-- The coding phase materializes the LLM-specified workspace tree/files under `/workspace` (relative paths only; no parent traversal).
-- Compile commands respect the LLM `build_plan.compiler_selected`, which must be chosen from `available_compilers` discovered inside the container. The runner never swaps the compiler; an invalid/missing selection fails the compile phase.
-- Split-mode prompts enforce machine-readable JSON output, including `coding.workspace.tree` and `coding.workspace.files`. The split runner does not use language adapter layers.
-- Switch modes via `--phase_mode split|single`; Singularity is the only supported container runtime.
-- Expected LLM output (JSON only) follows the schema:
-  ```json
-  {
-    "phase_artifacts": {
-      "download": {"commands": [], "notes": ""},
-      "coding": {"workspace": {"root": "/workspace", "tree": [], "files": []}},
-      "compile": {"build_plan": {"compiler_selected": "", "output": "bin/a.out"}, "commands": []},
-      "run": {"commands": [], "expected_outputs": ["working/experiment_data.npy"]}
-    },
-    "constraints": {
-      "allow_sudo_in_singularity": true,
-      "allow_apt_get_in_singularity": true,
-      "write_only_under_workspace": true,
-      "no_absolute_paths": true,
-      "no_parent_traversal": true,
-      "python_output_must_use_numpy": true,
-      "non_python_output_must_use_cnpy": true
+1. Download & install (Phase 1)
+2. Coding (Phase 2)
+3. Compile (Phase 3)
+4. Run (Phase 4)
+
+The LLM outputs a structured JSON payload with per-phase artifacts. The run phase must produce `working/experiment_data.npy` inside the container. Per-worker SIFs are built when `per_worker_sif=true`.
+
+Relevant flags in `launch_scientist_bfts.py`:
+- `--per_worker_sif`, `--keep_sandbox`, `--use_fakeroot`
+- `--writable_mode`, `--phase1_max_steps`
+- `--container_overlay`, `--disable_writable_tmpfs`
+
+### Single Mode (`exec.phase_mode=single`)
+
+Uses the legacy flow without split phases. Code executes on the host environment (no container), and package guidance comes from the prompt templates.
+
+## Resource Files
+
+You can supply a JSON/YAML resource file with `--resources`. The file supports:
+
+```json
+{
+  "local": [
+    {
+      "name": "input_data",
+      "host_path": "/shared/datasets/my_data",
+      "mount_path": "/workspace/input/data",
+      "read_only": true
     }
-  }
-  ```
+  ],
+  "github": [
+    {
+      "name": "cnpy",
+      "repo": "https://github.com/rogersce/cnpy.git",
+      "ref": "v1.0.0",
+      "dest": "/workspace/third_party/cnpy",
+      "as": "library"
+    }
+  ],
+  "huggingface": [
+    {
+      "name": "my_model",
+      "type": "model",
+      "repo_id": "org/model-name",
+      "revision": "abc123def456...",
+      "dest": "/workspace/input/my_model"
+    }
+  ]
+}
+```
 
-### Smoke tests
+Notes:
+- `mount_path`/`dest` must be under `/workspace`.
+- Local resources are bind-mounted into containers.
+- GitHub and Hugging Face resources are fetched during Phase 1.
 
-Run the lightweight split-path checks from the repo root:
+## Outputs
+
+Each run creates a directory under `experiments/`:
+
+- `experiments/<timestamp>_<idea>_attempt_<id>/idea.md`
+- `experiments/<timestamp>_<idea>_attempt_<id>/idea.json`
+- `experiments/<timestamp>_<idea>_attempt_<id>/bfts_config.yaml`
+- `experiments/<timestamp>_<idea>_attempt_<id>/logs/`
+- `experiments/<timestamp>_<idea>_attempt_<id>/figures/` (plot aggregation output)
+- `experiments/<timestamp>_<idea>_attempt_<id>/<run>.pdf` and reflection PDFs (if writeup enabled)
+- `experiments/<timestamp>_<idea>_attempt_<id>/review_text.txt` and `review_img_cap_ref.json` (if review enabled)
+- `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker.json`
+- `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker_interactions.json`
+
+During execution, `experiment_results/` is copied out of logs for plot aggregation and then removed by the launcher.
+
+## Testing
+
 ```bash
 python -m unittest tests/test_smoke_split.py
+python -m unittest tests/test_resource.py
 ```
-
 
 ## Citing The AI Scientist-v2
 
-If you use **The AI Scientist-v2** in your research, please cite our work as follows:
+If you use **The AI Scientist-v2** in your research, please cite:
 
 ```bibtex
 @article{aiscientist_v2,
@@ -249,33 +243,6 @@ If you use **The AI Scientist-v2** in your research, please cite our work as fol
 }
 ```
 
-## Frequently Asked Questions
-
-**Why wasn't a PDF or a review generated for my experiment?**
-
-The AI Scientist-v2 completes experiments with a success rate that depends on the chosen foundation model, and the complexity of the idea. Higher success rates are generally observed when using powerful models like Claude 3.5 Sonnet for the experimentation phase.
-
-**What is the estimated cost per experiment?**
-
-The ideation step cost depends on the LLM used and the number of generations/reflections, but is generally low (a few dollars). For the main experiment pipeline, using Claude 3.5 Sonnet for the experimentation phase typically costs around $15–$20 per run. The subsequent writing phase adds approximately $5 when using the default models specified in the example command. Using GPT-4o for `model_citation` is recommended as it can help reduce writing costs.
-
-**How do I run The AI Scientist-v2 for different subject fields?**
-
-First, perform the [Generate Research Ideas](#generate-research-ideas) step. Create a new Markdown file describing your desired subject field or topic, following the structure of the example `ai_scientist/ideas/i_cant_believe_its_not_better.md`. Run the `perform_ideation_temp_free.py` script with this file to generate a corresponding JSON idea file. Then, proceed to the [Run AI Scientist-v2 Paper Generation Experiments](#run-ai-scientist-v2-paper-generation-experiments) step, using this JSON file with the `launch_scientist_bfts.py` script via the `--load_ideas` argument.
-
-**What should I do if I have problems accessing the Semantic Scholar API?**
-
-The Semantic Scholar API is used to assess the novelty of generated ideas and to gather citations during the paper write-up phase. If you don't have an API key, encounter rate limits, you may be able to skip these phases.
-
-**I encountered a "CUDA Out of Memory" error. What can I do?**
-
-This error typically occurs when the AI Scientist-v2 attempts to load or run a model that requires more GPU memory than available on your system. To resolve this, you can try updating your ideation prompt file (`ai_scientist/ideas/my_research_topic.md`) to suggest using smaller models for the experiments.
-
 ## Acknowledgement
 
-The tree search component implemented within the `ai_scientist` directory is built on top of the [AIDE](https://github.com/WecoAI/aideml) project. We thank the AIDE developers for their valuable contributions and for making their work publicly available.
-
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=SakanaAI/AI-Scientist-v2&type=Date)](https://star-history.com/#SakanaAI/AI-Scientist-v2&Date)
+The tree search component is built on top of the [AIDE](https://github.com/WecoAI/aideml) project. This HPC fork extends the original [AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2) with split-phase execution and Singularity container support.

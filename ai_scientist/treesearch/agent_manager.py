@@ -24,10 +24,12 @@ STAGE_GOAL_PROMPTS = {
 
 _STAGE_DATASET_GOALS = {
     2: {
+        "auto": "Introduce TWO additional datasets selected based on the task and availability (local first if present, otherwise external downloads), and justify each choice.",
         "huggingface": "Introduce TWO additional datasets sourced from Hugging Face to evaluate the model, and justify each choice.",
         "local": "Introduce TWO additional datasets that can be generated or loaded from local resources without relying on external downloads, and justify each choice.",
     },
     3: {
+        "auto": "Ensure the research plan evaluates the model on at least THREE datasets overall, choosing sources based on availability (local if present, otherwise external) and summarizing the insights each dataset provides.",
         "huggingface": "Ensure the research plan evaluates the model on at least THREE Hugging Face datasets overall, summarizing the insights each dataset provides.",
         "local": "Ensure the research plan evaluates the model on at least THREE locally available or synthetically generated datasets overall, summarizing the insights each dataset provides.",
     },
@@ -244,8 +246,12 @@ class AgentManager:
         return task_desc
 
     def _load_stage_goals(self) -> Dict[int, str]:
-        dataset_source = getattr(getattr(self.cfg, "experiment", None), "dataset_source", "huggingface")
-        dataset_source_key = str(dataset_source).lower()
+        dataset_source = getattr(
+            getattr(self.cfg, "experiment", None), "dataset_source", None
+        )
+        dataset_source_key = (
+            str(dataset_source).lower() if dataset_source not in (None, "") else "auto"
+        )
         stage_goals: Dict[int, str] = {}
         for stage_number, prompt_name in STAGE_GOAL_PROMPTS.items():
             template = load_prompt(prompt_name)
@@ -254,7 +260,7 @@ class AgentManager:
             if stage_specific_goals:
                 dataset_requirement = stage_specific_goals.get(
                     dataset_source_key,
-                    stage_specific_goals.get("huggingface", ""),
+                    stage_specific_goals.get("auto", ""),
                 )
             stage_goals[stage_number] = template.format(dataset_requirement=dataset_requirement)
         return stage_goals

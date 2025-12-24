@@ -67,6 +67,7 @@ def edit_bfts_config_file(
     use_fakeroot: bool | None = None,
     writable_mode: str | None = None,
     phase1_max_steps: int | None = None,
+    resources_path: str | None = None,
 ) -> str:
     """
     Edit the bfts_config.yaml file to point to the idea.md file
@@ -123,6 +124,8 @@ def edit_bfts_config_file(
         exec_cfg["writable_mode"] = writable_mode
     if phase1_max_steps is not None:
         exec_cfg["phase1_max_steps"] = int(phase1_max_steps)
+    if resources_path is not None:
+        exec_cfg["resources"] = resources_path
     if num_workers is not None:
         config.setdefault("agent", {})
         config["agent"]["num_workers"] = int(num_workers)

@@ -1,0 +1,24 @@
+Resource context for Phase 1 iterative installer:
+
+Local mounts (already available at container start, typically read-only):
+{local_mounts_json}
+
+GitHub resources to fetch (inside container, use git):
+{github_resources_json}
+
+Hugging Face resources to fetch (inside container, use huggingface_hub):
+{huggingface_resources_json}
+
+Environment variables:
+- HF_HOME=/workspace/.cache/huggingface (standard cache location)
+- HF_TOKEN may be available if authentication is needed
+
+Recommended install paths for library resources:
+- CMake/C++: CMAKE_INSTALL_PREFIX=/workspace/.local
+- Python packages: pip install --target /workspace/.pydeps (add to PYTHONPATH)
+
+Rules:
+- Local mounts are already available; do NOT attempt to download them.
+- For GitHub/HF resources, fetch to the specified dest path using the exact ref/revision.
+- After fetching a resource, verify it exists with ls or similar before proceeding.
+- Log the commit SHA (git rev-parse HEAD) or revision after fetching for reproducibility.

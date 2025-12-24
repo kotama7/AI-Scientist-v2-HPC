@@ -192,6 +192,12 @@ def parse_arguments():
         default=None,
         help="Maximum number of Phase 1 iterative installer steps.",
     )
+    parser.add_argument(
+        "--resources",
+        type=str,
+        default=None,
+        help="Path to resources JSON/YAML file defining local mounts, GitHub repos, and HuggingFace models/datasets.",
+    )
     return parser.parse_args()
 
 
@@ -282,6 +288,7 @@ if __name__ == "__main__":
         use_fakeroot=args.use_fakeroot,
         writable_mode=args.writable_mode,
         phase1_max_steps=args.phase1_max_steps,
+        resources_path=args.resources,
     )
 
     perform_experiments_bfts(idea_config_path)

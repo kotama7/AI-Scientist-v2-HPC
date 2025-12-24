@@ -93,12 +93,13 @@ class ExecConfig:
     use_fakeroot: bool = True
     writable_mode: str = "auto"
     phase1_max_steps: int = 12
+    resources: str | None = None
 
 
 @dataclass
 class ExperimentConfig:
     num_syn_datasets: int
-    dataset_source: str = "huggingface"
+    dataset_source: str = "auto"
 
 
 @dataclass

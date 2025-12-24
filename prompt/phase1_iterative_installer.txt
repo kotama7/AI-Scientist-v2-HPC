@@ -13,5 +13,52 @@ Rules:
 - Use only paths under /workspace; no absolute paths outside /workspace and no parent traversal.
 - Prefer non-interactive installs; set DEBIAN_FRONTEND=noninteractive and use sudo only inside the container if required.
 - Use prior step results (exit_code, stdout_summary, stderr_summary) to decide the next command.
+- If Phase 0 plan guidance is provided (targets/preferred_commands/done_conditions), follow it and verify the done_conditions explicitly.
+- For numpy, install via apt (python3-numpy) or pip with --target /workspace/.pydeps; avoid --user installs.
+- Run apt-get commands only in the sandbox phase (the runner will skip apt-get on base.sif).
 - When all dependencies are ready, return done=true and command="".
 - If no installs are needed, return done=true immediately.
+
+Allowed Phase 1 command categories:
+1. Package installation (prefer system-wide installs so runtime phases can import):
+   - apt-get update && apt-get install -y <package>
+   - python3 -m pip install <package>
+2. Network downloads:
+   - curl -fsSL <url> -o /workspace/<path>
+   - wget -q <url> -O /workspace/<path>
+3. Source cloning:
+   - git clone --depth 1 --branch <ref> <repo> /workspace/<dest>
+4. Source builds:
+   - cmake -B build -S . -DCMAKE_INSTALL_PREFIX=/workspace/.local && cmake --build build && cmake --install build
+   - make && make install PREFIX=/workspace/.local
+
+Download logging:
+- After any curl/wget command, log the URL and destination in notes field.
+- Example notes: "Downloaded https://example.com/file.tar.gz to /workspace/deps/file.tar.gz"
+
+Resource handling rules:
+- Local resources are already bind-mounted by the runner; do NOT download or copy them.
+- For GitHub resources: clone using git with the exact ref specified, then verify with git rev-parse HEAD.
+- For Hugging Face resources: use huggingface_hub to download, respecting the revision if specified.
+- After fetching any resource, verify it exists (ls) before proceeding.
+- For library resources (as="library"), install using pip install -e . or cmake/make install as appropriate.
+- Avoid pip --user installs; they are not reliably visible in later phases.
+- Recommended install paths: /workspace/.local for CMake. Use system installs for Python deps unless a local target is explicitly required.
+- Log commit SHA or revision after successful fetch for reproducibility.
+
+Confirmation before done=true (CRITICAL):
+- Before returning done=true, you MUST run a verification command to confirm success.
+- Verification examples:
+  - For pip packages: python -c "import <module>"
+  - For apt packages: dpkg -l | grep <package> or which <binary>
+  - For downloaded files: ls -la /workspace/<path>
+  - For built libraries: ls /workspace/.local/lib/ or ldconfig -p | grep <libname>
+- If the verification fails, fix the issue before returning done=true.
+- Never return done=true if the last command exit_code was non-zero.
+
+Example sequence for installing cnpy with zlib:
+Step 1: apt-get update && apt-get install -y zlib1g-dev
+Step 2: git clone --depth 1 https://github.com/rogersce/cnpy.git /workspace/third_party/cnpy
+Step 3: cd /workspace/third_party/cnpy && cmake -B build -DCMAKE_INSTALL_PREFIX=/workspace/.local && cmake --build build && cmake --install build
+Step 4: ls /workspace/.local/lib/libcnpy* (verification)
+Step 5: done=true, command=""

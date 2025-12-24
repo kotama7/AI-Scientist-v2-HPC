@@ -1,0 +1,59 @@
+You are running Phase 0 (whole planning) for a split-phase execution pipeline.
+Return JSON only (no prose, no markdown). Use the schema below exactly.
+
+Goals:
+- Use the previous run history and environment context to decide what to implement now.
+- Propose dependencies needed for later phases, without installing anything.
+- Provide concrete guidance for Phase 1-4 (what to generate, what to verify, and done conditions).
+
+Constraints:
+- Singularity only. All runtime commands are executed inside the container by the runner.
+- Do not include host-only actions or wrap commands with singularity/apptainer.
+- Phase 1 is iterative (one command at a time until done=true).
+- Prompt files are stored in prompt/*.txt; do not embed code blocks in this plan.
+- Avoid bias toward Python or AI; list dependencies only if required by the design.
+
+Schema:
+{
+  "plan": {
+    "goal_summary": "short",
+    "implementation_strategy": [
+      "short bullets describing the design approach"
+    ],
+    "dependencies": {
+      "apt": ["zlib1g-dev", "curl", "git"],
+      "pip": ["numpy", "huggingface_hub"],
+      "source": [
+        {
+          "name": "cnpy",
+          "fetch": "curl|git",
+          "urls": ["..."],
+          "dest": "/workspace/third_party/cnpy",
+          "verify": ["test -f /workspace/third_party/cnpy/README.md"]
+        }
+      ]
+    },
+    "phase_guidance": {
+      "phase1": {
+        "targets": ["dependencies to install or fetch"],
+        "preferred_commands": ["one command per line, ordered"],
+        "done_conditions": ["dpkg -s ...", "ls ...", "python -c ..."]
+      },
+      "phase2": {
+        "targets": ["files/tree to generate"],
+        "notes": "short"
+      },
+      "phase3": {
+        "compiler_selection_policy": "select from available_compilers",
+        "notes": "short"
+      },
+      "phase4": {
+        "output_policy": "must generate /workspace/working/experiment_data.npy",
+        "validation": ["numpy magic check", "file exists"]
+      }
+    },
+    "risks_and_mitigations": [
+      {"risk": "apt-get fails", "mitigation": "retry or build from source"}
+    ]
+  }
+}

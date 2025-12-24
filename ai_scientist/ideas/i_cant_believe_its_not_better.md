@@ -1,15 +1,16 @@
-# Title: Challenges in Achieving Stable OpenBLAS Performance on Modern HPC Systems
+# Title: Challenges in Achieving Stable Himeno Benchmark Performance on Modern HPC Systems
 
 ## Keywords
-OpenBLAS, BLAS kernels, HPC performance, performance variability, CPU optimization
+Himeno benchmark, 3D Poisson solver, Jacobi iteration, 3D stencil, HPC performance, performance variability, memory bandwidth, cache, NUMA, OpenMP, thread affinity, CPU frequency scaling, reproducibility
 
 ## TL;DR
-OpenBLAS is widely used in HPC environments, yet its real-world performance often deviates from expected peak values.  
-This work examines the performance inconsistencies and underlying factors across modern CPU architectures.
+The Himeno benchmark (Himeno Bench) is a widely used 3D Poisson/Jacobi-style stencil benchmark whose performance is often dominated by the memory hierarchy rather than peak compute.  
+On modern HPC nodes, measured results can fluctuate significantly due to runtime and system factors, making stable evaluation difficult.  
+This work focuses on improving Himeno Bench performance and stability as a benchmark methodology for reliable, comparable HPC evaluation.
 
 ## Abstract
-OpenBLAS is one of the most commonly used open-source BLAS libraries in academic and industrial HPC environments. Its architecture-specific optimizations and portability have made it a standard choice for many simulation, numerical linear algebra, and AI-related pipelines. However, practitioners often observe that OpenBLAS underperforms relative to theoretical peak FLOPS or vendor-provided benchmarks when deployed on heterogeneous, production-grade HPC systems.
+The Himeno benchmark (Himeno Bench) is a widely used benchmark based on an iterative method for solving a 3D Poisson equation using a Jacobi-like stencil update over a structured grid. Although its arithmetic operations are straightforward, the benchmark is highly sensitive to the memory hierarchy and runtime execution conditions, and therefore frequently exhibits substantial performance variability on modern HPC systems. In practice, measured performance and scaling may deviate from simple expectations such as stable per-node throughput or near-linear speedup with increasing core count, especially on multi-socket CPU nodes and in production environments.
 
-This work investigates these unexpected performance behaviors by analyzing negative results encountered across various real-world workloads within the HPC Asia community. We document issues such as unstable scaling across NUMA domains, inconsistent kernel selection, performance drops caused by compiler-toolchain interactions, and sensitivity to CPU frequency scaling and microarchitectural differences. Additionally, we examine how modern CPU design trends—such as hybrid cores, AVX2/AVX-512 trade-offs, and deeper memory hierarchies—create challenges for static-kernel BLAS libraries like OpenBLAS.
+This work investigates why stable and reproducible Himeno Bench performance is difficult to achieve and highlights recurring categories of factors that influence results, including memory hierarchy behavior, cache effects, NUMA placement, OpenMP runtime interactions, thread/process affinity, CPU frequency dynamics, microarchitectural differences across CPU generations, and system noise at scale. We argue that for Himeno Bench, performance outcomes depend not only on the computational kernel but also on the discipline and consistency of execution conditions, which strongly affect comparability across systems and across runs.
 
-Through a cross-domain analysis of numerical workloads, we highlight recurring patterns in performance degradation and variability. These findings illustrate broader challenges faced by open-source numerical kernels, including difficulties in keeping pace with rapidly evolving CPU architectures and balancing portability with performance. By openly discussing these negative results and their root causes, this work aims to support more predictable and reproducible HPC research and to inform future directions for OpenBLAS optimization within the HPC Asia community.
+The final objective of this work is to support **improved Himeno Bench performance and stability** for modern HPC evaluation. Rather than treating variability as an unavoidable nuisance, we position it as a practical target for benchmark refinement and reproducible methodology. By clarifying the sources of instability and framing them in terms of benchmark-driven evaluation needs, this work aims to contribute toward Himeno Bench–based measurements that are more predictable, comparable, and useful for assessing contemporary HPC platforms.
