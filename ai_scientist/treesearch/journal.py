@@ -61,6 +61,7 @@ class Node(DataClassJsonMixin):
     overall_plan: str = field(default="", kw_only=True)  # type: ignore
     code: str = field(default="", kw_only=True)  # type: ignore
     phase_artifacts: dict | None = field(default=None, kw_only=True)
+    phase_artifacts_raw: str = field(default="", kw_only=True)
     plot_code: str = field(default=None, kw_only=True)  # type: ignore
     plot_plan: str = field(default=None, kw_only=True)  # type: ignore
 

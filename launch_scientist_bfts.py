@@ -40,8 +40,14 @@ def parse_arguments():
         "--writeup-type",
         type=str,
         default="icbinb",
-        choices=["normal", "icbinb"],
-        help="Type of writeup to generate (normal=8 page, icbinb=4 page)",
+        choices=["normal", "icbinb", "auto"],
+        help="Type of writeup to generate (normal=page-limited, icbinb=4 page, auto=no page limit).",
+    )
+    parser.add_argument(
+        "--writeup-page-limit",
+        type=int,
+        default=8,
+        help="Page limit for normal writeups; use 0 to disable. Ignored for icbinb and auto.",
     )
     parser.add_argument(
         "--load_ideas",
@@ -130,6 +136,11 @@ def parse_arguments():
         "--skip_review",
         action="store_true",
         help="If set, skip the review process",
+    )
+    parser.add_argument(
+        "--skip_plot",
+        action="store_true",
+        help="If set, skip the plot aggregation process",
     )
     parser.add_argument(
         "--phase_mode",
@@ -300,9 +311,14 @@ if __name__ == "__main__":
             dirs_exist_ok=True,
         )
 
-    aggregate_plots(base_folder=idea_dir, model=args.model_agg_plots, n_reflections=args.model_agg_plots_ref)
+    if not args.skip_plot:
+        aggregate_plots(
+            base_folder=idea_dir,
+            model=args.model_agg_plots,
+            n_reflections=args.model_agg_plots_ref,
+        )
 
-    shutil.rmtree(idea_dir_path / "experiment_results")
+        shutil.rmtree(idea_dir_path / "experiment_results")
 
     save_token_tracker(idea_dir)
 
@@ -310,7 +326,10 @@ if __name__ == "__main__":
         writeup_success = False
         for attempt in range(args.writeup_retries):
             print(f"Writeup attempt {attempt+1} of {args.writeup_retries}")
-            if args.writeup_type == "normal":
+            if args.writeup_type in ("normal", "auto"):
+                page_limit = None
+                if args.writeup_type == "normal":
+                    page_limit = args.writeup_page_limit if args.writeup_page_limit > 0 else None
                 citations_text = gather_citations(
                     idea_dir,
                     num_cite_rounds=args.num_cite_rounds,
@@ -320,7 +339,7 @@ if __name__ == "__main__":
                     base_folder=idea_dir,
                     small_model=args.model_writeup_small,
                     big_model=args.model_writeup,
-                    page_limit=8,
+                    page_limit=page_limit,
                     n_writeup_reflections=args.writeup_reflections,
                     citations_text=citations_text,
                 )

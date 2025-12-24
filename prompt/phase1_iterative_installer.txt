@@ -14,8 +14,10 @@ Rules:
 - Prefer non-interactive installs; set DEBIAN_FRONTEND=noninteractive and use sudo only inside the container if required.
 - Use prior step results (exit_code, stdout_summary, stderr_summary) to decide the next command.
 - If Phase 0 plan guidance is provided (targets/preferred_commands/done_conditions), follow it and verify the done_conditions explicitly.
-- For numpy, install via apt (python3-numpy) or pip with --target /workspace/.pydeps; avoid --user installs.
+- For numpy + plotting/data libs, install together via /usr/bin/python3 -m pip install --only-binary=:all: --target /workspace/.pydeps numpy matplotlib pandas seaborn scikit-learn networkx scipy; avoid apt python3-numpy and --user installs so Python uses a single /workspace/.pydeps location.
+- Do not return done=true until python3 can import: numpy, matplotlib, pandas, seaborn, sklearn, networkx, scipy.
 - Run apt-get commands only in the sandbox phase (the runner will skip apt-get on base.sif).
+- Assume python/python3 resolves to /usr/bin/python3 inside the container; do not invoke conda or venv paths.
 - When all dependencies are ready, return done=true and command="".
 - If no installs are needed, return done=true immediately.
 

@@ -29,6 +29,153 @@ OVERALL_PLAN_SUMMARIZER_TEMPLATE = load_prompt(
 )
 
 
+def _read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _safe_read_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _safe_read_jsonl(path, max_entries=1000):
+    entries = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+                if len(entries) >= max_entries:
+                    break
+    except OSError:
+        return []
+    return entries
+
+
+def _extract_error_lines(text, max_lines=12):
+    if not text:
+        return []
+    hits = []
+    for line in text.splitlines():
+        lower = line.lower()
+        if (
+            "error" in lower
+            or "failed" in lower
+            or "undefined reference" in lower
+            or "not found" in lower
+        ):
+            hits.append(line.strip())
+    return hits[-max_lines:]
+
+
+def _summarize_phase1_steps(path, max_recent=5):
+    entries = _safe_read_jsonl(path)
+    if not entries:
+        return {}
+    recent = []
+    for entry in entries[-max_recent:]:
+        recent.append(
+            {
+                "step": entry.get("step"),
+                "command": entry.get("command"),
+                "exit_code": entry.get("exit_code"),
+                "done": entry.get("done"),
+                "notes": entry.get("notes"),
+                "stdout_summary": entry.get("stdout_summary"),
+                "stderr_summary": entry.get("stderr_summary"),
+            }
+        )
+    error_lines = []
+    for entry in entries:
+        if entry.get("exit_code") not in (None, 0):
+            error_lines.extend(_extract_error_lines(entry.get("stderr_summary", "")))
+    if error_lines:
+        error_lines = error_lines[-12:]
+    return {
+        "total_steps": len(entries),
+        "recent_steps": recent,
+        "error_lines": error_lines,
+    }
+
+
+def _normalize_phase_artifacts(raw):
+    if not raw:
+        return None
+    if isinstance(raw, dict) and raw.get("phase_artifacts"):
+        raw = raw.get("phase_artifacts")
+    if isinstance(raw, list) and raw:
+        raw = raw[0]
+    if not isinstance(raw, dict):
+        return None
+    return raw
+
+
+def _summarize_phase_artifacts(raw):
+    phase = _normalize_phase_artifacts(raw)
+    if not phase:
+        return {}
+    download = phase.get("download", {}) if isinstance(phase.get("download", {}), dict) else {}
+    coding = phase.get("coding", {}) if isinstance(phase.get("coding", {}), dict) else {}
+    compile_section = (
+        phase.get("compile", {}) if isinstance(phase.get("compile", {}), dict) else {}
+    )
+    run_section = phase.get("run", {}) if isinstance(phase.get("run", {}), dict) else {}
+
+    workspace = coding.get("workspace", {}) if isinstance(coding.get("workspace", {}), dict) else {}
+    files = workspace.get("files", []) if isinstance(workspace.get("files", []), list) else []
+    file_paths = [
+        f.get("path") for f in files if isinstance(f, dict) and f.get("path")
+    ]
+
+    return {
+        "download": {
+            "commands": download.get("commands", [])[:10],
+            "notes": download.get("notes", ""),
+        },
+        "coding": {
+            "notes": coding.get("notes", ""),
+            "workspace": {
+                "root": workspace.get("root"),
+                "tree": workspace.get("tree", [])[:20],
+                "files": file_paths[:20],
+            },
+        },
+        "compile": {
+            "build_plan": compile_section.get("build_plan", {}),
+            "commands": compile_section.get("commands", []),
+            "notes": compile_section.get("notes", ""),
+        },
+        "run": {
+            "commands": run_section.get("commands", []),
+            "expected_outputs": run_section.get("expected_outputs", []),
+            "notes": run_section.get("notes", ""),
+        },
+    }
+
+
+def _summarize_phase_log(path, max_tail_lines=40):
+    text = _read_text(path)
+    if not text:
+        return {}
+    lines = text.splitlines()
+    return {
+        "tail": lines[-max_tail_lines:],
+        "error_lines": _extract_error_lines(text),
+    }
+
+
 def get_nodes_infos(nodes):
     node_infos = ""
     for n in nodes:
@@ -47,6 +194,18 @@ def get_nodes_infos(nodes):
             f"Numerical Results: {n.metric}\n"
             if hasattr(n, "metric")
             else "Numerical Results: Not available\n"
+        )
+        phase_summary = _summarize_phase_artifacts(
+            n.phase_artifacts if hasattr(n, "phase_artifacts") else None
+        )
+        node_info += (
+            "Phase Artifacts Summary: "
+            + (
+                json.dumps(phase_summary, ensure_ascii=True)
+                if phase_summary
+                else "Not available"
+            )
+            + "\n"
         )
         node_info += "Plot Analyses:\n"
         if hasattr(n, "plot_analyses") and n.plot_analyses:
@@ -100,6 +259,11 @@ def get_node_log(node):
         for key in keys_to_include
         if key in node_dict and node_dict[key] is not None
     }
+    phase_artifacts_summary = _summarize_phase_artifacts(
+        node_dict.get("phase_artifacts")
+    )
+    if phase_artifacts_summary:
+        ret["phase_artifacts_summary"] = phase_artifacts_summary
     if "exp_results_dir" in ret:
         original_dir_path = ret["exp_results_dir"]
         # Remove leading path segments before "experiment_results"
@@ -116,6 +280,43 @@ def get_node_log(node):
             ret["exp_results_npy_files"] = [
                 os.path.join(short_dir_path, f) for f in npy_files
             ]
+            llm_outputs_dir = os.path.join(original_dir_path, "llm_outputs")
+            phase0_path = os.path.join(llm_outputs_dir, "phase0_plan.json")
+            phase1_steps_path = os.path.join(llm_outputs_dir, "phase1_steps.jsonl")
+            phase_artifacts_dir = os.path.join(original_dir_path, "phase_artifacts")
+            compile_log_path = os.path.join(phase_artifacts_dir, "compile.log")
+            run_log_path = os.path.join(phase_artifacts_dir, "run.log")
+
+            phase0_plan = _safe_read_json(phase0_path) if os.path.isfile(phase0_path) else None
+            if phase0_plan:
+                ret["phase0_plan"] = phase0_plan.get("plan", phase0_plan)
+                ret["phase0_plan_path"] = os.path.join(
+                    short_dir_path, "llm_outputs", "phase0_plan.json"
+                )
+
+            phase1_summary = (
+                _summarize_phase1_steps(phase1_steps_path)
+                if os.path.isfile(phase1_steps_path)
+                else {}
+            )
+            if phase1_summary:
+                ret["phase1_steps_summary"] = phase1_summary
+                ret["phase1_steps_path"] = os.path.join(
+                    short_dir_path, "llm_outputs", "phase1_steps.jsonl"
+                )
+
+            if os.path.isfile(compile_log_path):
+                ret["phase3_compile_log_summary"] = _summarize_phase_log(
+                    compile_log_path
+                )
+                ret["phase3_compile_log_path"] = os.path.join(
+                    short_dir_path, "phase_artifacts", "compile.log"
+                )
+            if os.path.isfile(run_log_path):
+                ret["phase4_run_log_summary"] = _summarize_phase_log(run_log_path)
+                ret["phase4_run_log_path"] = os.path.join(
+                    short_dir_path, "phase_artifacts", "run.log"
+                )
         else:
             ret["exp_results_npy_files"] = []
     return ret

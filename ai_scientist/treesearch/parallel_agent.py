@@ -4,6 +4,7 @@ import json
 import random
 import os
 import shutil
+import re
 from queue import Queue
 import logging
 import humanize
@@ -423,16 +424,58 @@ def _save_phase_execution_artifacts(
     phase_log_dir: Path | None,
     run_root: Path | None,
     worker_label: str,
+    phase_artifacts: dict | None = None,
+    phase_artifacts_raw: str | None = None,
 ) -> None:
     artifacts_dir = exp_results_dir / "phase_artifacts"
+    llm_outputs_dir = exp_results_dir / "llm_outputs"
     if phase_log_dir and phase_log_dir.exists():
         for log_name in ("download.log", "coding.log", "compile.log", "run.log"):
             _copy_artifact(phase_log_dir / log_name, artifacts_dir, name=log_name)
     if run_root:
         plans_dir = run_root / "workers" / worker_label / "plans"
-        _copy_artifact(plans_dir / "phase0_plan.json", artifacts_dir)
-        _copy_artifact(plans_dir / "phase0_history_full.json", artifacts_dir)
-        _copy_artifact(run_root / "workers" / worker_label / "phase1_steps.jsonl", artifacts_dir)
+        _copy_artifact(plans_dir / "phase0_plan.json", llm_outputs_dir)
+        _copy_artifact(plans_dir / "phase0_history_full.json", llm_outputs_dir)
+        _copy_artifact(plans_dir / "phase0_llm_output.txt", llm_outputs_dir)
+        _copy_artifact(run_root / "workers" / worker_label / "phase1_steps.jsonl", llm_outputs_dir)
+        _copy_artifact(run_root / "workers" / worker_label / "phase1_llm_outputs.jsonl", llm_outputs_dir)
+    if phase_artifacts:
+        llm_outputs_dir.mkdir(parents=True, exist_ok=True)
+        phase_data = phase_artifacts.get("phase_artifacts") if isinstance(phase_artifacts, dict) else None
+        if not isinstance(phase_data, dict):
+            phase_data = phase_artifacts if isinstance(phase_artifacts, dict) else {}
+        try:
+            (llm_outputs_dir / "phase2_4_llm_output.json").write_text(
+                json.dumps(phase_artifacts, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        try:
+            if phase_data:
+                (llm_outputs_dir / "phase2_llm_output.json").write_text(
+                    json.dumps(phase_data.get("coding", {}), indent=2),
+                    encoding="utf-8",
+                )
+                (llm_outputs_dir / "phase3_llm_output.json").write_text(
+                    json.dumps(phase_data.get("compile", {}), indent=2),
+                    encoding="utf-8",
+                )
+                (llm_outputs_dir / "phase4_llm_output.json").write_text(
+                    json.dumps(phase_data.get("run", {}), indent=2),
+                    encoding="utf-8",
+                )
+        except Exception:
+            pass
+    if phase_artifacts_raw:
+        llm_outputs_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (llm_outputs_dir / "phase2_4_llm_output_raw.txt").write_text(
+                phase_artifacts_raw,
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
 
 def _run_python_in_container(
@@ -445,7 +488,7 @@ def _run_python_in_container(
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(code, encoding="utf-8")
     exec_start = time.time()
-    result = env.run(["bash", "-lc", f"python3 {file_path.name}"], cwd=cwd)
+    result = env.run(["bash", "-lc", f"/usr/bin/python3 {file_path.name}"], cwd=cwd)
     exec_time = time.time() - exec_start
     term_out: list[str] = []
     if result.stdout:
@@ -1101,7 +1144,12 @@ class MinimalAgent:
             files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
             code_repr = combine_sources_for_display(files)
             plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
-            return Node(plan=plan, code=code_repr, phase_artifacts=artifacts)
+            return Node(
+                plan=plan,
+                code=code_repr,
+                phase_artifacts=artifacts,
+                phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
+            )
         plan, code = self.plan_and_code_query(prompt)
         print("MinimalAgent: Draft complete")
         return Node(plan=plan, code=code)
@@ -1132,7 +1180,13 @@ class MinimalAgent:
             files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
             code_repr = combine_sources_for_display(files)
             plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
-            return Node(plan=plan, code=code_repr, parent=parent_node, phase_artifacts=artifacts)
+            return Node(
+                plan=plan,
+                code=code_repr,
+                parent=parent_node,
+                phase_artifacts=artifacts,
+                phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
+            )
 
         plan, code = self.plan_and_code_query(prompt)
         return Node(plan=plan, code=code, parent=parent_node)
@@ -1167,6 +1221,7 @@ class MinimalAgent:
                 code=code_repr,
                 parent=parent_node,
                 phase_artifacts=artifacts,
+                phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
             )
 
         plan, code = self.plan_and_code_query(prompt)
@@ -1183,6 +1238,7 @@ class MinimalAgent:
             parent=parent_node,
             is_seed_node=True,
             phase_artifacts=parent_node.phase_artifacts,
+            phase_artifacts_raw=getattr(parent_node, "phase_artifacts_raw", ""),
         )
 
     def _generate_hyperparam_tuning_node(
@@ -1211,6 +1267,7 @@ class MinimalAgent:
                 parent=parent_node,
                 hyperparam_name=hyperparam_idea.name,
                 phase_artifacts=artifacts,
+                phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
             )
         plan, code = self.plan_and_code_query(prompt)
         return Node(
@@ -1244,6 +1301,7 @@ class MinimalAgent:
                 parent=parent_node,
                 ablation_name=ablation_idea.name,
                 phase_artifacts=artifacts,
+                phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
             )
         plan, code = self.plan_and_code_query(prompt)
         return Node(
@@ -1365,6 +1423,7 @@ class MinimalAgent:
                 temperature=self.cfg.agent.code.temp,
             )
             try:
+                self.last_phase_artifacts_response = completion_text
                 artifacts = extract_phase_artifacts(
                     completion_text,
                     default_language=self.code_language,
@@ -1384,6 +1443,8 @@ class MinimalAgent:
                     "Return strict JSON following the Response format with download/coding/compile/run."
                 )
         # Fallback: return a minimal placeholder plan to keep execution moving
+        if last_response:
+            self.last_phase_artifacts_response = last_response
         return self._fallback_phase_artifacts(last_error)
 
     def plan_and_code_query(
@@ -2212,12 +2273,36 @@ class ParallelAgent:
                     log.write(f"No commands provided for {phase_name}\n")
                     return True, outputs, None
                 for raw_cmd in commands:
-                    printable_cmd = " ".join(raw_cmd) if isinstance(raw_cmd, list) else str(raw_cmd)
+                    if isinstance(raw_cmd, list):
+                        printable_cmd = " ".join(raw_cmd)
+                        cmd_to_run = list(raw_cmd)
+                        if isinstance(env, ExecutionEnvironment) and cmd_to_run:
+                            if cmd_to_run[0] in {"python3", "python"}:
+                                cmd_to_run[0] = "/usr/bin/python3"
+                            elif (
+                                len(cmd_to_run) >= 3
+                                and cmd_to_run[0] == "bash"
+                                and cmd_to_run[1] == "-lc"
+                            ):
+                                cmd_to_run[2] = re.sub(
+                                    r"(^|\s)(python3|python)\s",
+                                    r"\1/usr/bin/python3 ",
+                                    cmd_to_run[2],
+                                )
+                    else:
+                        printable_cmd = str(raw_cmd)
+                        cmd_to_run = printable_cmd
+                        if isinstance(env, ExecutionEnvironment):
+                            cmd_to_run = re.sub(
+                                r"(^|\\s)(python3|python)\\s",
+                                r"\\1/usr/bin/python3 ",
+                                cmd_to_run,
+                            )
                     log.write(f"$ {printable_cmd}\n")
                     if env is None:
                         log.write("ERROR: No container execution environment available.\n")
                         return False, outputs, {"message": "Container execution environment is required."}
-                    result = env.run(raw_cmd, cwd=cwd, extra_env=extra_env)
+                    result = env.run(cmd_to_run, cwd=cwd, extra_env=extra_env)
                     log.write(f"exit_code={result.returncode}\n")
                     if result.stdout:
                         log.write(result.stdout)
@@ -2378,6 +2463,13 @@ class ParallelAgent:
                         model=cfg.agent.code.model,
                         temperature=cfg.agent.code.temp,
                     )
+                    try:
+                        (plans_dir / "phase0_llm_output.txt").write_text(
+                            phase0_response,
+                            encoding="utf-8",
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to write Phase 0 raw output: %s", exc)
                     phase0_plan = _normalize_phase0_plan(
                         _parse_json_object(phase0_response, context="Phase 0 plan")
                     )
@@ -2601,6 +2693,8 @@ class ParallelAgent:
                             raise ValueError("Phase 1 response must be a JSON object.")
                         return parsed
 
+                    phase1_llm_log_path: Path | None = None
+
                     def phase1_iterative_driver(history: list[dict[str, Any]], step_idx: int, max_steps: int) -> dict[str, Any]:
                         prompt: dict[str, Any] = {
                             "Introduction": PHASE1_ITERATIVE_INSTALLER_PROMPT,
@@ -2650,6 +2744,22 @@ class ParallelAgent:
                             model=cfg.agent.code.model,
                             temperature=cfg.agent.code.temp,
                         )
+                        if phase1_llm_log_path:
+                            try:
+                                phase1_llm_log_path.parent.mkdir(parents=True, exist_ok=True)
+                                with open(phase1_llm_log_path, "a", encoding="utf-8") as fh:
+                                    fh.write(
+                                        json.dumps(
+                                            {
+                                                "step": step_idx,
+                                                "max_steps": max_steps,
+                                                "response": response_text,
+                                            }
+                                        )
+                                        + "\n"
+                                    )
+                            except Exception as exc:
+                                logger.warning("Failed to write Phase 1 LLM output: %s", exc)
                         return parse_phase1_iterative_response(response_text)
 
                     try:
@@ -2657,6 +2767,7 @@ class ParallelAgent:
                         steps_log_path = None
                         if run_root is not None:
                             steps_log_path = run_root / "workers" / worker_label / "phase1_steps.jsonl"
+                            phase1_llm_log_path = run_root / "workers" / worker_label / "phase1_llm_outputs.jsonl"
                             steps_log_path.parent.mkdir(parents=True, exist_ok=True)
                         if worker_container:
                             success, outputs, failure = worker_container.prepare_phase1(
@@ -3070,13 +3181,17 @@ class ParallelAgent:
                         )
                         child_node.exp_results_dir = exp_results_dir
                         exp_results_dir.mkdir(parents=True, exist_ok=True)
-                        code_suffix = Path(cfg.exec.agent_file_name).suffix or ".py"
-                        plot_code_path = exp_results_dir / "plotting_code.py"
+                        if cfg.exec.phase_mode == "split":
+                            plot_code_path = exp_results_dir / "plotting_code.txt"
+                            exp_code_path = exp_results_dir / "experiment_code.txt"
+                        else:
+                            code_suffix = Path(cfg.exec.agent_file_name).suffix or ".py"
+                            plot_code_path = exp_results_dir / "plotting_code.py"
+                            exp_code_path = exp_results_dir / f"experiment_code{code_suffix}"
                         with open(plot_code_path, "w") as f:
                             f.write(plotting_code)
                         logger.info(f"Saved plotting code to {plot_code_path}")
                         # Save experiment code to experiment_results directory
-                        exp_code_path = exp_results_dir / f"experiment_code{code_suffix}"
                         with open(exp_code_path, "w") as f:
                             f.write(child_node.code)
                         logger.info(f"Saved experiment code to {exp_code_path}")
@@ -3139,6 +3254,8 @@ class ParallelAgent:
                         phase_log_dir=phase_log_dir,
                         run_root=run_root,
                         worker_label=worker_label,
+                        phase_artifacts=child_node.phase_artifacts,
+                        phase_artifacts_raw=getattr(child_node, "phase_artifacts_raw", ""),
                     )
                 except Exception as exc:
                     logger.warning("Failed to save phase artifacts: %s", exc)

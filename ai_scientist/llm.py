@@ -14,9 +14,6 @@ MAX_NUM_TOKENS = 4096
 DEFAULT_MAX_COMPLETION_TOKENS = int(
     os.environ.get("AI_SCIENTIST_MAX_COMPLETION_TOKENS", str(MAX_NUM_TOKENS))
 )
-GPT5_MAX_COMPLETION_TOKENS = int(
-    os.environ.get("AI_SCIENTIST_GPT5_MAX_COMPLETION_TOKENS", "8192")
-)
 
 AVAILABLE_LLMS = [
     "claude-3-5-sonnet-20240620",
@@ -82,10 +79,11 @@ AVAILABLE_LLMS = [
 ]
 
 
-def _default_completion_tokens(model: str) -> int:
+def _default_completion_tokens(model: str) -> int | None:
     normalized = (model or "").lower()
-    if normalized.startswith("gpt-5"):
-        return GPT5_MAX_COMPLETION_TOKENS
+    if normalized.startswith(("gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3")):
+        # Let OpenAI models use their server-side default max.
+        return None
     return DEFAULT_MAX_COMPLETION_TOKENS
 
 

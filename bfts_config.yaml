@@ -50,10 +50,10 @@ agent:
   type: parallel
   num_workers: 4
   stages:
-    stage1_max_iters: 20
-    stage2_max_iters: 12
-    stage3_max_iters: 12
-    stage4_max_iters: 18
+    stage1_max_iters: 40
+    stage2_max_iters: 24
+    stage3_max_iters: 24
+    stage4_max_iters: 36
   # how many improvement iterations to run
   steps: 5 # if stage-specific max_iters are not provided, the agent will use this value for all stages
   # whether to instruct the agent to use CV (set to 1 to disable)

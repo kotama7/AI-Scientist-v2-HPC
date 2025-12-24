@@ -8,6 +8,7 @@ import subprocess
 import traceback
 import unicodedata
 import uuid
+from typing import Optional
 
 from ai_scientist.llm import (
     get_response_from_llm,
@@ -413,7 +414,7 @@ def perform_writeup(
     small_model="gpt-4o-2024-05-13",
     big_model="o1-2024-12-17",
     n_writeup_reflections=3,
-    page_limit=8,
+    page_limit: Optional[int] = 8,
 ):
     compile_attempt = 0
     base_pdf_file = osp.join(base_folder, f"{osp.basename(base_folder)}")
@@ -528,8 +529,20 @@ def perform_writeup(
             plot_descriptions_str = "No descriptions available."
 
         # Construct final prompt for big model, placing the figure descriptions alongside the plot list
+        if page_limit is None:
+            page_limit_line = (
+                "There is no strict page limit for the main paper. Use the space "
+                "needed for clarity and completeness, and avoid unnecessary filler."
+            )
+        else:
+            page_limit_line = (
+                "The main paper is limited to "
+                f"{page_limit} pages, including all figures and tables, but excluding "
+                "references, the impact statement, and optional appendices. In general, "
+                "try to use the available space and include all relevant information."
+            )
         big_model_system_message = WRITEUP_SYSTEM_MESSAGE_TEMPLATE.format(
-            page_limit=page_limit
+            page_limit_line=page_limit_line
         )
         big_client, big_client_model = create_client(big_model)
         with open(writeup_file, "r") as f:
@@ -583,7 +596,12 @@ def perform_writeup(
 
             # Detect where "Impact Statement" appears
             impact_loc = detect_pages_before_impact(latex_folder)
-            if impact_loc is not None:
+            if page_limit is None:
+                reflection_page_info = (
+                    "\nNo page limit is enforced for the main text. "
+                    "Focus on clarity, completeness, and correct formatting.\n"
+                )
+            elif impact_loc is not None:
                 page_num, line_num = impact_loc
                 reflection_page_info = (
                     f"\nCurrently, 'Impact Statement' begins on page {page_num}, approximately on line {line_num}. "
@@ -684,7 +702,7 @@ if __name__ == "__main__":
         "--page-limit",
         type=int,
         default=8,
-        help="Target page limit for the main paper (excluding references, impact statement, etc.)",
+        help="Target page limit for the main paper (excluding references, impact statement, etc.); use 0 to disable.",
     )
     args = parser.parse_args()
 
@@ -696,7 +714,7 @@ if __name__ == "__main__":
             small_model=args.model,
             big_model=args.big_model,
             n_writeup_reflections=args.writeup_reflections,
-            page_limit=args.page_limit,
+            page_limit=args.page_limit if args.page_limit > 0 else None,
         )
         if not success:
             print("Writeup process did not complete successfully.")

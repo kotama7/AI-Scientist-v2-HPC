@@ -558,6 +558,11 @@ def filter_experiment_summaries(exp_summaries, step_name):
             "analysis",
             "metric",
             "vlm_feedback_summary",
+            "phase0_plan",
+            "phase1_steps_summary",
+            "phase3_compile_log_summary",
+            "phase4_run_log_summary",
+            "phase_artifacts_summary",
         }
     elif step_name == "writeup":
         node_keys_to_keep = {
@@ -567,6 +572,11 @@ def filter_experiment_summaries(exp_summaries, step_name):
             "code",
             "plot_analyses",
             "vlm_feedback_summary",
+            "phase0_plan",
+            "phase1_steps_summary",
+            "phase3_compile_log_summary",
+            "phase4_run_log_summary",
+            "phase_artifacts_summary",
         }
     elif step_name == "plot_aggregation":
         node_keys_to_keep = {

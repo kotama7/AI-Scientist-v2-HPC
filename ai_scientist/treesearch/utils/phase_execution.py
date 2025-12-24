@@ -10,6 +10,16 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 logger = logging.getLogger("ai-scientist")
 
+PHASE1_REQUIRED_PYTHON_IMPORTS = (
+    "numpy",
+    "matplotlib",
+    "pandas",
+    "seaborn",
+    "sklearn",
+    "networkx",
+    "scipy",
+)
+
 
 class CommandExecutionError(RuntimeError):
     """Raised when a command executed inside the worker environment fails."""
@@ -125,6 +135,27 @@ def run_in_container(
     return subprocess.run(exec_cmd, capture_output=True, text=True)
 
 
+def _prefix_python_env(cmd: str, *, workspace_mount: str) -> str:
+    prefix = (
+        "shopt -s expand_aliases; "
+        "alias python=/usr/bin/python3; "
+        "alias python3=/usr/bin/python3; "
+        "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
+        f"export PYTHONPATH={workspace_mount}/.pydeps; "
+        "export PYTHONNOUSERSITE=1; "
+        "export PYTHONHOME=; export PYTHONUSERBASE=; export PYTHONEXECUTABLE=; "
+        "export CONDA_PREFIX=; export CONDA_PYTHON_EXE=; export VIRTUAL_ENV=; "
+    )
+    return f"{prefix}{cmd}"
+
+
+def _phase1_python_import_check_command() -> str | None:
+    if not PHASE1_REQUIRED_PYTHON_IMPORTS:
+        return None
+    imports = ", ".join(PHASE1_REQUIRED_PYTHON_IMPORTS)
+    return f"python3 -c \"import {imports}; print('python_import_check_ok')\""
+
+
 class ExecutionEnvironment:
     """Thin wrapper to run commands inside a Singularity instance (host exec disabled)."""
 
@@ -175,18 +206,16 @@ class ExecutionEnvironment:
 
     def _build_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = dict(extra) if extra else {}
-        env.setdefault("PATH", os.environ.get("SINGULARITYENV_PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"))
+        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        env.setdefault("PYTHONHOME", "")
+        env.setdefault("PYTHONUSERBASE", "")
+        env.setdefault("PYTHONEXECUTABLE", "")
+        env.setdefault("CONDA_PREFIX", "")
+        env.setdefault("CONDA_PYTHON_EXE", "")
+        env.setdefault("VIRTUAL_ENV", "")
         pydeps_path = f"{self.workspace_mount}/.pydeps"
-        existing_pythonpath = (
-            env.get("PYTHONPATH")
-            or os.environ.get("SINGULARITYENV_PYTHONPATH")
-            or os.environ.get("PYTHONPATH", "")
-        )
-        if existing_pythonpath:
-            if pydeps_path not in existing_pythonpath.split(os.pathsep):
-                env["PYTHONPATH"] = f"{pydeps_path}{os.pathsep}{existing_pythonpath}"
-        else:
-            env["PYTHONPATH"] = pydeps_path
+        env["PYTHONPATH"] = pydeps_path
+        env.setdefault("PYTHONNOUSERSITE", "1")
         if self.gpu_id is not None:
             env.setdefault("CUDA_VISIBLE_DEVICES", str(self.gpu_id))
         return env
@@ -274,10 +303,18 @@ class ExecutionEnvironment:
         container_cwd = self._map_cwd(cwd)
         bind_arg = f"{self.workspace}:{self.workspace_mount}"
         image_ref = f"instance://{self.instance_name}" if self.using_container else str(self.image)
+        cmd_to_run: str | list[str]
+        if isinstance(command, str):
+            cmd_to_run = _prefix_python_env(command, workspace_mount=self.workspace_mount)
+        else:
+            cmd_list = list(command)
+            if len(cmd_list) >= 3 and cmd_list[0] == "bash" and cmd_list[1] == "-lc":
+                cmd_list[2] = _prefix_python_env(cmd_list[2], workspace_mount=self.workspace_mount)
+            cmd_to_run = cmd_list
         result = run_in_container(
             worker_id=None,
             image_path=image_ref,
-            cmd=command if isinstance(command, str) else list(command),
+            cmd=cmd_to_run,
             env=env_vars,
             binds=[bind_arg],
             use_nv=True,
@@ -394,6 +431,12 @@ class SingularityWorkerContainer:
 
     def _phase1_prelude(self) -> str:
         return (
+            "alias python=/usr/bin/python3; alias python3=/usr/bin/python3; "
+            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
+            "export PYTHONPATH=/workspace/.pydeps; "
+            "export PYTHONNOUSERSITE=1; "
+            "export PYTHONHOME=; export PYTHONUSERBASE=; export PYTHONEXECUTABLE=; "
+            "export CONDA_PREFIX=; export CONDA_PYTHON_EXE=; export VIRTUAL_ENV=; "
             "mkdir -p /var/lib/apt/lists/partial || true; "
             "chmod 755 /var/lib/apt/lists /var/lib/apt/lists/partial || true"
         )
@@ -416,12 +459,15 @@ class SingularityWorkerContainer:
         if extra_env:
             env_vars.update(extra_env)
         pydeps_path = f"{self.workspace_mount}/.pydeps"
-        existing_pythonpath = env_vars.get("PYTHONPATH", "")
-        if existing_pythonpath:
-            if pydeps_path not in existing_pythonpath.split(os.pathsep):
-                env_vars["PYTHONPATH"] = f"{pydeps_path}{os.pathsep}{existing_pythonpath}"
-        else:
-            env_vars["PYTHONPATH"] = pydeps_path
+        env_vars["PYTHONPATH"] = pydeps_path
+        env_vars.setdefault("PYTHONNOUSERSITE", "1")
+        env_vars.setdefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        env_vars.setdefault("PYTHONHOME", "")
+        env_vars.setdefault("PYTHONUSERBASE", "")
+        env_vars.setdefault("PYTHONEXECUTABLE", "")
+        env_vars.setdefault("CONDA_PREFIX", "")
+        env_vars.setdefault("CONDA_PYTHON_EXE", "")
+        env_vars.setdefault("VIRTUAL_ENV", "")
 
         common_flags: list[str] = []
         if self.use_fakeroot:
@@ -444,6 +490,10 @@ class SingularityWorkerContainer:
         failure: dict | None = None
         last_returncode: int | None = None
         for shell_cmd in full_commands:
+            shell_cmd = _prefix_python_env(
+                str(shell_cmd),
+                workspace_mount=self.workspace_mount,
+            )
             result = run_in_container(
                 worker_id=None,
                 image_path=image,
@@ -488,6 +538,7 @@ class SingularityWorkerContainer:
         steps_log: Path | None,
         use_tmpfs: bool,
         use_overlay: bool,
+        writable: bool,
     ) -> tuple[bool, list[str], dict | None, list[str]]:
         outputs: list[str] = []
         history: list[dict[str, Any]] = []
@@ -496,18 +547,23 @@ class SingularityWorkerContainer:
         if extra_env:
             env_vars.update(extra_env)
         pydeps_path = f"{self.workspace_mount}/.pydeps"
-        existing_pythonpath = env_vars.get("PYTHONPATH", "")
-        if existing_pythonpath:
-            if pydeps_path not in existing_pythonpath.split(os.pathsep):
-                env_vars["PYTHONPATH"] = f"{pydeps_path}{os.pathsep}{existing_pythonpath}"
-        else:
-            env_vars["PYTHONPATH"] = pydeps_path
+        env_vars["PYTHONPATH"] = pydeps_path
+        env_vars.setdefault("PYTHONNOUSERSITE", "1")
+        env_vars.setdefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        env_vars.setdefault("PYTHONHOME", "")
+        env_vars.setdefault("PYTHONUSERBASE", "")
+        env_vars.setdefault("PYTHONEXECUTABLE", "")
+        env_vars.setdefault("CONDA_PREFIX", "")
+        env_vars.setdefault("CONDA_PYTHON_EXE", "")
+        env_vars.setdefault("VIRTUAL_ENV", "")
         bind_arg = f"{self.workspace}:{self.workspace_mount}"
         all_binds = [bind_arg] + self.resource_binds
 
         common_flags: list[str] = []
         if self.use_fakeroot:
             common_flags.append("--fakeroot")
+        if writable:
+            common_flags.append("--writable")
         if use_tmpfs:
             common_flags.append("--writable-tmpfs")
         if use_overlay and self.overlay_path:
@@ -521,7 +577,7 @@ class SingularityWorkerContainer:
         prelude_res = run_in_container(
             worker_id=None,
             image_path=image,
-            cmd=prelude_cmd,
+            cmd=_prefix_python_env(prelude_cmd, workspace_mount=self.workspace_mount),
             env=env_vars,
             binds=all_binds,
             use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
@@ -543,6 +599,73 @@ class SingularityWorkerContainer:
             command = str(response.get("command", "")).strip()
             done = bool(response.get("done", False))
             if done:
+                if last_returncode not in (None, 0):
+                    failure = {
+                        "step": step,
+                        "message": "Phase 1 marked done but last command failed.",
+                        "returncode": last_returncode,
+                    }
+                    self._log(f"[{step}] done=true after failure\n", log_files)
+                    return False, outputs, failure, commands_executed
+                check_cmd = _phase1_python_import_check_command()
+                if check_cmd:
+                    result = run_in_container(
+                        worker_id=None,
+                        image_path=image,
+                        cmd=_prefix_python_env(check_cmd, workspace_mount=self.workspace_mount),
+                        env=env_vars,
+                        binds=all_binds,
+                        use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+                        pwd=self.workspace_mount,
+                        extra_args=common_flags,
+                        runtime=self.runtime,
+                    )
+                    self._write_command_result(
+                        result=result,
+                        cmd_repr=check_cmd,
+                        step=step,
+                        extra_logs=log_files,
+                    )
+                    summary = summarize_command_output(result.stdout, result.stderr)
+                    summary_blob = (
+                        f"[{step}] $ {check_cmd}\n"
+                        f"exit_code={result.returncode}\n"
+                        f"stdout:\n{summary['stdout']}\n"
+                        f"stderr:\n{summary['stderr']}\n"
+                    )
+                    outputs.append(summary_blob)
+                    history.append(
+                        {
+                            "step": idx,
+                            "command": check_cmd,
+                            "exit_code": result.returncode,
+                            "stdout_summary": summary["stdout"],
+                            "stderr_summary": summary["stderr"],
+                            "notes": "Auto-check python imports before done=true.",
+                        }
+                    )
+                    if steps_log:
+                        steps_log.parent.mkdir(parents=True, exist_ok=True)
+                        with open(steps_log, "a", encoding="utf-8") as fh:
+                            fh.write(
+                                json.dumps(
+                                    {
+                                        "step": idx,
+                                        "command": check_cmd,
+                                        "done": False,
+                                        "notes": "Auto-check python imports before done=true.",
+                                        "exit_code": result.returncode,
+                                        "stdout_summary": summary["stdout"],
+                                        "stderr_summary": summary["stderr"],
+                                    }
+                                )
+                                + "\n"
+                            )
+                    commands_executed.append(check_cmd)
+                    last_returncode = result.returncode
+                    if result.returncode != 0:
+                        self._log(f"[{step}] missing required python imports\n", log_files)
+                        continue
                 if steps_log:
                     steps_log.parent.mkdir(parents=True, exist_ok=True)
                     with open(steps_log, "a", encoding="utf-8") as fh:
@@ -558,14 +681,6 @@ class SingularityWorkerContainer:
                             )
                             + "\n"
                         )
-                if last_returncode not in (None, 0):
-                    failure = {
-                        "step": step,
-                        "message": "Phase 1 marked done but last command failed.",
-                        "returncode": last_returncode,
-                    }
-                    self._log(f"[{step}] done=true after failure\n", log_files)
-                    return False, outputs, failure, commands_executed
                 return True, outputs, None, commands_executed
             if not command:
                 failure = {"step": step, "message": "Phase 1 command missing from LLM response."}
@@ -598,7 +713,7 @@ class SingularityWorkerContainer:
             result = run_in_container(
                 worker_id=None,
                 image_path=image,
-                cmd=command,
+                cmd=_prefix_python_env(command, workspace_mount=self.workspace_mount),
                 env=env_vars,
                 binds=all_binds,
                 use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
@@ -612,7 +727,7 @@ class SingularityWorkerContainer:
                 result = run_in_container(
                     worker_id=None,
                     image_path=image,
-                    cmd=command,
+                    cmd=_prefix_python_env(command, workspace_mount=self.workspace_mount),
                     env=env_vars,
                     binds=all_binds,
                     use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
@@ -743,20 +858,11 @@ class SingularityWorkerContainer:
         use_overlay = any(flag.startswith("--overlay") for flag in tmpfs_flags)
         self._log(f"[phase1-base] image={self.base_copy}\n", log_files)
         if iterative_driver:
-            base_success, base_outputs, base_failure, commands_to_apply = self._run_iterative_phase1(
-                self.base_copy,
-                step="phase1-base",
-                iterative_driver=iterative_driver,
-                max_steps=max_steps,
-                extra_env=phase1_env,
-                log_files=log_files,
-                steps_log=steps_log,
-                use_tmpfs=use_tmpfs,
-                use_overlay=use_overlay,
-            )
-            outputs.extend(base_outputs)
-            if not base_success:
-                return False, outputs, base_failure
+            self._log("[phase1-base] skipping iterative Phase 1; will run in sandbox only\n", log_files)
+            base_success = True
+            base_outputs = []
+            base_failure = None
+            commands_to_apply = []
         else:
             base_success, base_outputs, base_failure, _ = self._exec_commands(
                 self.base_copy,
@@ -793,21 +899,19 @@ class SingularityWorkerContainer:
         # Step 0-3: apply Phase 1 to sandbox (persistent)
         self._log(f"[phase1-sandbox] image={self.sandbox_dir}\n", log_files)
         if iterative_driver:
-            sandbox_success, sandbox_outputs, sandbox_failure, sandbox_last_rc = self._exec_commands(
+            sandbox_success, sandbox_outputs, sandbox_failure, _ = self._run_iterative_phase1(
                 self.sandbox_dir,
-                commands_to_apply,
-                writable=True,
-                use_tmpfs=False,
-                use_overlay=False,
                 step="phase1-sandbox",
+                iterative_driver=iterative_driver,
+                max_steps=max_steps,
                 extra_env=phase1_env,
                 log_files=log_files,
-                stop_on_failure=False,
+                steps_log=steps_log,
+                use_tmpfs=False,
+                use_overlay=False,
+                writable=True,
             )
             outputs.extend(sandbox_outputs)
-            if not sandbox_success and sandbox_last_rc == 0:
-                self._log("[phase1-sandbox] completed with earlier errors but final command succeeded\n", log_files)
-                sandbox_success = True
             if not sandbox_success:
                 return False, outputs, sandbox_failure
         else:

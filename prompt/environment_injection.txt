@@ -8,6 +8,9 @@ Environment context (from inside the worker container):
 - cpu_info: {cpu_info}
 - memory_info: {memory_info}
 - gpu_info: {gpu_info}
+- python_library_path: /workspace/.pydeps (PYTHONPATH is set to this inside the container)
+- python_alias: python=/usr/bin/python3, python3=/usr/bin/python3 (enforced in container)
+- python_env_note: shell commands are prefixed to export PATH and PYTHONPATH and set python/python3 aliases to /usr/bin/python3
 
 Select compiler_selected from available_compiler_names. If nothing fits, plan installs in download phase (sudo/apt-get with --writable-tmpfs/overlay or source build under /workspace).
 All commands are executed inside the container; do not suggest host-only actions or wrap commands with singularity/apptainer.
