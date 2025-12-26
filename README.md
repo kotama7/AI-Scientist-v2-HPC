@@ -28,14 +28,16 @@ This fork targets HPC environments with a Singularity-based, split-phase executi
 8. [Resource Files](#resource-files)
 9. [Outputs](#outputs)
 10. [Testing](#testing)
-11. [Citing The AI Scientist-v2](#citing-the-ai-scientist-v2)
+11. [Troubleshooting](#troubleshooting)
+12. [Citing The AI Scientist-v2](#citing-the-ai-scientist-v2)
 
 ## Requirements
 
 - Linux host (the launcher uses `psutil` for cleanup).
-- Python 3.11 for the control plane.
+- Python 3.10+ for the control plane.
 - Singularity CLI (the code invokes `singularity`; Apptainer must be aliased or symlinked).
-- GPU + CUDA for the default config (`bfts_config.yaml` uses GPU workers).
+- Torch on the host (imported by the launcher for GPU detection).
+- GPU + CUDA recommended (default config uses GPU workers and maps workers to GPU IDs).
 - LaTeX toolchain for writeups: `pdflatex`, `bibtex`, `chktex`.
 - `pdftotext` (from poppler) for PDF checks and reviews.
 
@@ -50,17 +52,24 @@ pip install -r requirements.txt
 pip install psutil
 
 # Torch is imported by the launcher for GPU detection
-# (use a CUDA-enabled build for GPU clusters)
+# (use a CUDA-enabled build for GPU clusters; adjust for your CUDA version)
 conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+```
+
+Optional (only if you use YAML resource files):
+
+```bash
+pip install pyyaml
 ```
 
 ### Singularity Image
 
 The split-phase path requires a base SIF image. The default config points to
 `exec.singularity_image` in `bfts_config.yaml` (override with `--singularity_image`).
+See `template/README.md` for a minimal way to pull a base image into `template/base.sif`.
 
 The image should include:
-- Python 3.11+
+- Python 3.10+
 - CUDA toolkit
 - Build tools (gcc, make, cmake)
 - Git
@@ -78,7 +87,7 @@ export ANTHROPIC_API_KEY="..."        # Claude models
 export GEMINI_API_KEY="..."           # Gemini models (OpenAI-compatible endpoint)
 export OPENROUTER_API_KEY="..."       # Llama 3.1 via OpenRouter
 export DEEPSEEK_API_KEY="..."         # deepseek-coder-v2-0724
-export HUGGINGFACE_API_KEY="..."      # DeepCoder via Hugging Face API
+export HUGGINGFACE_API_KEY="..."      # deepcoder-14b via Hugging Face API
 export OLLAMA_API_KEY="..."           # Optional; local Ollama endpoint
 export S2_API_KEY="..."               # Optional; Semantic Scholar
 ```
@@ -116,8 +125,7 @@ python launch_scientist_bfts.py \
   --writeup-type icbinb \
   --load_ideas ai_scientist/ideas/himeno_benchmark_challenge.json \
   --idea_idx 0 \
-  --singularity_image /path/to/ai-scientist-worker-nv.sif \
-  --phase_mode split \
+  --singularity_image template/base.sif \
   --num_workers 4
 ```
 
@@ -132,7 +140,7 @@ Useful flags:
 
 ```bash
 python generate_paper.py \
-  --experiment-dir experiments/2025-01-01_foo_attempt_0 \
+  --experiment-dir experiments/<timestamp>_<idea>_attempt_<id> \
   --writeup-type icbinb \
   --model-agg-plots o3-mini-2025-01-31 \
   --model-writeup o1-preview-2024-09-12
@@ -140,17 +148,20 @@ python generate_paper.py \
 
 ## Configuration
 
-The default configuration lives in `bfts_config.yaml`. The launcher copies it into each run directory and overrides fields such as `desc_file`, `workspace_dir`, and `log_dir`.
+The default configuration lives in `bfts_config.yaml`. The launcher copies it into each run directory and overrides fields such as `desc_file`, `data_dir`, `workspace_dir`, and `log_dir`.
 
-Key sections:
+Key sections (defaults from `bfts_config.yaml`):
 
 - `exec`
   - `phase_mode`: `split` (default) or `single`.
-  - `singularity_image`: path to the base SIF.
+  - `singularity_image`: path to the base SIF (absolute in the checked-in config; override for your system).
   - `language`: default is `cpp` (affects code generation constraints).
+  - `workspace_mount`: container mount point (default `/workspace`).
   - `writable_tmpfs`, `container_overlay`, `writable_mode`: control Phase 1 write access.
+  - `container_extra_args`: extra Singularity args for instance start.
   - `per_worker_sif`, `keep_sandbox`, `use_fakeroot`: per-worker SIF behavior.
   - `phase1_max_steps`: max iterative installer steps.
+  - `resources`: optional path to a JSON/YAML resource file.
 - `agent`
   - `num_workers`: parallel workers mapped to GPUs.
   - `stages.*`: per-stage max iterations.
@@ -164,21 +175,23 @@ Key sections:
 
 Runs the experiment as four explicit phases inside Singularity:
 
+0. Planning (Phase 0, prompt-only; produces the phase plan)
 1. Download & install (Phase 1)
 2. Coding (Phase 2)
 3. Compile (Phase 3)
 4. Run (Phase 4)
 
-The LLM outputs a structured JSON payload with per-phase artifacts. The run phase must produce `working/experiment_data.npy` inside the container. Per-worker SIFs are built when `per_worker_sif=true`.
+The LLM outputs a structured JSON payload with per-phase artifacts. The run phase must produce `working/experiment_data.npy` inside the container by default (the expected outputs can be overridden by the plan). Per-worker SIFs are built when `per_worker_sif=true` under `experiments/<...>/workers/worker-*/container/`.
 
 Relevant flags in `launch_scientist_bfts.py`:
 - `--per_worker_sif`, `--keep_sandbox`, `--use_fakeroot`
 - `--writable_mode`, `--phase1_max_steps`
 - `--container_overlay`, `--disable_writable_tmpfs`
+- `--singularity_image` (required for split mode)
 
 ### Single Mode (`exec.phase_mode=single`)
 
-Uses the legacy flow without split phases. Code executes on the host environment (no container), and package guidance comes from the prompt templates.
+Uses the legacy flow without split phases. Code executes on the host environment (no container), and package guidance comes from the prompt templates. Resource binds from `--resources` are only applied in split mode.
 
 ## Resource Files
 
@@ -217,8 +230,10 @@ You can supply a JSON/YAML resource file with `--resources`. The file supports:
 
 Notes:
 - `mount_path`/`dest` must be under `/workspace`.
+- `host_path` must exist for local resources.
 - Local resources are bind-mounted into containers.
-- GitHub and Hugging Face resources are fetched during Phase 1.
+- GitHub/Hugging Face resources are not auto-fetched; Phase 1 is instructed to `git clone` / `huggingface_hub` download to the `dest` paths.
+- YAML resource files require `pyyaml` on the host.
 
 ## Outputs
 
@@ -227,14 +242,16 @@ Each run creates a directory under `experiments/`:
 - `experiments/<timestamp>_<idea>_attempt_<id>/idea.md`
 - `experiments/<timestamp>_<idea>_attempt_<id>/idea.json`
 - `experiments/<timestamp>_<idea>_attempt_<id>/bfts_config.yaml`
-- `experiments/<timestamp>_<idea>_attempt_<id>/logs/`
+- `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/` (stage journals, configs, tree plots, `manager.pkl`)
+- `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/` (workspace with `input/` and `working/`)
 - `experiments/<timestamp>_<idea>_attempt_<id>/figures/` (plot aggregation output)
-- `experiments/<timestamp>_<idea>_attempt_<id>/<run>.pdf` and reflection PDFs (if writeup enabled)
-- `experiments/<timestamp>_<idea>_attempt_<id>/review_text.txt` and `review_img_cap_ref.json` (if review enabled)
+- `experiments/<timestamp>_<idea>_attempt_<id>/auto_plot_aggregator.py`
+- `experiments/<timestamp>_<idea>_attempt_<id>/<experiment_dir_basename>.pdf` and reflection PDFs (if writeup enabled)
+- `experiments/<timestamp>_<idea>_attempt_<id>/review_text.txt` and `review_img_cap_ref.json` (if review enabled; `launch_scientist_bfts.py` only runs review if writeup ran)
 - `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker.json`
 - `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker_interactions.json`
 
-During execution, `experiment_results/` is copied out of logs for plot aggregation and then removed by the launcher (unless you skip plotting).
+During execution, `experiment_results/` is copied out of `logs/<index>-<exp_name>/` for plot aggregation and then removed by the launcher (unless you skip plotting).
 
 ## Testing
 
@@ -242,6 +259,14 @@ During execution, `experiment_results/` is copied out of logs for plot aggregati
 python -m unittest tests/test_smoke_split.py
 python -m unittest tests/test_resource.py
 ```
+
+## Troubleshooting
+
+- Split mode fails with "Singularity image is required": pass `--singularity_image` or update `exec.singularity_image` in `bfts_config.yaml`.
+- Phase 1 cannot write inside the container: try `--writable_mode overlay` with `--container_overlay /path/to/overlay.img`, or disable tmpfs via `--disable_writable_tmpfs`.
+- `singularity build` fails due to permissions: try `--use_fakeroot false`.
+- Resource validation errors: ensure `mount_path`/`dest` are under `/workspace` and local `host_path` exists.
+- Hugging Face downloads fail: install `huggingface_hub` inside the worker image and provide `HUGGINGFACE_API_KEY` if needed.
 
 ## Citing The AI Scientist-v2
 
