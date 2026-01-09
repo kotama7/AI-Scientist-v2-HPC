@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 
 from .journal import Node, Journal
 
@@ -275,11 +276,9 @@ def get_node_log(node):
         ret["exp_results_dir"] = short_dir_path
 
         if os.path.isdir(original_dir_path):
-            npy_files = [f for f in os.listdir(original_dir_path) if f.endswith(".npy")]
-            # Prepend the shortened path to each .npy filename
-            ret["exp_results_npy_files"] = [
-                os.path.join(short_dir_path, f) for f in npy_files
-            ]
+            npy_files = sorted(Path(original_dir_path).rglob("*.npy"))
+            # Use absolute paths so plot aggregation can load reliably.
+            ret["exp_results_npy_files"] = [str(p.resolve()) for p in npy_files]
             llm_outputs_dir = os.path.join(original_dir_path, "llm_outputs")
             phase0_path = os.path.join(llm_outputs_dir, "phase0_plan.json")
             phase1_steps_path = os.path.join(llm_outputs_dir, "phase1_steps.jsonl")

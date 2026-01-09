@@ -8,13 +8,14 @@ Our goal is to produce final, publishable figures.
 ```
 
 IMPORTANT:
-- The aggregator script must load existing .npy experiment data from the "exp_results_npy_files" fields (ONLY using full and exact file paths in the summary JSONs) for thorough plotting.
+- Prefer loading existing .npy experiment data from the "exp_results_npy_files" fields using the full and exact file paths in the summary JSONs.
+- If a listed path is relative, resolve it against AI_SCIENTIST_ROOT (if set) or the base experiment folder; if it still does not exist or the list is empty, fall back to a recursive search under logs/**/experiment_results/** for .npy files (do not search outside the experiment folder).
 - It should call os.makedirs("figures", exist_ok=True) before saving any plots.
 - Aim for a balance of empirical results, ablations, and diverse, informative visuals in 'figures/' that comprehensively showcase the finalized research outcomes.
 - If you need .npy paths from the summary, only copy those paths directly (rather than copying and parsing the entire summary).
 
 Your generated Python script must:
-1) Load or refer to relevant data and .npy files from these summaries. Use the full and exact file paths in the summary JSONs.
+1) Load or refer to relevant data and .npy files from these summaries. Use the full and exact file paths in the summary JSONs when available; only use a recursive search fallback if those paths are missing or invalid.
 2) Synthesize or directly create final, scientifically meaningful plots for a final research paper (comprehensive and complete), referencing the original code if needed to see how the data was generated.
 3) Carefully combine or replicate relevant existing plotting code to produce these final aggregated plots in 'figures/' only, since only those are used in the final paper.
 4) Do not hallucinate data. Data must either be loaded from .npy files or copied from the JSON summaries.

@@ -1,8 +1,20 @@
 Example to extract data from experiment_data: experiment_data['dataset_name_1']['metrics']['train']
-Example data loading and plot saving code: 
+Example data loading and plot saving code:
 
                 try:
-                    experiment_data = np.load(os.path.join(working_dir, 'experiment_data.npy'), allow_pickle=True).item()
+                    candidate_paths = []
+                    candidate_paths += glob.glob(os.path.join(working_dir, 'experiment_data.npy'))
+                    candidate_paths += glob.glob(os.path.join(working_dir, 'experiment_data_*.npy'))
+                    candidate_paths += glob.glob(os.path.join(working_dir, 'output*.npy'))
+                    if not candidate_paths:
+                        candidate_paths = glob.glob(os.path.join(working_dir, '**', '*.npy'), recursive=True)
+                    candidate_paths = sorted(set(candidate_paths))
+
+                    all_experiment_data = []
+                    for p in candidate_paths:
+                        loaded = np.load(p, allow_pickle=True)
+                        experiment_data = loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
+                        all_experiment_data.append((p, experiment_data))
                 except Exception as e:
                     print(f'Error loading experiment data: {e}')
 

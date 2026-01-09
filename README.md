@@ -161,6 +161,7 @@ Key sections (defaults from `bfts_config.yaml`):
   - `container_extra_args`: extra Singularity args for instance start.
   - `per_worker_sif`, `keep_sandbox`, `use_fakeroot`: per-worker SIF behavior.
   - `phase1_max_steps`: max iterative installer steps.
+  - `log_prompts`: write prompt logs (JSON + Markdown) for split/single runs.
   - `resources`: optional path to a JSON/YAML resource file.
 - `agent`
   - `num_workers`: parallel workers mapped to GPUs.
@@ -191,7 +192,19 @@ Relevant flags in `launch_scientist_bfts.py`:
 
 ### Single Mode (`exec.phase_mode=single`)
 
-Uses the legacy flow without split phases. Code executes on the host environment (no container), and package guidance comes from the prompt templates. Resource binds from `--resources` are only applied in split mode.
+Uses the legacy flow without split phases. Code executes on the host environment (no container), and package guidance comes from the prompt templates. Bind-mounts are only applied in split mode, but classed resource context and staged templates/docs are still available to the LLM/workspace.
+
+## LLM Context (What We Pass In)
+
+Concise overview of what each LLM call receives:
+
+- Phase 0 planning (split): Introduction + Task + History (phase summaries, compile/run logs & errors, prior LLM outputs) + Environment snapshot (OS/CPU/GPU, compilers/libs, network, container) + optional Resources.
+- Phase 1 iterative install (split): Introduction + Task + Phase plan (download/compile/run) + Constraints + Progress history + optional Phase 0 guidance + Environment injection + Resources.
+- Stage 1/3 draft/debug/improve: Introduction + Research idea + Memory, plus prior code/execution output/plot+time feedback as applicable; Instructions (guidelines + response format + impl/phase guidance); optional Data Overview; split mode adds System/Domain + Environment injection + Resources + Phase 0 plan snippet.
+- Stage 2 hyperparam + Stage 4 ablation: Introduction (idea) + base code + tried history + stage requirements/response format; split mode adds System/Domain + Environment injection + Resources + Phase 0 plan snippet.
+- Plotting + VLM: plotting code uses Response format + plotting guideline (experiment code + optional base plotting code); plot selection uses Introduction + plot paths; VLM analysis uses research idea text + selected plot images (base64); dataset success check uses plot analyses + VLM summary + original plotting code + response format.
+- Execution review + metrics: execution review uses Introduction + research idea + implementation + execution output; parse-metrics plan uses original code + prior parse errors/code + instructions + example parser + response format; metric extraction uses parser execution output.
+- Node summary: Introduction + research idea + implementation + plan + execution output + analysis + metric + plot analyses + VLM feedback.
 
 ## Resource Files
 
@@ -224,15 +237,41 @@ You can supply a JSON/YAML resource file with `--resources`. The file supports:
       "revision": "abc123def456...",
       "dest": "/workspace/input/my_model"
     }
+  ],
+  "items": [
+    {
+      "name": "baseline_template",
+      "class": "template",
+      "source": "local",
+      "resource": "input_data",
+      "path": "baseline",
+      "include_tree": true,
+      "include_files": ["main.c", "Makefile"],
+      "notes": "Use as a reference implementation."
+    },
+    {
+      "name": "readme_doc",
+      "class": "document",
+      "source": "local",
+      "resource": "input_data",
+      "path": "README.md",
+      "include_content": true
+    }
   ]
 }
 ```
 
 Notes:
 - `mount_path`/`dest` must be under `/workspace`.
-- `host_path` must exist for local resources.
-- Local resources are bind-mounted into containers.
+- `host_path` must exist for local resources (relative paths are resolved relative to the resource file).
+- Resource file paths are resolved relative to `AI_SCIENTIST_ROOT` when set by the launcher.
+- Local resources are bind-mounted into containers (split mode).
 - GitHub/Hugging Face resources are not auto-fetched; Phase 1 is instructed to `git clone` / `huggingface_hub` download to the `dest` paths.
+- `items` classify files/dirs with `class` in {`template`, `library`, `dataset`, `model`, `setup`, `document`}. `path` is relative to the resource root and must not contain `..`.
+- Use `include_tree`, `include_content`, `include_files`, `max_files`, `max_chars`, and `max_total_chars` to control how much context is injected.
+- By default, templates include summarized file content and are injected into Phase 0/1/2 prompts; setup content is injected in Phase 0/1; document content is injected in Phase 0/1/2/3/4. Libraries/datasets/models include metadata only (override via `include_*` or `max_*` fields).
+- Items that reference GitHub/HuggingFace resources provide container paths and metadata until those resources are fetched.
+- Local `items` for template/setup/document are staged into the workspace at `resources/<class>/<name>` before execution.
 - YAML resource files require `pyyaml` on the host.
 
 ## Outputs
@@ -243,6 +282,7 @@ Each run creates a directory under `experiments/`:
 - `experiments/<timestamp>_<idea>_attempt_<id>/idea.json`
 - `experiments/<timestamp>_<idea>_attempt_<id>/bfts_config.yaml`
 - `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/` (stage journals, configs, tree plots, `manager.pkl`)
+- `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/phase_logs/node_<id>/prompt_logs/` (system prompt logs per node)
 - `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/` (workspace with `input/` and `working/`)
 - `experiments/<timestamp>_<idea>_attempt_<id>/figures/` (plot aggregation output)
 - `experiments/<timestamp>_<idea>_attempt_<id>/auto_plot_aggregator.py`
@@ -251,7 +291,7 @@ Each run creates a directory under `experiments/`:
 - `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker.json`
 - `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker_interactions.json`
 
-During execution, `experiment_results/` is copied out of `logs/<index>-<exp_name>/` for plot aggregation and then removed by the launcher (unless you skip plotting).
+During execution, `experiment_results/` is copied out of `logs/<index>-<exp_name>/` for plot aggregation and then removed by the launcher (unless you skip plotting). Prompt logs are also copied into `experiment_results/.../llm_outputs/prompt_logs/`.
 
 ## Testing
 
@@ -265,7 +305,7 @@ python -m unittest tests/test_resource.py
 - Split mode fails with "Singularity image is required": pass `--singularity_image` or update `exec.singularity_image` in `bfts_config.yaml`.
 - Phase 1 cannot write inside the container: try `--writable_mode overlay` with `--container_overlay /path/to/overlay.img`, or disable tmpfs via `--disable_writable_tmpfs`.
 - `singularity build` fails due to permissions: try `--use_fakeroot false`.
-- Resource validation errors: ensure `mount_path`/`dest` are under `/workspace` and local `host_path` exists.
+- Resource validation errors: ensure `mount_path`/`dest` are under `/workspace`, local `host_path` exists, and `items.path` is relative without `..`.
 - Hugging Face downloads fail: install `huggingface_hub` inside the worker image and provide `HUGGINGFACE_API_KEY` if needed.
 
 ## Citing The AI Scientist-v2

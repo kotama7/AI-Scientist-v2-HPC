@@ -478,6 +478,7 @@ class Journal:
             else:
                 model = cfg.agent.select_node.model
                 temperature = cfg.agent.select_node.temp
+            # LLM context: best-node prompt with intro/task plus per-candidate id/metric/analysis/VLM summary.
             selection = query(
                 system_message=prompt,
                 user_message=None,
@@ -534,6 +535,7 @@ class Journal:
                 failure_info += f"Code: {node.code}\n"
             prompt["Failed Experiments"] += failure_info
 
+        # LLM context: aggregated successful/failed experiment designs, analyses, metrics, and optional code.
         summary = query(
             system_message=prompt,
             user_message=SUMMARY_USER_MESSAGE,
@@ -597,6 +599,7 @@ class Journal:
             ),
         }
 
+        # LLM context: node summaries (per-node findings) and the best-node id/metric for this stage.
         stage_summary = query(
             system_message=summary_prompt,
             user_message=STAGE_NOTES_USER_MESSAGE,

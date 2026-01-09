@@ -36,12 +36,14 @@ from .utils.resource import (
     load_resources,
     build_local_binds,
     build_resources_context,
+    resolve_resources_path,
 )
 import pickle
 from dataclasses import asdict
 from ai_scientist.prompt_loader import load_prompt, load_prompt_lines, format_prompt
 
 from rich import print
+from rich.markup import escape
 from pathlib import Path
 import base64
 import sys
@@ -418,6 +420,46 @@ def _copy_artifact(src: Path, dest_dir: Path, *, name: str | None = None) -> Non
         pass
 
 
+def _format_prompt_log_name(label: str, *, session_id: str | None = None, counter: int | None = None) -> str:
+    safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("_") or "prompt"
+    parts: list[str] = []
+    if session_id:
+        parts.append(session_id)
+    if counter is not None:
+        parts.append(f"{counter:03d}")
+    parts.append(safe_label)
+    return "_".join(parts)
+
+
+def _render_prompt_for_log(prompt: Any) -> str:
+    rendered = compile_prompt_to_md(prompt)
+    if isinstance(rendered, (list, dict)):
+        return json.dumps(rendered, indent=2, default=str)
+    return str(rendered)
+
+
+def _write_prompt_log(
+    log_dir: Path,
+    name: str,
+    prompt: Any,
+    *,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    if prompt is None:
+        return
+    log_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "meta": meta or {},
+        "prompt": prompt,
+    }
+    (log_dir / f"{name}.json").write_text(
+        json.dumps(payload, indent=2, default=str),
+        encoding="utf-8",
+    )
+    rendered = _render_prompt_for_log(prompt)
+    (log_dir / f"{name}.md").write_text(rendered, encoding="utf-8")
+
+
 def _save_phase_execution_artifacts(
     *,
     exp_results_dir: Path,
@@ -432,6 +474,11 @@ def _save_phase_execution_artifacts(
     if phase_log_dir and phase_log_dir.exists():
         for log_name in ("download.log", "coding.log", "compile.log", "run.log"):
             _copy_artifact(phase_log_dir / log_name, artifacts_dir, name=log_name)
+        prompt_log_dir = phase_log_dir / "prompt_logs"
+        if prompt_log_dir.exists():
+            for prompt_file in prompt_log_dir.iterdir():
+                if prompt_file.is_file():
+                    _copy_artifact(prompt_file, llm_outputs_dir / "prompt_logs")
     if run_root:
         plans_dir = run_root / "workers" / worker_label / "plans"
         _copy_artifact(plans_dir / "phase0_plan.json", llm_outputs_dir)
@@ -439,6 +486,9 @@ def _save_phase_execution_artifacts(
         _copy_artifact(plans_dir / "phase0_llm_output.txt", llm_outputs_dir)
         _copy_artifact(run_root / "workers" / worker_label / "phase1_steps.jsonl", llm_outputs_dir)
         _copy_artifact(run_root / "workers" / worker_label / "phase1_llm_outputs.jsonl", llm_outputs_dir)
+        prompt_root = run_root / "workers" / worker_label / "prompt_logs"
+        for prompt_name in ("phase0_prompt.json", "phase0_prompt.md"):
+            _copy_artifact(prompt_root / prompt_name, llm_outputs_dir / "prompt_logs")
     if phase_artifacts:
         llm_outputs_dir.mkdir(parents=True, exist_ok=True)
         phase_data = phase_artifacts.get("phase_artifacts") if isinstance(phase_artifacts, dict) else None
@@ -853,6 +903,8 @@ class MinimalAgent:
         environment_context: dict | None = None,
         phase0_plan: dict | None = None,
         phase0_history: dict | None = None,
+        prompt_log_dir: Path | None = None,
+        prompt_session_id: str | None = None,
     ):
         self.task_desc = task_desc
         self.memory_summary = memory_summary
@@ -863,6 +915,18 @@ class MinimalAgent:
         self.environment_context = environment_context or {}
         self.phase0_plan = phase0_plan
         self.phase0_history = phase0_history or {}
+        self.resources_config: ResourceConfig | None = None
+        self.resources_error: str | None = None
+        self._resources_prompt_cache: dict[str, dict[str, Any]] = {}
+        self.prompt_log_dir = prompt_log_dir
+        self.prompt_session_id = prompt_session_id
+        self._prompt_log_counter = 0
+        resources_path = getattr(self.cfg.exec, "resources", None)
+        if resources_path:
+            try:
+                self.resources_config = load_resources(resolve_resources_path(resources_path))
+            except Exception as exc:
+                self.resources_error = str(exc)
 
     @property
     def code_language(self) -> str:
@@ -941,6 +1005,37 @@ class MinimalAgent:
             rendered_message = f"{message}\nAvailable packages: {pkg_str}"
 
         return {"Installed Packages": rendered_message}
+
+    def _prompt_resources(self, phase: str) -> dict[str, Any] | None:
+        if self.resources_error:
+            return {"error": self.resources_error}
+        if not self.resources_config or not self.resources_config.has_resources():
+            return None
+        cached = self._resources_prompt_cache.get(phase)
+        if cached:
+            return cached
+        ctx = build_resources_context(self.resources_config, phase=phase)
+        self._resources_prompt_cache[phase] = ctx
+        return ctx
+
+    def _inject_resources(self, prompt: dict[str, Any], phase: str) -> None:
+        ctx = self._prompt_resources(phase)
+        if ctx:
+            prompt["Resources"] = ctx
+
+    def _log_prompt(self, prompt: Any, *, label: str, meta: dict[str, Any] | None = None) -> None:
+        if not self.prompt_log_dir:
+            return
+        self._prompt_log_counter += 1
+        name = _format_prompt_log_name(
+            label,
+            session_id=self.prompt_session_id,
+            counter=self._prompt_log_counter,
+        )
+        payload: dict[str, Any] = {"stage": self.stage_name}
+        if meta:
+            payload.update(meta)
+        _write_prompt_log(self.prompt_log_dir, name, prompt, meta=payload)
 
     @property
     def _prompt_impl_guideline(self):
@@ -1090,6 +1185,7 @@ class MinimalAgent:
         env_block = self._prompt_environment
         if env_block:
             prompt["Environment"] = env_block.get("Environment injection", env_block)
+        self._inject_resources(prompt, phase="phase2")
         phase0_snippet = self._phase0_plan_snippet(include_phase1=False, include_phase2_4=True)
         if phase0_snippet:
             prompt["Phase 0 plan"] = phase0_snippet
@@ -1129,6 +1225,7 @@ class MinimalAgent:
             prompt["Instructions"] |= self._prompt_resp_fmt
             prompt["Instructions"] |= self._prompt_impl_guideline
             prompt["Instructions"] |= self._prompt_environment
+            self._inject_resources(prompt, phase="phase2")
 
         if self.cfg.agent.data_preview:
             prompt["Data Overview"] = self.data_preview
@@ -1140,7 +1237,8 @@ class MinimalAgent:
 
         print("MinimalAgent: Getting plan and code")
         if self.phase_mode == "split":
-            artifacts = self.generate_phase_artifacts(prompt)
+            # LLM context (draft node, split): Introduction/Research idea/Memory/Instructions (guidelines + metrics + response format + impl), optional Data Overview, plus System/Domain, Environment injection, Resources, and Phase 0 plan snippet.
+            artifacts = self.generate_phase_artifacts(prompt, log_label="draft")
             files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
             code_repr = combine_sources_for_display(files)
             plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
@@ -1150,7 +1248,8 @@ class MinimalAgent:
                 phase_artifacts=artifacts,
                 phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
             )
-        plan, code = self.plan_and_code_query(prompt)
+        # LLM context (draft node, single): Introduction/Research idea/Memory/Instructions (guidelines + metrics + phase guidance + response format + impl + installed packages), optional Data Overview, and Resources.
+        plan, code = self.plan_and_code_query(prompt, log_label="draft")
         print("MinimalAgent: Draft complete")
         return Node(plan=plan, code=code)
 
@@ -1171,12 +1270,14 @@ class MinimalAgent:
         else:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_impl_guideline
+            self._inject_resources(prompt, phase="phase2")
 
         if self.cfg.agent.data_preview:
             prompt["Data Overview"] = self.data_preview
 
         if self.phase_mode == "split":
-            artifacts = self.generate_phase_artifacts(prompt)
+            # LLM context (debug node, split): Introduction/Research idea/buggy code + execution output + plot/time feedback, Instructions (debug format + bugfix guidelines + phase guidance + impl), plus System/Domain, Environment injection, Resources, and Phase 0 plan snippet.
+            artifacts = self.generate_phase_artifacts(prompt, log_label="debug")
             files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
             code_repr = combine_sources_for_display(files)
             plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
@@ -1187,8 +1288,8 @@ class MinimalAgent:
                 phase_artifacts=artifacts,
                 phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
             )
-
-        plan, code = self.plan_and_code_query(prompt)
+        # LLM context (debug node, single): Introduction/Research idea/buggy code + execution output + plot/time feedback, Instructions (debug format + bugfix guidelines + phase guidance + impl), optional Data Overview, and Resources.
+        plan, code = self.plan_and_code_query(prompt, log_label="debug")
         return Node(plan=plan, code=code, parent=parent_node)
 
     def _improve(self, parent_node: Node) -> Node:
@@ -1210,9 +1311,11 @@ class MinimalAgent:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_resp_fmt
             prompt["Instructions"] |= self._prompt_impl_guideline
+            self._inject_resources(prompt, phase="phase2")
 
         if self.phase_mode == "split":
-            artifacts = self.generate_phase_artifacts(prompt)
+            # LLM context (improve node, split): Introduction/Research idea/Memory + prior code + plot/time feedback, Instructions (response format + phase guidance + impl), plus System/Domain, Environment injection, Resources, and Phase 0 plan snippet.
+            artifacts = self.generate_phase_artifacts(prompt, log_label="improve")
             files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
             code_repr = combine_sources_for_display(files)
             plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
@@ -1223,8 +1326,8 @@ class MinimalAgent:
                 phase_artifacts=artifacts,
                 phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
             )
-
-        plan, code = self.plan_and_code_query(prompt)
+        # LLM context (improve node, single): Introduction/Research idea/Memory + prior code + plot/time feedback, Instructions (response format + phase guidance + impl), and Resources.
+        plan, code = self.plan_and_code_query(prompt, log_label="improve")
         return Node(
             plan=plan,
             code=code,
@@ -1256,8 +1359,10 @@ class MinimalAgent:
         else:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_hyperparam_tuning_resp_fmt
+            self._inject_resources(prompt, phase="phase2")
         if self.phase_mode == "split":
-            artifacts = self.generate_phase_artifacts(prompt)
+            # LLM context (Stage 2 hyperparam, split): Introduction (idea), base code, Instructions (hyperparam guideline + phase guidance + response format + impl), plus System/Domain, Environment injection, Resources, and Phase 0 plan snippet.
+            artifacts = self.generate_phase_artifacts(prompt, log_label="hyperparam")
             files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
             code_repr = combine_sources_for_display(files)
             plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
@@ -1269,7 +1374,8 @@ class MinimalAgent:
                 phase_artifacts=artifacts,
                 phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
             )
-        plan, code = self.plan_and_code_query(prompt)
+        # LLM context (Stage 2 hyperparam, single): Introduction (idea), base code, Instructions (hyperparam guideline + phase guidance + response format), and Resources.
+        plan, code = self.plan_and_code_query(prompt, log_label="hyperparam")
         return Node(
             plan="Hyperparam tuning name: " + hyperparam_idea.name + ".\n" + plan,
             code=code,
@@ -1290,8 +1396,10 @@ class MinimalAgent:
         else:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_ablation_resp_fmt
+            self._inject_resources(prompt, phase="phase2")
         if self.phase_mode == "split":
-            artifacts = self.generate_phase_artifacts(prompt)
+            # LLM context (Stage 4 ablation, split): Introduction (idea), base code, Instructions (ablation guideline + phase guidance + response format + impl), plus System/Domain, Environment injection, Resources, and Phase 0 plan snippet.
+            artifacts = self.generate_phase_artifacts(prompt, log_label="ablation")
             files = artifacts["phase_artifacts"]["coding"]["workspace"]["files"]
             code_repr = combine_sources_for_display(files)
             plan = artifacts["phase_artifacts"]["coding"].get("notes", "") or "Split phase plan"
@@ -1303,7 +1411,8 @@ class MinimalAgent:
                 phase_artifacts=artifacts,
                 phase_artifacts_raw=getattr(self, "last_phase_artifacts_response", ""),
             )
-        plan, code = self.plan_and_code_query(prompt)
+        # LLM context (Stage 4 ablation, single): Introduction (idea), base code, Instructions (ablation guideline + phase guidance + response format), and Resources.
+        plan, code = self.plan_and_code_query(prompt, log_label="ablation")
         return Node(
             plan="Ablation name: " + ablation_idea.name + ".\n" + plan,
             code=code,
@@ -1411,11 +1520,22 @@ class MinimalAgent:
             },
         }
 
-    def generate_phase_artifacts(self, prompt, retries: int = 3) -> dict:
+    def generate_phase_artifacts(self, prompt, retries: int = 3, log_label: str = "phase2") -> dict:
         """Query the LLM for split-phase output and validate the JSON structure."""
         last_error = ""
         last_response = ""
-        for _ in range(retries):
+        for attempt in range(1, retries + 1):
+            self._log_prompt(
+                prompt,
+                label=f"{log_label}_attempt{attempt}",
+                meta={
+                    "phase": "phase2",
+                    "attempt": attempt,
+                    "label": log_label,
+                    "model": self.cfg.agent.code.model,
+                },
+            )
+            # LLM context (split-phase artifacts): system_message=prompt dict with task-specific sections, Instructions/Response format, optional System/Domain/Environment/Resources/Phase 0 snippet; request JSON for download/coding/compile/run.
             completion_text = query(
                 system_message=prompt,
                 user_message=None,
@@ -1448,12 +1568,27 @@ class MinimalAgent:
         return self._fallback_phase_artifacts(last_error)
 
     def plan_and_code_query(
-        self, prompt, retries=3, code_language: str | None = None
+        self,
+        prompt,
+        retries=3,
+        code_language: str | None = None,
+        log_label: str = "plan_and_code",
     ) -> tuple[str, str]:
         """Generate a natural language plan + code in the same LLM call and split them apart."""
         completion_text = None
         target_language = code_language or self.code_language
-        for _ in range(retries):
+        for attempt in range(1, retries + 1):
+            self._log_prompt(
+                prompt,
+                label=f"{log_label}_attempt{attempt}",
+                meta={
+                    "phase": "single",
+                    "attempt": attempt,
+                    "label": log_label,
+                    "model": self.cfg.agent.code.model,
+                },
+            )
+            # LLM context (plan+code): system_message=prompt dict built by caller (task sections + instructions/format/env/resources as applicable).
             completion_text = query(
                 system_message=prompt,
                 user_message=None,
@@ -1491,6 +1626,7 @@ class MinimalAgent:
 
         response = cast(
             dict,
+            # LLM context (execution review): Introduction + Research idea + Implementation + Execution output.
             query(
                 system_message=prompt,
                 user_message=None,
@@ -1523,6 +1659,20 @@ class MinimalAgent:
     ) -> str:
         """Generate code for plotting experiment results"""
         prompt_guideline = list(PLOTTING_GUIDELINE_BASE)
+        working_path = Path(working_dir)
+        if working_path.exists():
+            npy_files = sorted(working_path.rglob("*.npy"))
+            if npy_files:
+                rel_paths = []
+                for p in npy_files:
+                    try:
+                        rel_paths.append(str(p.relative_to(working_path)))
+                    except ValueError:
+                        rel_paths.append(str(p))
+                prompt_guideline.append(
+                    "Available .npy files (relative to working_dir unless absolute):\n"
+                    + "\n".join(rel_paths)
+                )
         prompt_guideline.append(
             "Use the following experiment code to infer the data to plot: " + node.code
         )
@@ -1575,7 +1725,7 @@ class MinimalAgent:
                 ]
             )
 
-        # Get plotting code from LLM
+        # LLM context (plotting code): Instructions with Response format + Plotting code guideline (incl. experiment code, optional base plotting code).
         plan, code = self.plan_and_code_query(
             plotting_prompt, code_language="python"
         )
@@ -1615,6 +1765,7 @@ class MinimalAgent:
         retry_count = 0
         retry_limit = 5
         while retry_count < retry_limit:
+            # LLM context (dataset success check): Introduction + Plot analyses + VLM feedback summary + Original plotting code + Response format.
             response = query(
                 system_message=determine_prompt,
                 user_message=None,
@@ -1685,6 +1836,7 @@ class MinimalAgent:
             try:
                 response_select_plots = cast(
                     dict,
+                    # LLM context (plot selection): Introduction + Plot paths.
                     query(
                         system_message=prompt_select_plots,
                         user_message=None,
@@ -1763,6 +1915,7 @@ class MinimalAgent:
 
         response = cast(
             dict,
+            # LLM context (VLM analysis): user_message with research idea text + selected plot images (base64).
             query(
                 system_message=None,
                 user_message=user_message,
@@ -1811,6 +1964,7 @@ class MinimalAgent:
 
         return cast(
             dict,
+            # LLM context (node summary): Introduction + Research idea + Implementation + Plan + Execution output + Analysis + Metric + Plot analyses + VLM feedback.
             query(
                 system_message=summary_prompt,
                 user_message=None,
@@ -1980,6 +2134,7 @@ class ParallelAgent:
             "Instructions": list(DEFINE_METRICS_INSTRUCTIONS),
         }
 
+        # LLM context (global metrics): Introduction + Research idea + metric-definition Instructions.
         response = query(
             system_message=prompt,
             user_message=None,
@@ -1997,6 +2152,7 @@ class ParallelAgent:
         completion_text = None
         target_language = code_language or self.code_language
         for _ in range(retries):
+            # LLM context (plan+code): system_message=prompt dict built by caller (task sections + instructions/format/env/resources as applicable).
             completion_text = query(
                 system_message=prompt,
                 user_message=None,
@@ -2245,6 +2401,9 @@ class ParallelAgent:
         os.makedirs(working_dir, exist_ok=True)
         workspace_path = Path(workspace)
         phase_log_dir: Path | None = None
+        prompt_session_id = f"{int(time.time() * 1000)}_{os.getpid()}"
+        prompt_log_root: Path | None = None
+        prompt_session_dir: Path | None = None
 
         def resolve_workdir(requested: str | None) -> Path:
             expected_root = getattr(cfg.exec, "workspace_mount", "/workspace")
@@ -2364,7 +2523,7 @@ class ParallelAgent:
                     logger.warning("Failed to read OS release: %s", exc)
                 try:
                     cpu_res = info_env.run(["bash", "-lc", "lscpu"], cwd=workspace_path)
-                    environment_context["cpu_info"] = summarize_text(cpu_res.stdout, max_lines=60, max_chars=3000)
+                    environment_context["cpu_info"] = summarize_text(cpu_res.stdout, max_lines=60, max_chars=20000)
                 except Exception as exc:
                     logger.warning("Failed to read CPU info: %s", exc)
                 try:
@@ -2400,6 +2559,9 @@ class ParallelAgent:
             plans_dir.mkdir(parents=True, exist_ok=True)
             phase0_plan_path = plans_dir / "phase0_plan.json"
             phase0_history_path = plans_dir / "phase0_history_full.json"
+            if getattr(cfg.exec, "log_prompts", True):
+                prompt_log_root = run_root / "workers" / worker_label / "prompt_logs"
+                prompt_session_dir = prompt_log_root / prompt_session_id
 
             history_summary, history_full = _collect_phase0_history(
                 current_log_dir=Path(cfg.log_dir),
@@ -2456,7 +2618,25 @@ class ParallelAgent:
                         "workspace_mount": environment_context.get("workspace_mount", "/workspace"),
                     },
                 }
+                resources_path = getattr(cfg.exec, "resources", None)
+                if resources_path:
+                    try:
+                        resources_cfg = load_resources(resolve_resources_path(resources_path))
+                        phase0_prompt["Resources"] = build_resources_context(resources_cfg, phase="phase0")
+                    except Exception as exc:
+                        phase0_prompt["Resources"] = {"error": str(exc)}
+                if prompt_log_root:
+                    _write_prompt_log(
+                        prompt_log_root,
+                        _format_prompt_log_name("phase0_prompt"),
+                        phase0_prompt,
+                        meta={
+                            "phase": "phase0",
+                            "model": cfg.agent.code.model,
+                        },
+                    )
                 try:
+                    # LLM context (Phase 0 planning): Introduction + Task + History (phase summaries/compile-run logs/errors/LLM outputs) + Environment snapshot + optional Resources.
                     phase0_response = query(
                         system_message=phase0_prompt,
                         user_message=None,
@@ -2485,6 +2665,10 @@ class ParallelAgent:
                     logger.warning("Failed to write Phase 0 plan: %s", exc)
             phase0_history_summary = history_summary
 
+        if prompt_log_root is None and getattr(cfg.exec, "log_prompts", True):
+            prompt_log_root = Path(cfg.log_dir) / "prompt_logs" / worker_label
+            prompt_session_dir = prompt_log_root / prompt_session_id
+
         # Create minimal agent for worker process with the global metric definition
         worker_agent = MinimalAgent(
             task_desc=task_desc,
@@ -2495,6 +2679,8 @@ class ParallelAgent:
             environment_context=environment_context,
             phase0_plan=phase0_plan,
             phase0_history=phase0_history_summary,
+            prompt_log_dir=prompt_session_dir,
+            prompt_session_id=prompt_session_id,
         )
 
         process_interpreter: Optional[Interpreter] = None
@@ -2588,6 +2774,11 @@ class ParallelAgent:
             if cfg.exec.phase_mode == "split":
                 phase_log_dir = Path(cfg.log_dir) / "phase_logs" / f"node_{child_node.id}"
                 phase_log_dir.mkdir(parents=True, exist_ok=True)
+                if prompt_session_dir and prompt_session_dir.exists():
+                    prompt_dest = phase_log_dir / "prompt_logs"
+                    for prompt_file in prompt_session_dir.iterdir():
+                        if prompt_file.is_file():
+                            _copy_artifact(prompt_file, prompt_dest)
                 raw_phase_artifacts = getattr(child_node, "phase_artifacts", None)
                 phase_data = None
                 if isinstance(raw_phase_artifacts, dict):
@@ -2620,7 +2811,7 @@ class ParallelAgent:
                     resources_path = getattr(cfg.exec, "resources", None)
                     if resources_path:
                         try:
-                            resources_config = load_resources(resources_path)
+                            resources_config = load_resources(resolve_resources_path(resources_path))
                             resource_binds = build_local_binds(resources_config)
                             term_outputs.append(f"Loaded resources from {resources_path}")
                         except Exception as exc:
@@ -2730,14 +2921,23 @@ class ParallelAgent:
                         
                         # Inject resources context if available
                         if resources_config and resources_config.has_resources():
-                            resources_ctx = build_resources_context(resources_config)
-                            prompt["Resources"] = {
-                                "local_mounts": resources_ctx.get("local_mounts", []),
-                                "github_resources": resources_ctx.get("github_resources", []),
-                                "huggingface_resources": resources_ctx.get("huggingface_resources", []),
-                                "notes": "Local mounts are already bind-mounted. GitHub/HF resources need to be fetched.",
-                            }
+                            resources_ctx = build_resources_context(resources_config, phase="phase1")
+                            prompt["Resources"] = resources_ctx
 
+                        if prompt_session_dir:
+                            _write_prompt_log(
+                                prompt_session_dir,
+                                _format_prompt_log_name(f"phase1_step_{step_idx}"),
+                                prompt,
+                                meta={
+                                    "phase": "phase1",
+                                    "step": step_idx,
+                                    "max_steps": max_steps,
+                                    "model": cfg.agent.code.model,
+                                },
+                            )
+
+                        # LLM context (Phase 1 iterative install): Introduction + Task + Phase plan + Constraints + Progress history + optional Phase 0 guidance + Environment injection + Resources.
                         response_text = query(
                             system_message=prompt,
                             user_message=None,
@@ -2947,7 +3147,7 @@ class ParallelAgent:
             )
 
             # Add check for saved data files
-            data_dir = workspace_path if cfg.exec.phase_mode == "split" else Path(working_dir)
+            data_dir = Path(working_dir)
             data_files = list(data_dir.rglob("*.npy")) if data_dir.exists() else []
             expected_output_file = workspace_path / "working" / "experiment_data.npy"
             if expected_output_file.exists() and expected_output_file not in data_files:
@@ -2979,6 +3179,17 @@ class ParallelAgent:
                     else:
                         # Call LLM to parse data files and extract metrics
                         context_blocks = ["Original Code: " + child_node.code]
+                        if data_files:
+                            rel_paths = []
+                            for p in sorted(data_files):
+                                try:
+                                    rel_paths.append(str(p.relative_to(workspace_path)))
+                                except ValueError:
+                                    rel_paths.append(str(p))
+                            context_blocks.append(
+                                "Available .npy files (relative to workspace unless absolute):\n"
+                                + "\n".join(rel_paths)
+                            )
                         if previous_error_message:
                             context_blocks.append(
                                 "Previous parsing attempt failed with the following error. "
@@ -3000,6 +3211,7 @@ class ParallelAgent:
                             "Response format": worker_agent._prompt_metricparse_resp_fmt(),
                         }
 
+                        # LLM context (parse-metrics plan): Introduction + Context (original code + prior errors/code) + Instructions + Example parser + Response format.
                         (
                             parse_metrics_plan,
                             parse_metrics_code,
@@ -3048,6 +3260,7 @@ class ParallelAgent:
 
                             metrics_response = cast(
                                 dict,
+                                # LLM context (metric extraction): Introduction + Execution Output from metrics parser.
                                 query(
                                     system_message=metrics_prompt,
                                     user_message=None,
@@ -3308,6 +3521,7 @@ class ParallelAgent:
         retry_count = 0
         retry_limit = 5
         while retry_count < retry_limit:
+            # LLM context (Stage 2 idea): Introduction + Base code + Previous hyperparam attempts + Requirements + Response format.
             response = query(
                 system_message=hyperparam_tuning_prompt,
                 user_message=None,
@@ -3359,6 +3573,7 @@ class ParallelAgent:
         retry_count = 0
         retry_limit = 5
         while retry_count < retry_limit:
+            # LLM context (Stage 4 idea): Introduction + Base code + Previous ablations + Requirements + Response format.
             response = query(
                 system_message=ablation_prompt,
                 user_message=None,
@@ -3642,7 +3857,7 @@ class ParallelAgent:
                 print("Worker process timed out, couldn't get the result")
                 logger.error(f"Worker process timed out, couldn't get the result")
             except Exception as e:
-                print(f"Error processing node: {str(e)}")
+                print(f"Error processing node: {escape(str(e))}")
                 logger.error(f"Error processing node: {str(e)}")
                 import traceback
 
@@ -3725,12 +3940,21 @@ class ParallelAgent:
                 "plotting code 2:\n" + seed_nodes[1].plot_code + "\n\n"
                 "plotting code 3:\n" + seed_nodes[2].plot_code + "\n\n"
             ),
-            "Experiment Data Path": (
-                f"{seed_nodes[0].exp_results_dir}/experiment_data.npy\n"
-                f"{seed_nodes[1].exp_results_dir}/experiment_data.npy\n"
-                f"{seed_nodes[2].exp_results_dir}/experiment_data.npy\n"
-            ),
         }
+        seed_data_paths = []
+        for seed_node in seed_nodes:
+            exp_dir = Path(seed_node.exp_results_dir) if seed_node.exp_results_dir else None
+            if exp_dir and exp_dir.exists():
+                npy_files = sorted(exp_dir.rglob("*.npy"))
+                if npy_files:
+                    seed_data_paths.extend(str(p) for p in npy_files)
+                else:
+                    seed_data_paths.append(str(exp_dir / "experiment_data.npy"))
+        if seed_data_paths:
+            plotting_prompt["Instructions"] |= {
+                "Experiment Data Path": "\n".join(seed_data_paths)
+            }
+        # LLM context (seed aggregation plotting): Introduction + Instructions (Response format + plotting guidelines + prior plotting code + data paths).
         plan, code = self.plan_and_code_query(
             plotting_prompt, code_language="python"
         )

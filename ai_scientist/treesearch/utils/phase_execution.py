@@ -140,7 +140,8 @@ def _prefix_python_env(cmd: str, *, workspace_mount: str) -> str:
         "shopt -s expand_aliases; "
         "alias python=/usr/bin/python3; "
         "alias python3=/usr/bin/python3; "
-        "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
+        "export PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
+        "export LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}; "
         f"export PYTHONPATH={workspace_mount}/.pydeps; "
         "export PYTHONNOUSERSITE=1; "
         "export PYTHONHOME=; export PYTHONUSERBASE=; export PYTHONEXECUTABLE=; "
@@ -206,7 +207,10 @@ class ExecutionEnvironment:
 
     def _build_env(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         env = dict(extra) if extra else {}
-        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        env["PATH"] = "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        cuda_lib_path = "/usr/local/cuda/lib64"
+        existing_ld = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{cuda_lib_path}:{existing_ld}" if existing_ld else cuda_lib_path
         env.setdefault("PYTHONHOME", "")
         env.setdefault("PYTHONUSERBASE", "")
         env.setdefault("PYTHONEXECUTABLE", "")
@@ -419,6 +423,36 @@ class SingularityWorkerContainer:
             except OSError:
                 pass
 
+    def _ensure_sandbox_bind_targets(self, log_files: Sequence[Path]) -> None:
+        bind_env = os.environ.get("SINGULARITY_BINDPATH", "")
+        if not bind_env:
+            return
+        for raw_spec in bind_env.split(","):
+            spec = raw_spec.strip()
+            if not spec:
+                continue
+            parts = spec.split(":")
+            if not parts:
+                continue
+            src = parts[0]
+            dest = parts[1] if len(parts) > 1 else parts[0]
+            if not dest.startswith("/"):
+                continue
+            try:
+                src_path = Path(src)
+            except OSError:
+                continue
+            if not src_path.exists() or not src_path.is_dir():
+                continue
+            target = self.sandbox_dir / dest.lstrip("/")
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._log(
+                    f"[phase1-sandbox] failed to create bind target {dest} in sandbox: {exc}\n",
+                    log_files,
+                )
+
     def _base_exec_flags(self) -> list[str]:
         flags: list[str] = []
         if self.writable_mode == "none":
@@ -432,7 +466,8 @@ class SingularityWorkerContainer:
     def _phase1_prelude(self) -> str:
         return (
             "alias python=/usr/bin/python3; alias python3=/usr/bin/python3; "
-            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
+            "export PATH=/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; "
+            "export LD_LIBRARY_PATH=/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}; "
             "export PYTHONPATH=/workspace/.pydeps; "
             "export PYTHONNOUSERSITE=1; "
             "export PYTHONHOME=; export PYTHONUSERBASE=; export PYTHONEXECUTABLE=; "
@@ -461,7 +496,10 @@ class SingularityWorkerContainer:
         pydeps_path = f"{self.workspace_mount}/.pydeps"
         env_vars["PYTHONPATH"] = pydeps_path
         env_vars.setdefault("PYTHONNOUSERSITE", "1")
-        env_vars.setdefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        env_vars.setdefault("PATH", "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        cuda_lib_path = "/usr/local/cuda/lib64"
+        existing_ld = env_vars.get("LD_LIBRARY_PATH", "")
+        env_vars["LD_LIBRARY_PATH"] = f"{cuda_lib_path}:{existing_ld}" if existing_ld else cuda_lib_path
         env_vars.setdefault("PYTHONHOME", "")
         env_vars.setdefault("PYTHONUSERBASE", "")
         env_vars.setdefault("PYTHONEXECUTABLE", "")
@@ -549,7 +587,10 @@ class SingularityWorkerContainer:
         pydeps_path = f"{self.workspace_mount}/.pydeps"
         env_vars["PYTHONPATH"] = pydeps_path
         env_vars.setdefault("PYTHONNOUSERSITE", "1")
-        env_vars.setdefault("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        env_vars.setdefault("PATH", "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        cuda_lib_path = "/usr/local/cuda/lib64"
+        existing_ld = env_vars.get("LD_LIBRARY_PATH", "")
+        env_vars["LD_LIBRARY_PATH"] = f"{cuda_lib_path}:{existing_ld}" if existing_ld else cuda_lib_path
         env_vars.setdefault("PYTHONHOME", "")
         env_vars.setdefault("PYTHONUSERBASE", "")
         env_vars.setdefault("PYTHONEXECUTABLE", "")
@@ -849,6 +890,7 @@ class SingularityWorkerContainer:
             }
             self._log("[sandbox-build] failed while creating sandbox\n", log_files)
             return False, outputs + [build_res.stderr], failure
+        self._ensure_sandbox_bind_targets(log_files)
 
         commands_to_apply: Sequence[str | Sequence[str]] = download_commands
 
@@ -1018,7 +1060,7 @@ def collect_available_compilers(env: ExecutionEnvironment) -> list[dict[str, str
     The caller is responsible for starting the environment if a container image is configured.
     """
     compilers: list[dict[str, str]] = []
-    for candidate in ("mpicc", "mpicxx", "gcc", "g++", "clang", "clang++", "cc", "c++", "icx", "icpx"):
+    for candidate in ("mpicc", "mpicxx", "gcc", "g++", "clang", "clang++", "cc", "c++", "icx", "icpx", "nvcc"):
         try:
             which_res = env.run(["bash", "-lc", f"command -v {candidate}"], cwd=env.workspace)
         except FileNotFoundError:

@@ -429,6 +429,7 @@ class AgentManager:
         """
 
         try:
+            # LLM context: sub-stage completion prompt with VLM plot feedback and current sub-stage goals.
             evaluation = query(
                 system_message=eval_prompt,
                 user_message=None,
@@ -538,6 +539,7 @@ class AgentManager:
             """
 
             try:
+                # LLM context: stage-2 completion prompt with VLM feedback, datasets tested, and completion criteria.
                 evaluation = query(
                     system_message=eval_prompt,
                     user_message=None,
@@ -680,6 +682,7 @@ class AgentManager:
 
         try:
             # Get response from LLM
+            # LLM context: main-stage goals plus progress metrics, issues, and recent changes for next sub-stage goals.
             response = query(
                 system_message=prompt,
                 user_message=None,
@@ -1086,6 +1089,7 @@ class AgentManager:
         }
 
         try:
+            # LLM context: caller-provided stage analysis prompt for next stage configuration.
             response = query(
                 system_message=prompt,
                 user_message=None,
@@ -1261,6 +1265,7 @@ class AgentManager:
         """
 
         try:
+            # LLM context: stage progression prompt with stage description, metrics, issues, and progress analysis.
             evaluation = query(
                 system_message=eval_prompt,
                 user_message=None,

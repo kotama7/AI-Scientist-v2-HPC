@@ -1,16 +1,19 @@
-AVAILABLE DATA: 
-Experiment Data: experiment_data.npy
+AVAILABLE DATA:
+- Primary: experiment_data.npy in working_dir
+- Also: experiment_data_*.npy or output*.npy (and any other .npy) in working_dir or subfolders
 REQUIREMENTS: 
 The code should start with:
   import matplotlib.pyplot as plt
   import numpy as np
   import os
+  import glob
   working_dir = os.path.join(os.getcwd(), 'working')
 Return only runnable Python code (no JSON or schemas).
 Create standard visualizations of experiment results
 Save all plots to working_dir
+If experiment_data.npy is missing, enumerate available .npy files (prefer experiment_data*.npy and output*.npy) and load each file; when multiple files exist, treat each filename stem as a dataset name in plot titles and filenames.
 Include training/validation curves if available
-ONLY plot data that exists in experiment_data.npy - DO NOT make up or simulate any values
+ONLY plot data that exists in the available .npy files - DO NOT make up or simulate any values
 Use basic matplotlib without custom styles
 Each plot should be in a separate try-except block
 Always close figures after saving

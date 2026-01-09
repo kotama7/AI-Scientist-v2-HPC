@@ -16,6 +16,7 @@ def journal2report(journal: Journal, task_desc: dict, rcfg: StageConfig):
         f"Here is the research journal of the agent: <journal>{report_input}<\\journal>, "
         f"and the research idea description is: <research_proposal>{task_desc}<\\research_proposal>."
     )
+    # LLM context: system prompt plus journal summary (with code) and research idea description.
     return query(
         system_message=system_prompt_dict,
         user_message=context_prompt,

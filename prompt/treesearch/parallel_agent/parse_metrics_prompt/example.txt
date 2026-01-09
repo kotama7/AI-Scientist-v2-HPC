@@ -1,25 +1,49 @@
 
 import os
-import matplotlib.pyplot as plt
+import glob
+from pathlib import Path
 import numpy as np
 
 cwd = os.getcwd()
 working_dir = cwd if os.path.basename(cwd) == "working" else os.path.join(cwd, "working")
-paths = [
+
+candidate_paths = [
     os.path.join(working_dir, "experiment_data.npy"),
     os.path.join(cwd, "experiment_data.npy"),
     os.path.join(cwd, "artifacts", "final", "output.npy"),
     os.path.join(working_dir, "artifacts", "final", "output.npy"),
 ]
+candidate_paths += glob.glob(os.path.join(working_dir, "experiment_data_*.npy"))
+candidate_paths += glob.glob(os.path.join(cwd, "experiment_data_*.npy"))
+candidate_paths += glob.glob(os.path.join(working_dir, "output*.npy"))
+candidate_paths += glob.glob(os.path.join(cwd, "output*.npy"))
+candidate_paths = [p for p in candidate_paths if os.path.isfile(p)]
 
-npy_path = None
-for p in paths:
-    if os.path.isfile(p):
-        npy_path = p
-        break
+if not candidate_paths and os.path.isdir(working_dir):
+    candidate_paths.extend(
+        [str(p) for p in Path(working_dir).rglob("*.npy") if p.is_file()]
+    )
 
-if npy_path is None:
-    raise FileNotFoundError("Could not find experiment_data.npy or output.npy")
+def _is_dependency_path(p: str) -> bool:
+    lowered = p.replace("\\", "/").lower()
+    return any(
+        seg in lowered
+        for seg in [
+            "/.pydeps/",
+            "/.venv/",
+            "/site-packages/",
+            "/dist-packages/",
+            "/__pycache__/",
+        ]
+    )
 
-loaded = np.load(npy_path, allow_pickle=True)
-experiment_data = loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
+candidate_paths = [p for p in candidate_paths if not _is_dependency_path(p)]
+candidate_paths = list(dict.fromkeys(candidate_paths))
+if not candidate_paths:
+    raise FileNotFoundError("Could not find any .npy files")
+
+for npy_path in candidate_paths:
+    loaded = np.load(npy_path, allow_pickle=True)
+    experiment_data = (
+        loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
+    )

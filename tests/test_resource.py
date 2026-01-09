@@ -9,6 +9,7 @@ from ai_scientist.treesearch.utils.resource import (
     LocalResource,
     GitHubResource,
     HuggingFaceResource,
+    ResourceItem,
     ResourceConfig,
     load_resources,
     build_local_binds,
@@ -104,27 +105,41 @@ class TestHuggingFaceResource(unittest.TestCase):
 
 class TestLoadResources(unittest.TestCase):
     def test_load_valid_json(self) -> None:
-        data = {
-            "local": [
-                {"name": "data", "host_path": "/tmp", "mount_path": "/workspace/input/data"}
-            ],
-            "github": [
-                {"name": "lib", "repo": "https://github.com/a/b.git", "ref": "main", "dest": "/workspace/lib"}
-            ],
-            "huggingface": [],
-        }
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(data, f)
-            f.flush()
-            path = Path(f.name)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            (tmp_path / "template.txt").write_text("hello", encoding="utf-8")
+            data = {
+                "local": [
+                    {"name": "data", "host_path": tmpdir, "mount_path": "/workspace/input/data"}
+                ],
+                "github": [
+                    {"name": "lib", "repo": "https://github.com/a/b.git", "ref": "main", "dest": "/workspace/lib"}
+                ],
+                "huggingface": [],
+                "items": [
+                    {
+                        "name": "tmpl",
+                        "class": "template",
+                        "source": "local",
+                        "resource": "data",
+                        "path": "template.txt",
+                        "include_content": True,
+                    }
+                ],
+            }
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                json.dump(data, f)
+                f.flush()
+                path = Path(f.name)
 
-        try:
-            config = load_resources(path)
-            self.assertEqual(len(config.local), 1)
-            self.assertEqual(len(config.github), 1)
-            self.assertEqual(config.local[0].name, "data")
-        finally:
-            path.unlink()
+            try:
+                config = load_resources(path)
+                self.assertEqual(len(config.local), 1)
+                self.assertEqual(len(config.github), 1)
+                self.assertEqual(len(config.items), 1)
+                self.assertEqual(config.local[0].name, "data")
+            finally:
+                path.unlink()
 
     def test_load_invalid_dest(self) -> None:
         data = {
@@ -197,11 +212,21 @@ class TestBuildResourcesContext(unittest.TestCase):
         config = ResourceConfig(
             local=[LocalResource(name="data", host_path="/host", mount_path="/workspace/data")],
             github=[GitHubResource(name="lib", repo="https://github.com/a/b.git", ref="main", dest="/workspace/lib")],
+            items=[
+                ResourceItem(
+                    name="tmpl",
+                    class_="template",
+                    source="local",
+                    resource="data",
+                    path=".",
+                )
+            ],
         )
         ctx = build_resources_context(config)
         self.assertTrue(ctx["has_resources"])
         self.assertEqual(len(ctx["local_mounts"]), 1)
         self.assertEqual(len(ctx["github_resources"]), 1)
+        self.assertEqual(len(ctx["items"]), 1)
 
 
 if __name__ == "__main__":

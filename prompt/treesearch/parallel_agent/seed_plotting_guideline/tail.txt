@@ -1,10 +1,25 @@
 
 try:
-    experiment_data_path_list = # Make sure to use the correct experiment data path that's provided in the Experiment Data Path section
+    experiment_data_path_list = []  # Fill from the Experiment Data Path section if provided
+    if not experiment_data_path_list:
+        experiment_data_path_list = []
+        experiment_data_path_list += glob.glob(os.path.join(working_dir, 'experiment_data*.npy'))
+        experiment_data_path_list += glob.glob(os.path.join(working_dir, 'output*.npy'))
+        if not experiment_data_path_list:
+            experiment_data_path_list = glob.glob(os.path.join(working_dir, '**', '*.npy'), recursive=True)
+
     all_experiment_data = []
     for experiment_data_path in experiment_data_path_list:
-        experiment_data = np.load(os.path.join(os.getenv("AI_SCIENTIST_ROOT"), experiment_data_path), allow_pickle=True).item()
-        all_experiment_data.append(experiment_data)
+        full_path = experiment_data_path
+        if not os.path.isabs(full_path):
+            root = os.getenv("AI_SCIENTIST_ROOT")
+            if root:
+                full_path = os.path.join(root, experiment_data_path)
+            if not os.path.isfile(full_path):
+                full_path = os.path.join(os.getcwd(), experiment_data_path)
+        loaded = np.load(full_path, allow_pickle=True)
+        experiment_data = loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
+        all_experiment_data.append((experiment_data_path, experiment_data))
 except Exception as e:
     print(f'Error loading experiment data: {e}')
 

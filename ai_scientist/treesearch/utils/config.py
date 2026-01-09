@@ -14,6 +14,7 @@ import logging
 
 from . import tree_export
 from . import copytree, preproc_data, serialize
+from .resource import load_resources, resolve_resources_path, stage_resource_items
 from ai_scientist.persona import set_persona_role
 
 shutup.mute_warnings()
@@ -94,6 +95,7 @@ class ExecConfig:
     writable_mode: str = "auto"
     phase1_max_steps: int = 12
     resources: str | None = None
+    log_prompts: bool = True
 
 
 @dataclass
@@ -234,6 +236,53 @@ def prep_agent_workspace(cfg: Config):
     (cfg.workspace_dir / "input").mkdir(parents=True, exist_ok=True)
     (cfg.workspace_dir / "working").mkdir(parents=True, exist_ok=True)
 
+    resources_cfg = None
+    resources_path = getattr(cfg.exec, "resources", None)
+    if resources_path:
+        try:
+            resources_cfg = load_resources(resolve_resources_path(resources_path))
+        except Exception as exc:
+            logger.warning("Failed to load resources from %s: %s", resources_path, exc)
+
+    if getattr(cfg, "copy_data", False) and resources_cfg:
+        data_dir = Path(cfg.data_dir)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        if not any(data_dir.iterdir()):
+            try:
+                local_resources = resources_cfg.local
+                if len(local_resources) == 1:
+                    copytree(
+                        Path(local_resources[0].host_path),
+                        data_dir,
+                        use_symlinks=False,
+                    )
+                elif local_resources:
+                    for res in local_resources:
+                        dest_name = res.name or Path(res.host_path).name or "resource"
+                        dest_dir = data_dir / dest_name
+                        dest_dir.mkdir(parents=True, exist_ok=False)
+                        copytree(Path(res.host_path), dest_dir, use_symlinks=False)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to copy local resources into data_dir (%s): %s",
+                    cfg.data_dir,
+                    exc,
+                )
+        else:
+            logger.warning("Data dir %s is not empty; skipping resource copy", data_dir)
+
+    if resources_cfg:
+        try:
+            staged = stage_resource_items(
+                resources_cfg,
+                cfg.workspace_dir / "resources",
+                classes=("template", "setup", "document"),
+            )
+            if staged:
+                logger.info("Staged %d resource item(s) into workspace", len(staged))
+        except Exception as exc:
+            logger.warning("Failed to stage resource items into workspace: %s", exc)
+
     copytree(cfg.data_dir, cfg.workspace_dir / "input", use_symlinks=not cfg.copy_data)
     if cfg.preprocess_data:
         preproc_data(cfg.workspace_dir / "input")
@@ -268,6 +317,8 @@ def save_run(cfg: Config, journal, stage_name: str = None):
         best_node = journal.get_best_node(only_good=False, cfg=cfg)
         if best_node is not None:
             suffix = Path(cfg.exec.agent_file_name).suffix or ".py"
+            if getattr(cfg.exec, "phase_mode", "single") == "split":
+                suffix = ".txt"
             for existing_file in save_dir.glob(f"best_solution_*.{suffix.lstrip('.')}"):
                 existing_file.unlink()
             # Create new best solution file
