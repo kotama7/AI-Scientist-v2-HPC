@@ -28,6 +28,9 @@ STAGE_AGGREGATE_PROMPT_TEMPLATE = load_prompt(
 OVERALL_PLAN_SUMMARIZER_TEMPLATE = load_prompt(
     "treesearch/log_summarization/overall_plan_summarizer_prompt"
 )
+EXPERT_SYSTEM_PROMPT = load_prompt(
+    "treesearch/log_summarization/expert_system_prompt"
+).strip()
 
 
 def _read_text(path):
@@ -331,7 +334,7 @@ def update_summary(
     )
     try:
         response = get_response_from_llm(
-            prompt, client, model, "You are an expert machine learning researcher."
+            prompt, client, model, EXPERT_SYSTEM_PROMPT
         )
         summary_json = extract_json_between_markers(response[0])
         assert summary_json

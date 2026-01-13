@@ -8,7 +8,7 @@ JSON:
 <JSON>
 ```
 
-In <THOUGHT>, thoroughly reason as an expert researcher. First, reason about each node, and then reason carefully by combining all the information. It is okay to be very detailed.
+In <THOUGHT>, thoroughly reason as an expert {persona}. First, reason about each node, and then reason carefully by combining all the information. It is okay to be very detailed.
 
 In <JSON>, provide the review in JSON format with the following fields in exactly this order:
 - "Experiment_description": a string describing the conducted experiments
@@ -24,4 +24,3 @@ In <JSON>, provide the review in JSON format with the following fields in exactl
   • "analysis" (your analysis of its scientific insights)
 
 Ensure the JSON is valid and properly formatted, as it will be automatically parsed.
-

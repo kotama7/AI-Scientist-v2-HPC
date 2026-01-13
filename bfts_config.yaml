@@ -17,10 +17,26 @@ exp_name: run # a random experiment name will be generated if not provided
 # settings for code execution
 exec:
   singularity_image: /home/users/takanori.kotama/workplace/docker/ai-scientist-worker-nv.sif
+  use_gpu: true
   timeout: 3600
   agent_file_name: runfile.py
   format_tb_ipython: False
   language: cpp
+
+memory:
+  enabled: true
+  db_path: null
+  core_max_chars: 10000
+  recall_max_events: 20
+  retrieval_k: 8
+  use_fts: auto
+  persist_phase0_internal: true
+  always_inject_phase0_summary: true
+  persist_idea_md: true
+  always_inject_idea_summary: true
+  final_memory_enabled: true
+  final_memory_filename_md: final_memory_for_paper.md
+  final_memory_filename_json: final_memory_for_paper.json
 
 generate_report: True
 # LLM settings for final report from journal
@@ -40,10 +56,10 @@ agent:
   type: parallel
   num_workers: 4
   stages:
-    stage1_max_iters: 40
-    stage2_max_iters: 24
-    stage3_max_iters: 24
-    stage4_max_iters: 36
+    stage1_max_iters: 20
+    stage2_max_iters: 12
+    stage3_max_iters: 12
+    stage4_max_iters: 18
   # how many improvement iterations to run
   steps: 5 # if stage-specific max_iters are not provided, the agent will use this value for all stages
   # whether to instruct the agent to use CV (set to 1 to disable)
@@ -54,8 +70,8 @@ agent:
   expose_prediction: False
   # whether to provide the agent with a preview of the data
   data_preview: False
-  # persona that is injected into prompts (replace occurrences of "AI researcher")
-  role_description: "Domain-neutral research engineer"
+  # persona that is injected into prompts (replaces {persona} tokens and legacy "AI researcher")
+  role_description: "HPC Researcher"
 
   # LLM settings for coding
   code:

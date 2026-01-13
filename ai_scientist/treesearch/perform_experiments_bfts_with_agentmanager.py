@@ -3,6 +3,8 @@ import logging
 import shutil
 import json
 import pickle
+import os
+import uuid
 from . import backend
 from .journal import Journal, Node
 from .journal2report import journal2report
@@ -23,6 +25,11 @@ from rich.status import Status
 from rich.tree import Tree
 from .utils.config import load_task_desc, prep_agent_workspace, save_run, load_cfg
 from .agent_manager import AgentManager
+from ai_scientist.memory import MemoryManager
+from ai_scientist.memory.resource_memory import (
+    build_resource_snapshot,
+    update_resource_snapshot_if_changed,
+)
 from pathlib import Path
 from .agent_manager import Stage
 from .log_summarization import overall_summarize
@@ -70,6 +77,53 @@ def perform_experiments_bfts(config_path: str):
     with Status("Preparing agent workspace (copying and extracting files) ..."):
         prep_agent_workspace(cfg)
 
+    memory_cfg = getattr(cfg, "memory", None)
+    memory_manager = None
+    root_branch_id = None
+    if memory_cfg and getattr(memory_cfg, "enabled", False):
+        run_dir = Path(cfg.workspace_dir)
+        memory_dir = run_dir / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        if not getattr(memory_cfg, "run_id", None):
+            memory_cfg.run_id = run_dir.name
+        memory_cfg.workspace_root = str(run_dir)
+        memory_cfg.ai_scientist_root = os.environ.get("AI_SCIENTIST_ROOT")
+        memory_cfg.phase_mode = getattr(cfg.exec, "phase_mode", "single")
+        memory_cfg.memory_log_dir = str(Path(cfg.log_dir) / "memory")
+        db_path = (
+            Path(memory_cfg.db_path)
+            if getattr(memory_cfg, "db_path", None)
+            else memory_dir / "memory.sqlite"
+        )
+        memory_cfg.db_path = str(db_path)
+        memory_manager = MemoryManager(db_path, memory_cfg)
+        root_branch_id = getattr(memory_cfg, "root_branch_id", None)
+        if not root_branch_id:
+            root_branch_id = uuid.uuid4().hex
+            memory_manager.mem_node_fork(None, root_branch_id)
+            memory_manager.update_branch_node_uid(root_branch_id, "root")
+            memory_manager.set_root_branch_id(root_branch_id)
+            memory_cfg.root_branch_id = root_branch_id
+        else:
+            memory_manager.set_root_branch_id(root_branch_id)
+        if getattr(memory_cfg, "persist_idea_md", True) and cfg.desc_file:
+            memory_manager.ingest_idea_md(
+                root_branch_id, node_uid="root", idea_path=cfg.desc_file, is_root=True
+            )
+        resources_path = getattr(cfg.exec, "resources", None)
+        if resources_path:
+            try:
+                snapshot = build_resource_snapshot(
+                    resources_path,
+                    workspace_root=Path(cfg.workspace_dir),
+                    ai_scientist_root=os.environ.get("AI_SCIENTIST_ROOT"),
+                    phase_mode=getattr(cfg.exec, "phase_mode", "single"),
+                    log=logger,
+                )
+                update_resource_snapshot_if_changed(snapshot, memory_manager)
+            except Exception as exc:
+                logger.warning("Failed to persist resource snapshot: %s", exc)
+
     def cleanup():
         if global_step == 0:
             shutil.rmtree(cfg.workspace_dir)
@@ -80,6 +134,8 @@ def perform_experiments_bfts(config_path: str):
         task_desc=task_desc,
         cfg=cfg,
         workspace_dir=Path(cfg.workspace_dir),
+        memory_manager=memory_manager,
+        root_branch_id=root_branch_id,
     )
 
     prog = Progress(
@@ -117,19 +173,30 @@ def perform_experiments_bfts(config_path: str):
                     ) as f:
                         json.dump(summary, f, indent=2)
 
+            memory_context = ""
+            if memory_manager:
+                branch_id = getattr(latest_node, "branch_id", None) if journal.nodes else root_branch_id
+                if branch_id:
+                    budget = getattr(getattr(cfg, "memory", None), "memory_budget_chars", 4000)
+                    memory_context = memory_manager.render_for_prompt(
+                        branch_id, task_hint=f"stage_{stage.name}_summary", budget_chars=budget
+                    )
 
             if cfg.agent.get("summary", None) is not None:
                 current_findings = journal.generate_summary(
-                    include_code=False, 
+                    include_code=False,
+                    memory_context=memory_context,
                     **{
-                        "model": cfg.agent.summary.model, 
-                        "temp": cfg.agent.summary.temp
-                    }
+                        "model": cfg.agent.summary.model,
+                        "temp": cfg.agent.summary.temp,
+                    },
                 )
             else:
-                current_findings = journal.generate_summary(include_code=False)
+                current_findings = journal.generate_summary(
+                    include_code=False, memory_context=memory_context
+                )
 
-            best_metric = journal.get_best_node(cfg=cfg)
+            best_metric = journal.get_best_node(cfg=cfg, memory_context=memory_context)
 
             # Generate and save stage progress summary
             stage_summary = {
@@ -208,7 +275,35 @@ def perform_experiments_bfts(config_path: str):
         screen=True,
     )
 
-    manager.run(exec_callback=create_exec_callback(status), step_callback=step_callback)
+    try:
+        manager.run(exec_callback=create_exec_callback(status), step_callback=step_callback)
+    finally:
+        if memory_manager and getattr(memory_cfg, "final_memory_enabled", True):
+            best_node = None
+            for journal in manager.journals.values():
+                for node in journal.nodes:
+                    if node.is_buggy:
+                        continue
+                    if node.metric is None:
+                        continue
+                    if best_node is None or node.metric > best_node.metric:
+                        best_node = node
+            artifacts_index = {
+                "log_dir": str(cfg.log_dir),
+                "workspace_dir": str(cfg.workspace_dir),
+                "best_node_id": getattr(best_node, "id", None),
+            }
+            try:
+                memory_manager.generate_final_memory_for_paper(
+                    run_dir=Path(cfg.workspace_dir),
+                    root_branch_id=root_branch_id or "",
+                    best_branch_id=getattr(best_node, "branch_id", None),
+                    artifacts_index=artifacts_index,
+                )
+            except Exception as exc:
+                logger.warning("Failed to generate final memory: %s", exc)
+        if memory_manager:
+            memory_manager.close()
 
     manager_pickle_path = cfg.log_dir / "manager.pkl"
     try:
@@ -219,7 +314,7 @@ def perform_experiments_bfts(config_path: str):
         logger.warning(f"Failed to save full manager state: {e}")
         try:
             with open(manager_pickle_path, "wb") as f:
-                pickle.dump(manager.journals.items(), f)
+                pickle.dump(list(manager.journals.items()), f)
             logger.info(f"Saved manager journals to: {manager_pickle_path}")
         except Exception as e:
             logger.error(f"Failed to save manager journals: {e}")

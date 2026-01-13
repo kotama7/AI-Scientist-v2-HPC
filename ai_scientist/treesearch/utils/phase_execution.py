@@ -168,6 +168,7 @@ class ExecutionEnvironment:
         runtime_preference: str | None = None,
         workspace_mount: str = "/workspace",
         gpu_id: int | None = None,
+        enable_gpu: bool = True,
         instance_name: str | None = None,
         enable_writable_tmpfs: bool = True,
         overlay_path: str | None = None,
@@ -178,7 +179,8 @@ class ExecutionEnvironment:
             image = None
         self.image = Path(image).resolve() if image else None
         self.workspace_mount = workspace_mount
-        self.gpu_id = gpu_id
+        self.enable_gpu = bool(enable_gpu)
+        self.gpu_id = gpu_id if self.enable_gpu else None
         self.runtime = detect_container_runtime(runtime_preference) if image else None
         self.instance_name: str | None = instance_name
         self._stopped = False
@@ -192,6 +194,8 @@ class ExecutionEnvironment:
         self.enable_writable_tmpfs = enable_writable_tmpfs
         self.overlay_path = Path(overlay_path).resolve() if overlay_path else None
         self.extra_start_args = list(extra_start_args) if extra_start_args else []
+        if not self.enable_gpu and self.extra_start_args:
+            self.extra_start_args = [arg for arg in self.extra_start_args if arg != "--nv"]
 
     def __enter__(self):
         self.start()
@@ -220,8 +224,11 @@ class ExecutionEnvironment:
         pydeps_path = f"{self.workspace_mount}/.pydeps"
         env["PYTHONPATH"] = pydeps_path
         env.setdefault("PYTHONNOUSERSITE", "1")
-        if self.gpu_id is not None:
-            env.setdefault("CUDA_VISIBLE_DEVICES", str(self.gpu_id))
+        if self.enable_gpu:
+            if self.gpu_id is not None:
+                env.setdefault("CUDA_VISIBLE_DEVICES", str(self.gpu_id))
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = ""
         return env
 
     def start(self) -> None:
@@ -249,7 +256,10 @@ class ExecutionEnvironment:
         for key, value in env_vars.items():
             env_args.extend(["--env", f"{key}={value}"])
 
-        cmd = [self.runtime, "instance", "start", "--nv", *self.extra_start_args]
+        cmd = [self.runtime, "instance", "start"]
+        if self.enable_gpu:
+            cmd.append("--nv")
+        cmd.extend(self.extra_start_args)
         if self.enable_writable_tmpfs:
             cmd.append("--writable-tmpfs")
         if self.overlay_path:
@@ -321,7 +331,7 @@ class ExecutionEnvironment:
             cmd=cmd_to_run,
             env=env_vars,
             binds=[bind_arg],
-            use_nv=True,
+            use_nv=self.enable_gpu,
             pwd=container_cwd,
             runtime=self.runtime,
         )
@@ -354,6 +364,7 @@ class SingularityWorkerContainer:
         enable_writable_tmpfs: bool = True,
         overlay_path: Path | str | None = None,
         resource_binds: Sequence[str] | None = None,
+        enable_gpu: bool = True,
     ) -> None:
         self.runtime = detect_container_runtime("singularity")
         if isinstance(base_image, str) and not base_image.strip():
@@ -376,6 +387,7 @@ class SingularityWorkerContainer:
         self.enable_writable_tmpfs = enable_writable_tmpfs
         self.overlay_path = Path(overlay_path).resolve() if overlay_path else None
         self.resource_binds = list(resource_binds) if resource_binds else []
+        self.enable_gpu = bool(enable_gpu)
 
     def _log(self, message: str, extra_logs: Sequence[Path] | None = None) -> None:
         logs = [self.build_log]
@@ -506,6 +518,10 @@ class SingularityWorkerContainer:
         env_vars.setdefault("CONDA_PREFIX", "")
         env_vars.setdefault("CONDA_PYTHON_EXE", "")
         env_vars.setdefault("VIRTUAL_ENV", "")
+        if not self.enable_gpu:
+            env_vars["CUDA_VISIBLE_DEVICES"] = ""
+        if not self.enable_gpu:
+            env_vars["CUDA_VISIBLE_DEVICES"] = ""
 
         common_flags: list[str] = []
         if self.use_fakeroot:
@@ -538,7 +554,7 @@ class SingularityWorkerContainer:
                 cmd=shell_cmd,
                 env=env_vars,
                 binds=all_binds,
-                use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+                use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")) and self.enable_gpu,
                 pwd=self.workspace_mount,
                 extra_args=common_flags,
                 runtime=self.runtime,
@@ -621,7 +637,7 @@ class SingularityWorkerContainer:
             cmd=_prefix_python_env(prelude_cmd, workspace_mount=self.workspace_mount),
             env=env_vars,
             binds=all_binds,
-            use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+            use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")) and self.enable_gpu,
             pwd=self.workspace_mount,
             extra_args=common_flags,
             runtime=self.runtime,
@@ -656,7 +672,7 @@ class SingularityWorkerContainer:
                         cmd=_prefix_python_env(check_cmd, workspace_mount=self.workspace_mount),
                         env=env_vars,
                         binds=all_binds,
-                        use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+                        use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")) and self.enable_gpu,
                         pwd=self.workspace_mount,
                         extra_args=common_flags,
                         runtime=self.runtime,
@@ -757,7 +773,7 @@ class SingularityWorkerContainer:
                 cmd=_prefix_python_env(command, workspace_mount=self.workspace_mount),
                 env=env_vars,
                 binds=all_binds,
-                use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+                use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")) and self.enable_gpu,
                 pwd=self.workspace_mount,
                 extra_args=common_flags,
                 runtime=self.runtime,
@@ -771,7 +787,7 @@ class SingularityWorkerContainer:
                     cmd=_prefix_python_env(command, workspace_mount=self.workspace_mount),
                     env=env_vars,
                     binds=all_binds,
-                    use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")),
+                    use_nv=bool(env_vars.get("CUDA_VISIBLE_DEVICES")) and self.enable_gpu,
                     pwd=self.workspace_mount,
                     extra_args=fallback_flags,
                     runtime=self.runtime,
@@ -1029,7 +1045,8 @@ class SingularityWorkerContainer:
             image=self.worker_sif,
             runtime_preference="singularity",
             workspace_mount=self.workspace_mount,
-            gpu_id=gpu_id,
+            gpu_id=gpu_id if self.enable_gpu else None,
+            enable_gpu=self.enable_gpu,
             instance_name=self.worker_sif.stem,
             enable_writable_tmpfs=enable_writable_tmpfs,
             overlay_path=str(overlay_path) if overlay_path else None,

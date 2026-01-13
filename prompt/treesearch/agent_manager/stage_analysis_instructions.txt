@@ -1,0 +1,12 @@
+Based on the above comprehensive analysis, determine the appropriate configuration for the next experimental stage. Consider:
+1. Visual analysis insights from plots
+2. Individual node performance and patterns
+3. Overall progress and convergence status
+4. Identified issues and challenges
+
+Include:
+1. Stage name (brief, descriptive)
+2. Detailed description of the stage's purpose
+3. Specific, measurable goals
+4. Maximum iterations needed
+5. Success metric threshold (if applicable)

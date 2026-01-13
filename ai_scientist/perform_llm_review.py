@@ -21,6 +21,10 @@ meta_reviewer_system_prompt = load_prompt("review/meta_reviewer_system_prompt")
 ENSEMBLE_AGGREGATION_THOUGHT_TEMPLATE = load_prompt(
     "review/ensemble_aggregation_thought"
 ).strip()
+REVIEW_PAPER_PROMPT_TEMPLATE = load_prompt("review/paper_review_prompt")
+FEWSHOT_INTRO_TEMPLATE = load_prompt("review/fewshot_intro")
+FEWSHOT_EXAMPLE_TEMPLATE = load_prompt("review/fewshot_example")
+META_REVIEW_ENTRY_TEMPLATE = load_prompt("review/meta_review_entry")
 
 reviewer_system_prompt_base = REVIEW_BASE_PROMPT
 reviewer_system_prompt_neg = f"{reviewer_system_prompt_base} {REVIEW_NEG_SUFFIX}"
@@ -46,11 +50,7 @@ def perform_review(
     else:
         base_prompt = review_instruction_form
 
-    base_prompt += f"""
-Here is the paper you are asked to review:
-```
-{text}
-```"""
+    base_prompt += REVIEW_PAPER_PROMPT_TEMPLATE.format(paper_text=text)
 
     if num_reviews_ensemble > 1:
         llm_reviews, msg_histories = get_batch_responses_from_llm(
@@ -191,10 +191,7 @@ fewshot_reviews = [
 
 
 def get_review_fewshot_examples(num_fs_examples=1):
-    fewshot_prompt = """
-Below are some sample reviews, copied from previous machine learning conferences.
-Note that while each review is formatted differently according to each reviewer's style, the reviews are well-structured and therefore easy to navigate.
-"""
+    fewshot_prompt = FEWSHOT_INTRO_TEMPLATE
     for paper_path, review_path in zip(
         fewshot_papers[:num_fs_examples], fewshot_reviews[:num_fs_examples]
     ):
@@ -205,31 +202,21 @@ Note that while each review is formatted differently according to each reviewer'
         else:
             paper_text = load_paper(paper_path)
         review_text = load_review(review_path)
-        fewshot_prompt += f"""
-Paper:
-
-```
-{paper_text}
-```
-
-Review:
-
-```
-{review_text}
-```
-"""
+        fewshot_prompt += FEWSHOT_EXAMPLE_TEMPLATE.format(
+            paper_text=paper_text,
+            review_text=review_text,
+        )
     return fewshot_prompt
 
 
 def get_meta_review(model, client, temperature, reviews):
     review_text = ""
     for i, r in enumerate(reviews):
-        review_text += f"""
-Review {i + 1}/{len(reviews)}:
-```
-{json.dumps(r)}
-```
-"""
+        review_text += META_REVIEW_ENTRY_TEMPLATE.format(
+            index=i + 1,
+            total=len(reviews),
+            review_json=json.dumps(r),
+        )
     base_prompt = neurips_form + review_text
     llm_review, _ = get_response_from_llm(
         base_prompt,

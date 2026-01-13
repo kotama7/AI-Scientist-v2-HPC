@@ -19,7 +19,7 @@ JSON:
 <JSON>
 ```
 
-In <THOUGHT>, thoroughly reason as an expert researcher. First, reason over each node, and then carefully combine all information. It is okay to be very detailed.
+In <THOUGHT>, thoroughly reason as an expert {persona}. First, reason over each node, and then carefully combine all information. It is okay to be very detailed.
 
 In <JSON>, provide the review in JSON format with the following field in exactly this order:
 - "overall_plan": a string that describes the overall plan based on the current and previous overall plans

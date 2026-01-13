@@ -69,6 +69,7 @@ class Node(DataClassJsonMixin):
     step: int = field(default=None, kw_only=True)  # type: ignore
     id: str = field(default_factory=lambda: uuid.uuid4().hex, kw_only=True)
     ctime: float = field(default_factory=lambda: time.time(), kw_only=True)
+    branch_id: str | None = field(default=None, kw_only=True)
     parent: Optional["Node"] = field(default=None, kw_only=True)
     children: set["Node"] = field(default_factory=set, kw_only=True)
     exp_results_dir: str = field(default=None, kw_only=True)  # type: ignore
@@ -239,6 +240,7 @@ class Node(DataClassJsonMixin):
             "step": self.step,
             "id": self.id,
             "ctime": self.ctime,
+            "branch_id": self.branch_id,
             "_term_out": self._term_out,
             "parse_metrics_plan": self.parse_metrics_plan,
             "parse_metrics_code": self.parse_metrics_code,
@@ -432,7 +434,13 @@ class Journal:
         """Return a list of all metric values in the journal."""
         return [n.metric for n in self.nodes]
 
-    def get_best_node(self, only_good=True, use_val_metric_only=False, cfg=None) -> None | Node:
+    def get_best_node(
+        self,
+        only_good: bool = True,
+        use_val_metric_only: bool = False,
+        cfg=None,
+        memory_context: str | None = None,
+    ) -> None | Node:
         """Return the best solution found so far."""
         if only_good:
             nodes = self.good_nodes
@@ -453,6 +461,8 @@ class Journal:
             "Task": BEST_NODE_TASK,
             "Candidates": "",
         }
+        if memory_context:
+            prompt["Memory"] = memory_context
         # Gather info about each node
         for node in nodes:
             if not node.is_seed_node:
@@ -507,7 +517,9 @@ class Journal:
             logger.warning("Falling back to metric-based selection")
             return max(nodes, key=lambda n: n.metric)
 
-    def generate_summary(self, include_code: bool = False, **model_kwargs) -> str:
+    def generate_summary(
+        self, include_code: bool = False, memory_context: str | None = None, **model_kwargs
+    ) -> str:
         """Generate a summary of the research progress using LLM, including both successes and failures."""
         if not self.nodes:
             return "No experiments conducted yet."
@@ -517,6 +529,8 @@ class Journal:
             "Successful Experiments": "",
             "Failed Experiments": "",
         }
+        if memory_context:
+            prompt["Memory"] = memory_context
 
         for node in self.good_nodes:
             exp_info = f"Design: {node.plan}\n  "

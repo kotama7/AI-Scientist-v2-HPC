@@ -58,6 +58,7 @@ def edit_bfts_config_file(
     env_packages_template: str | None = None,
     phase_mode: str | None = None,
     singularity_image: str | None = None,
+    use_gpu: bool | None = None,
     num_workers: int | None = None,
     writable_tmpfs: bool | None = None,
     container_overlay: str | None = None,
@@ -68,6 +69,11 @@ def edit_bfts_config_file(
     writable_mode: str | None = None,
     phase1_max_steps: int | None = None,
     resources_path: str | None = None,
+    memory_enabled: bool | None = None,
+    memory_db_path: str | None = None,
+    memory_core_max_chars: int | None = None,
+    memory_recall_max_events: int | None = None,
+    memory_retrieval_k: int | None = None,
 ) -> str:
     """
     Edit the bfts_config.yaml file to point to the idea.md file
@@ -108,6 +114,8 @@ def edit_bfts_config_file(
         exec_cfg["phase_mode"] = phase_mode
     if singularity_image is not None:
         exec_cfg["singularity_image"] = singularity_image
+    if use_gpu is not None:
+        exec_cfg["use_gpu"] = bool(use_gpu)
     if writable_tmpfs is not None:
         exec_cfg["writable_tmpfs"] = bool(writable_tmpfs)
     if container_overlay is not None:
@@ -129,6 +137,18 @@ def edit_bfts_config_file(
     if num_workers is not None:
         config.setdefault("agent", {})
         config["agent"]["num_workers"] = int(num_workers)
+
+    mem_cfg = config.setdefault("memory", {})
+    if memory_enabled is not None:
+        mem_cfg["enabled"] = bool(memory_enabled)
+    if memory_db_path is not None:
+        mem_cfg["db_path"] = memory_db_path
+    if memory_core_max_chars is not None:
+        mem_cfg["core_max_chars"] = int(memory_core_max_chars)
+    if memory_recall_max_events is not None:
+        mem_cfg["recall_max_events"] = int(memory_recall_max_events)
+    if memory_retrieval_k is not None:
+        mem_cfg["retrieval_k"] = int(memory_retrieval_k)
 
     with open(run_config_path, "w") as f:
         yaml.dump(config, f)

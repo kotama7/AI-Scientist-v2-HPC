@@ -1,21 +1,24 @@
-The code should be a single-file python program that is self-contained and can be executed as-is.
-No parts of the code should be skipped, don't terminate the code execution before finishing the script.
+The code should be in the same language as the base implementation, and it must be self-contained and runnable as-is.
+In split-phase, multiple files are allowed; keep the file set minimal and organized.
+No parts of the code should be skipped; do not terminate execution before finishing the script.
 Data saving requirements:
-- Save all plottable data (metrics, losses, predictions, etc.) as numpy arrays using np.save()
-- Use the following naming convention for saved files:
+- Save all plottable data (metrics, measurements, outputs, etc.) in numpy-compatible .npy format to working/experiment_data.npy.
+- For Python, use np.save(); for non-Python, use cnpy or a compatible .npy writer.
+- Use the following naming convention for saved data:
   ```python
   # At the start of your code
   experiment_data = {
-      'hyperparam_tuning_type_1': {
-          'dataset_name_1': {
-              'metrics': {'train': [], 'val': []},
-              'losses': {'train': [], 'val': []},
-              'predictions': [],
-              'ground_truth': [],
-              # Add other relevant data
+      "hyperparam_tuning_type_1": {
+          "case_name_1": {
+              "metrics": {"primary": [], "secondary": []},
+              "measurements": {"series": []},
+              "outputs": [],
+              "targets": [],
+              # Add other relevant arrays
           },
-          # Add additional datasets as needed:
+          # Add additional datasets/cases as needed:
       },
       # Add additional hyperparam tuning types as needed
   }
+  ```
 Make sure to use a filename 'experiment_data.npy' to save the data. Do not use any other filename.

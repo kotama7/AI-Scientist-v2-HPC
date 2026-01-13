@@ -1,325 +1,86 @@
 <div align="center">
-  <a href="https://github.com/SakanaAI/AI-Scientist_v2/blob/main/docs/logo_v1.jpg">
-    <img src="docs/logo_v1.png" width="215" alt="AI Scientist v2 Logo" />
-  </a>
   <h1>
-    <b>The AI Scientist-v2 (HPC Fork)</b><br>
-    <b>Split-Phase Execution with Singularity</b>
+    <b>Title Undecided</b><br>
   </h1>
 </div>
 
-<p align="center">
-  📚 <a href="https://pub.sakana.ai/ai-scientist-v2/paper">[Paper]</a> |
-  📝 <a href="https://sakana.ai/ai-scientist-first-publication/"> [Blog Post]</a> |
-  📂 <a href="https://github.com/SakanaAI/AI-Scientist-ICLR2025-Workshop-Experiment"> [ICLR2025 Workshop Experiment]</a>
-</p>
-
 This fork targets HPC environments with a Singularity-based, split-phase execution path. It orchestrates: idea loading/generation → BFTS tree search experiments → plot aggregation → LaTeX writeup → optional PDF review.
 
-## Table of Contents
+## At a glance
 
-1. [Requirements](#requirements)
-2. [Installation](#installation)
-3. [Credentials](#credentials)
-4. [CLI Entry Points](#cli-entry-points)
-5. [Quickstart](#quickstart)
-6. [Configuration](#configuration)
-7. [Execution Modes](#execution-modes)
-8. [Resource Files](#resource-files)
-9. [Outputs](#outputs)
-10. [Testing](#testing)
-11. [Troubleshooting](#troubleshooting)
-12. [Citing The AI Scientist-v2](#citing-the-ai-scientist-v2)
+- Split-phase execution with explicit install/coding/compile/run steps inside Singularity.
+- Per-run isolation: every experiment gets its own config, logs, workspace, and artifacts.
+- Tree-search agent manager with parallel workers (GPU-aware, CPU fallback).
+- Optional MemGPT-style memory across branches for longer context.
+- Resource files to mount datasets and inject templates/docs into prompts.
 
-## Requirements
+## Repository layout
 
-- Linux host (the launcher uses `psutil` for cleanup).
-- Python 3.10+ for the control plane.
-- Singularity CLI (the code invokes `singularity`; Apptainer must be aliased or symlinked).
-- Torch on the host (imported by the launcher for GPU detection).
-- GPU + CUDA recommended (default config uses GPU workers and maps workers to GPU IDs).
-- LaTeX toolchain for writeups: `pdflatex`, `bibtex`, `chktex`.
-- `pdftotext` (from poppler) for PDF checks and reviews.
+- `launch_scientist_bfts.py`: main launcher (ideas -> experiments -> plots/writeup/review).
+- `generate_paper.py`: plots/writeup/review for an existing run directory.
+- `ai_scientist/`: core agent logic, tree search, prompts, and memory.
+- `prompt/`: split-phase and stage prompts, response schemas, and writeup templates.
+- `template/`: base Singularity image instructions (`template/README.md`).
+- `docs/`: expanded guides for requirements, configuration, resources, outputs, and troubleshooting.
+- `experiments/`: run outputs (generated at runtime).
 
-## Installation
+## Typical workflows
 
-```bash
-conda create -n ai_scientist python=3.11
-conda activate ai_scientist
+1) **Run end-to-end**: generate ideas (optional) -> run `launch_scientist_bfts.py` -> review `experiments/<run>/`.
+2) **Reuse a run**: skip the experiment and run `generate_paper.py` for plots/writeups.
+3) **Iterate locally**: use `--phase_mode single` for quick iteration without Singularity.
 
-# Host-side requirements (control plane)
-pip install -r requirements.txt
-pip install psutil
+## Where to start
 
-# Torch is imported by the launcher for GPU detection
-# (use a CUDA-enabled build for GPU clusters; adjust for your CUDA version)
-conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
-```
+- If you are new: start with `docs/requirements.md`, `docs/installation.md`, and `docs/quickstart.md`.
+- If you are operating on HPC: read `docs/execution-modes.md`, `docs/configuration.md`, and `docs/outputs.md`.
+- If you are extending prompts/resources: read `docs/llm-context.md` and `docs/resource-files.md`.
 
-Optional (only if you use YAML resource files):
+## Documentation
 
-```bash
-pip install pyyaml
-```
+Detailed guides live in `docs/`. Start with
+[docs/README.md](docs/README.md) for the full index.
 
-### Singularity Image
-
-The split-phase path requires a base SIF image. The default config points to
-`exec.singularity_image` in `bfts_config.yaml` (override with `--singularity_image`).
-See `template/README.md` for a minimal way to pull a base image into `template/base.sif`.
-
-The image should include:
-- Python 3.10+
-- CUDA toolkit
-- Build tools (gcc, make, cmake)
-- Git
-- Any extra libs you want available during Phase 1 installs
-
-If you plan to use Hugging Face resources, ensure `huggingface_hub` is installed inside the worker image.
-
-## Credentials
-
-Set only the variables needed for the models you use:
-
-```bash
-export OPENAI_API_KEY="..."
-export ANTHROPIC_API_KEY="..."        # Claude models
-export GEMINI_API_KEY="..."           # Gemini models (OpenAI-compatible endpoint)
-export OPENROUTER_API_KEY="..."       # Llama 3.1 via OpenRouter
-export DEEPSEEK_API_KEY="..."         # deepseek-coder-v2-0724
-export HUGGINGFACE_API_KEY="..."      # deepcoder-14b via Hugging Face API
-export OLLAMA_API_KEY="..."           # Optional; local Ollama endpoint
-export S2_API_KEY="..."               # Optional; Semantic Scholar
-```
-
-## CLI Entry Points
-
-- `launch_scientist_bfts.py`: end-to-end pipeline. Loads a single idea from a JSON list, writes `idea.md`/`idea.json`, copies `bfts_config.yaml` into the run folder, launches the BFTS experiment, then optionally aggregates plots, writes a paper, and runs the review pass.
-- `generate_paper.py`: plots + writeup + review for an existing experiment directory.
-- `ai_scientist/perform_ideation_temp_free.py`: generate idea JSON from a workshop description Markdown file (with optional Semantic Scholar search).
-- `ai_scientist/perform_plotting.py`: plot aggregation only (writes and runs `auto_plot_aggregator.py` in the experiment folder).
-- `ai_scientist/perform_writeup.py`: 8-page writeup pipeline.
-- `ai_scientist/perform_icbinb_writeup.py`: 4-page writeup pipeline.
-- `ai_scientist/treesearch/perform_experiments_bfts_with_agentmanager.py`: core BFTS run given a config (normally called by `launch_scientist_bfts.py`).
-
-## Quickstart
-
-Note: the defaults in `perform_ideation_temp_free.py` and `launch_scientist_bfts.py` point to files that are not present in this fork. Pass explicit paths as shown below.
-
-### 1. Generate ideas (optional)
-
-```bash
-python ai_scientist/perform_ideation_temp_free.py \
-  --workshop-file ai_scientist/ideas/himeno_benchmark_challenge.md \
-  --model gpt-4o-2024-05-13 \
-  --max-num-generations 3 \
-  --num-reflections 5
-```
-
-This writes a JSON file next to the workshop file (same basename, `.json`).
-
-### 2. Run a full experiment
-
-```bash
-python launch_scientist_bfts.py \
-  --writeup-type icbinb \
-  --load_ideas ai_scientist/ideas/himeno_benchmark_challenge.json \
-  --idea_idx 0 \
-  --singularity_image template/base.sif \
-  --num_workers 4
-```
-
-Useful flags:
-- `--additional-information <file>`: append extra text to the idea prompt.
-- `--skip_plot` / `--skip_writeup` / `--skip_review`: skip later stages.
-- `--attempt_id <n>`: disambiguate parallel runs of the same idea.
-- `--writable_mode {auto,tmpfs,overlay,none}`: control Phase 1 writable behavior.
-- `--resources <file>`: pass a resources JSON/YAML file (see below).
-
-### 3. Generate plots/writeup for an existing experiment
-
-```bash
-python generate_paper.py \
-  --experiment-dir experiments/<timestamp>_<idea>_attempt_<id> \
-  --writeup-type icbinb \
-  --model-agg-plots o3-mini-2025-01-31 \
-  --model-writeup o1-preview-2024-09-12
-```
-
-## Configuration
-
-The default configuration lives in `bfts_config.yaml`. The launcher copies it into each run directory and overrides fields such as `desc_file`, `data_dir`, `workspace_dir`, and `log_dir`.
-
-Key sections (defaults from `bfts_config.yaml`):
-
-- `exec`
-  - `phase_mode`: `split` (default) or `single`.
-  - `singularity_image`: path to the base SIF (absolute in the checked-in config; override for your system).
-  - `language`: default is `cpp` (affects code generation constraints).
-  - `workspace_mount`: container mount point (default `/workspace`).
-  - `writable_tmpfs`, `container_overlay`, `writable_mode`: control Phase 1 write access.
-  - `container_extra_args`: extra Singularity args for instance start.
-  - `per_worker_sif`, `keep_sandbox`, `use_fakeroot`: per-worker SIF behavior.
-  - `phase1_max_steps`: max iterative installer steps.
-  - `log_prompts`: write prompt logs (JSON + Markdown) for split/single runs.
-  - `resources`: optional path to a JSON/YAML resource file.
-- `agent`
-  - `num_workers`: parallel workers mapped to GPUs.
-  - `stages.*`: per-stage max iterations.
-  - `code`, `feedback`, `summary`, `select_node`: LLM model choices.
-- `report`
-  - `model`, `temp`: summary report generation.
-
-## Execution Modes
-
-### Split Mode (`exec.phase_mode=split`)
-
-Runs the experiment as four explicit phases inside Singularity:
-
-0. Planning (Phase 0, prompt-only; produces the phase plan)
-1. Download & install (Phase 1)
-2. Coding (Phase 2)
-3. Compile (Phase 3)
-4. Run (Phase 4)
-
-The LLM outputs a structured JSON payload with per-phase artifacts. The run phase must produce `working/experiment_data.npy` inside the container by default (the expected outputs can be overridden by the plan). Per-worker SIFs are built when `per_worker_sif=true` under `experiments/<...>/workers/worker-*/container/`.
-
-Relevant flags in `launch_scientist_bfts.py`:
-- `--per_worker_sif`, `--keep_sandbox`, `--use_fakeroot`
-- `--writable_mode`, `--phase1_max_steps`
-- `--container_overlay`, `--disable_writable_tmpfs`
-- `--singularity_image` (required for split mode)
-
-### Single Mode (`exec.phase_mode=single`)
-
-Uses the legacy flow without split phases. Code executes on the host environment (no container), and package guidance comes from the prompt templates. Bind-mounts are only applied in split mode, but classed resource context and staged templates/docs are still available to the LLM/workspace.
-
-## LLM Context (What We Pass In)
-
-Concise overview of what each LLM call receives:
-
-- Phase 0 planning (split): Introduction + Task + History (phase summaries, compile/run logs & errors, prior LLM outputs) + Environment snapshot (OS/CPU/GPU, compilers/libs, network, container) + optional Resources.
-- Phase 1 iterative install (split): Introduction + Task + Phase plan (download/compile/run) + Constraints + Progress history + optional Phase 0 guidance + Environment injection + Resources.
-- Stage 1/3 draft/debug/improve: Introduction + Research idea + Memory, plus prior code/execution output/plot+time feedback as applicable; Instructions (guidelines + response format + impl/phase guidance); optional Data Overview; split mode adds System/Domain + Environment injection + Resources + Phase 0 plan snippet.
-- Stage 2 hyperparam + Stage 4 ablation: Introduction (idea) + base code + tried history + stage requirements/response format; split mode adds System/Domain + Environment injection + Resources + Phase 0 plan snippet.
-- Plotting + VLM: plotting code uses Response format + plotting guideline (experiment code + optional base plotting code); plot selection uses Introduction + plot paths; VLM analysis uses research idea text + selected plot images (base64); dataset success check uses plot analyses + VLM summary + original plotting code + response format.
-- Execution review + metrics: execution review uses Introduction + research idea + implementation + execution output; parse-metrics plan uses original code + prior parse errors/code + instructions + example parser + response format; metric extraction uses parser execution output.
-- Node summary: Introduction + research idea + implementation + plan + execution output + analysis + metric + plot analyses + VLM feedback.
-
-## Resource Files
-
-You can supply a JSON/YAML resource file with `--resources`. The file supports:
-
-```json
-{
-  "local": [
-    {
-      "name": "input_data",
-      "host_path": "/shared/datasets/my_data",
-      "mount_path": "/workspace/input/data",
-      "read_only": true
-    }
-  ],
-  "github": [
-    {
-      "name": "cnpy",
-      "repo": "https://github.com/rogersce/cnpy.git",
-      "ref": "v1.0.0",
-      "dest": "/workspace/third_party/cnpy",
-      "as": "library"
-    }
-  ],
-  "huggingface": [
-    {
-      "name": "my_model",
-      "type": "model",
-      "repo_id": "org/model-name",
-      "revision": "abc123def456...",
-      "dest": "/workspace/input/my_model"
-    }
-  ],
-  "items": [
-    {
-      "name": "baseline_template",
-      "class": "template",
-      "source": "local",
-      "resource": "input_data",
-      "path": "baseline",
-      "include_tree": true,
-      "include_files": ["main.c", "Makefile"],
-      "notes": "Use as a reference implementation."
-    },
-    {
-      "name": "readme_doc",
-      "class": "document",
-      "source": "local",
-      "resource": "input_data",
-      "path": "README.md",
-      "include_content": true
-    }
-  ]
-}
-```
-
-Notes:
-- `mount_path`/`dest` must be under `/workspace`.
-- `host_path` must exist for local resources (relative paths are resolved relative to the resource file).
-- Resource file paths are resolved relative to `AI_SCIENTIST_ROOT` when set by the launcher.
-- Local resources are bind-mounted into containers (split mode).
-- GitHub/Hugging Face resources are not auto-fetched; Phase 1 is instructed to `git clone` / `huggingface_hub` download to the `dest` paths.
-- `items` classify files/dirs with `class` in {`template`, `library`, `dataset`, `model`, `setup`, `document`}. `path` is relative to the resource root and must not contain `..`.
-- Use `include_tree`, `include_content`, `include_files`, `max_files`, `max_chars`, and `max_total_chars` to control how much context is injected.
-- By default, templates include summarized file content and are injected into Phase 0/1/2 prompts; setup content is injected in Phase 0/1; document content is injected in Phase 0/1/2/3/4. Libraries/datasets/models include metadata only (override via `include_*` or `max_*` fields).
-- Items that reference GitHub/HuggingFace resources provide container paths and metadata until those resources are fetched.
-- Local `items` for template/setup/document are staged into the workspace at `resources/<class>/<name>` before execution.
-- YAML resource files require `pyyaml` on the host.
-
-## Outputs
-
-Each run creates a directory under `experiments/`:
-
-- `experiments/<timestamp>_<idea>_attempt_<id>/idea.md`
-- `experiments/<timestamp>_<idea>_attempt_<id>/idea.json`
-- `experiments/<timestamp>_<idea>_attempt_<id>/bfts_config.yaml`
-- `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/` (stage journals, configs, tree plots, `manager.pkl`)
-- `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/phase_logs/node_<id>/prompt_logs/` (system prompt logs per node)
-- `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/` (workspace with `input/` and `working/`)
-- `experiments/<timestamp>_<idea>_attempt_<id>/figures/` (plot aggregation output)
-- `experiments/<timestamp>_<idea>_attempt_<id>/auto_plot_aggregator.py`
-- `experiments/<timestamp>_<idea>_attempt_<id>/<experiment_dir_basename>.pdf` and reflection PDFs (if writeup enabled)
-- `experiments/<timestamp>_<idea>_attempt_<id>/review_text.txt` and `review_img_cap_ref.json` (if review enabled; `launch_scientist_bfts.py` only runs review if writeup ran)
-- `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker.json`
-- `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker_interactions.json`
-
-During execution, `experiment_results/` is copied out of `logs/<index>-<exp_name>/` for plot aggregation and then removed by the launcher (unless you skip plotting). Prompt logs are also copied into `experiment_results/.../llm_outputs/prompt_logs/`.
-
-## Testing
-
-```bash
-python -m unittest tests/test_smoke_split.py
-python -m unittest tests/test_resource.py
-```
-
-## Troubleshooting
-
-- Split mode fails with "Singularity image is required": pass `--singularity_image` or update `exec.singularity_image` in `bfts_config.yaml`.
-- Phase 1 cannot write inside the container: try `--writable_mode overlay` with `--container_overlay /path/to/overlay.img`, or disable tmpfs via `--disable_writable_tmpfs`.
-- `singularity build` fails due to permissions: try `--use_fakeroot false`.
-- Resource validation errors: ensure `mount_path`/`dest` are under `/workspace`, local `host_path` exists, and `items.path` is relative without `..`.
-- Hugging Face downloads fail: install `huggingface_hub` inside the worker image and provide `HUGGINGFACE_API_KEY` if needed.
-
-## Citing The AI Scientist-v2
-
-If you use **The AI Scientist-v2** in your research, please cite:
-
-```bibtex
-@article{aiscientist_v2,
-  title={The AI Scientist-v2: Workshop-Level Automated Scientific Discovery via Agentic Tree Search},
-  author={Yamada, Yutaro and Lange, Robert Tjarko and Lu, Cong and Hu, Shengran and Lu, Chris and Foerster, Jakob and Clune, Jeff and Ha, David},
-  journal={arXiv preprint arXiv:2504.08066},
-  year={2025}
-}
-```
+- Requirements: [docs/requirements.md](docs/requirements.md) (host + container
+  dependencies, optional tools); related: [requirements.txt](requirements.txt),
+  [bfts_config.yaml](bfts_config.yaml), [template/README.md](template/README.md).
+- Installation: [docs/installation.md](docs/installation.md) (conda/pip/torch
+  setup, image prep); related: [requirements.txt](requirements.txt),
+  [template/README.md](template/README.md).
+- Credentials: [docs/credentials.md](docs/credentials.md) (model provider API
+  keys and scope); related: [bfts_config.yaml](bfts_config.yaml),
+  [ai_scientist/llm.py](ai_scientist/llm.py).
+- CLI entry points: [docs/cli-entry-points.md](docs/cli-entry-points.md) (what
+  each script does); related: [launch_scientist_bfts.py](launch_scientist_bfts.py),
+  [generate_paper.py](generate_paper.py),
+  [ai_scientist/perform_ideation_temp_free.py](ai_scientist/perform_ideation_temp_free.py).
+- Quickstart: [docs/quickstart.md](docs/quickstart.md) (minimal end-to-end run);
+  related: [template/README.md](template/README.md),
+  [data_resources.json](data_resources.json).
+- Configuration: [docs/configuration.md](docs/configuration.md) (how
+  `bfts_config.yaml` is applied); related: [bfts_config.yaml](bfts_config.yaml),
+  [launch_scientist_bfts.py](launch_scientist_bfts.py).
+- Execution modes: [docs/execution-modes.md](docs/execution-modes.md) (split vs
+  single, worker behavior); related:
+  [prompt/execution_split_schema.txt](prompt/execution_split_schema.txt),
+  [ai_scientist/treesearch/parallel_agent.py](ai_scientist/treesearch/parallel_agent.py).
+- LLM context: [docs/llm-context.md](docs/llm-context.md) (prompt assembly and
+  stage inputs); related: [prompt/](prompt/), [prompt/base_system.txt](prompt/base_system.txt).
+- MemGPT-style memory: [docs/memory.md](docs/memory.md) (hierarchical memory +
+  persistence); related: [ai_scientist/memory/memgpt_store.py](ai_scientist/memory/memgpt_store.py),
+  [ai_scientist/memory/resource_memory.py](ai_scientist/memory/resource_memory.py).
+- Resource files: [docs/resource-files.md](docs/resource-files.md) (JSON/YAML
+  schema and staging rules); related: [data_resources.json](data_resources.json),
+  [tests/test_resource.py](tests/test_resource.py).
+- Outputs: [docs/outputs.md](docs/outputs.md) (run directories, logs, artifacts);
+  related: [ai_scientist/treesearch/utils/viz_templates/template.html](ai_scientist/treesearch/utils/viz_templates/template.html).
+- Testing: [docs/testing.md](docs/testing.md) (unit tests and scope); related:
+  [tests/](tests/).
+- Troubleshooting: [docs/troubleshooting.md](docs/troubleshooting.md) (common
+  failures and fixes); related: [bfts_config.yaml](bfts_config.yaml),
+  [template/README.md](template/README.md).
+- Citation: [docs/citation.md](docs/citation.md) (bibtex and paper link);
+  related: [README.md](README.md).
 
 ## Acknowledgement
 

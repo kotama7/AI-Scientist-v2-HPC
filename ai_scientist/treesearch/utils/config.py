@@ -1,6 +1,6 @@
 """configuration and setup utils"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Hashable, cast, Literal, Optional
 
@@ -85,6 +85,7 @@ class ExecConfig:
     env_packages_template: str | None = None
     phase_mode: str = "split"
     singularity_image: str | None = None
+    use_gpu: bool = True
     workspace_mount: str = "/workspace"
     writable_tmpfs: bool = True
     container_overlay: str | None = None
@@ -96,6 +97,33 @@ class ExecConfig:
     phase1_max_steps: int = 12
     resources: str | None = None
     log_prompts: bool = True
+
+
+@dataclass
+class MemoryConfig:
+    enabled: bool = False
+    db_path: str | None = None
+    core_max_chars: int = 2000
+    recall_max_events: int = 20
+    retrieval_k: int = 8
+    use_fts: str = "auto"
+    persist_phase0_internal: bool = True
+    always_inject_phase0_summary: bool = True
+    persist_idea_md: bool = True
+    always_inject_idea_summary: bool = True
+    final_memory_enabled: bool = True
+    final_memory_filename_md: str = "final_memory_for_paper.md"
+    final_memory_filename_json: str = "final_memory_for_paper.json"
+    redact_secrets: bool = True
+    memory_budget_chars: int = 4000
+    root_branch_id: str | None = None
+    run_id: str | None = None
+    workspace_root: str | None = None
+    ai_scientist_root: str | None = None
+    phase_mode: str | None = None
+    memory_log_dir: str | None = None
+    memory_log_enabled: bool = True
+    memory_log_max_chars: int = 400
 
 
 @dataclass
@@ -127,6 +155,7 @@ class Config(Hashable):
     agent: AgentConfig
     experiment: ExperimentConfig
     debug: DebugConfig
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 def _get_next_logindex(dir: Path) -> int:

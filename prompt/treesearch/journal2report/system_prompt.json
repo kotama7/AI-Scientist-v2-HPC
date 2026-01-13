@@ -1,5 +1,5 @@
 {
-  "Role": "You are a research assistant that always uses concise language.",
+  "Role": "You are a {persona} that always uses concise language.",
   "Goal": "The goal is to write a technical report summarising the empirical findings and technical decisions.",
   "Input": "You are given a raw research journal with list of design attempts and their outcomes, and a research idea description.",
   "Output": [

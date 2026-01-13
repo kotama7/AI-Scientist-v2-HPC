@@ -21,6 +21,25 @@ STAGE_GOAL_PROMPTS = {
     3: "treesearch/agent_manager/stage3_goals",
     4: "treesearch/agent_manager/stage4_goals",
 }
+SUBSTAGE_COMPLETION_PROMPT_TEMPLATE = load_prompt(
+    "treesearch/agent_manager/substage_completion_eval"
+)
+STAGE2_COMPLETION_PROMPT_TEMPLATE = load_prompt(
+    "treesearch/agent_manager/stage2_completion_eval"
+)
+STAGE4_COMPLETION_PROMPT_TEMPLATE = load_prompt(
+    "treesearch/agent_manager/stage4_completion_eval"
+)
+SUBSTAGE_GOAL_PROMPT_TEMPLATE = load_prompt(
+    "treesearch/agent_manager/substage_goal_prompt"
+)
+STAGE_PROGRESSION_PROMPT_TEMPLATE = load_prompt(
+    "treesearch/agent_manager/stage_progression_eval"
+)
+STAGE_ANALYSIS_INSTRUCTIONS = load_prompt(
+    "treesearch/agent_manager/stage_analysis_instructions"
+)
+EXEC_TIME_FEEDBACK_TEMPLATE = load_prompt("treesearch/agent_manager/exec_time_feedback")
 
 _STAGE_DATASET_GOALS = {
     2: {
@@ -190,7 +209,14 @@ class StageTransition:
 
 
 class AgentManager:
-    def __init__(self, task_desc: Any, cfg: Any, workspace_dir: Path):
+    def __init__(
+        self,
+        task_desc: Any,
+        cfg: Any,
+        workspace_dir: Path,
+        memory_manager: Any | None = None,
+        root_branch_id: str | None = None,
+    ):
         self.task_desc = _coerce_task_desc(task_desc)
         for k in [
             "Title",
@@ -209,6 +235,8 @@ class AgentManager:
         self.journals: Dict[str, Journal] = {}
         self.stage_history: List[StageTransition] = []
         self.completed_stages: List[str] = []
+        self.memory_manager = memory_manager
+        self.root_branch_id = root_branch_id
         self.main_stage_dict: Dict[int, str] = {
             1: "initial_implementation",
             2: "baseline_tuning",
@@ -219,6 +247,38 @@ class AgentManager:
 
         # Create initial stage
         self._create_initial_stage()
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # Memory manager holds sqlite3 connection; drop it for pickling.
+        state["memory_manager"] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def _select_branch_id(self, journal: Journal | None) -> str | None:
+        if journal:
+            for node in reversed(journal.nodes):
+                branch_id = getattr(node, "branch_id", None)
+                if branch_id:
+                    return branch_id
+        return self.root_branch_id
+
+    def _memory_context(self, journal: Journal | None, task_hint: str) -> str:
+        if not self.memory_manager:
+            return ""
+        branch_id = self._select_branch_id(journal)
+        if not branch_id:
+            return ""
+        budget = getattr(getattr(self.cfg, "memory", None), "memory_budget_chars", 4000)
+        return self.memory_manager.render_for_prompt(branch_id, task_hint, budget_chars=budget)
+
+    def _inject_memory_into_text(self, prompt: str, journal: Journal | None, task_hint: str) -> str:
+        memory_context = self._memory_context(journal, task_hint)
+        if not memory_context:
+            return prompt
+        return f"Memory:\n{memory_context}\n\n{prompt}"
 
     def _get_max_iterations(self, stage_number: int) -> int:
         """Get max iterations for a stage from config or default"""
@@ -394,6 +454,8 @@ class AgentManager:
             best_stage3_node=best_stage3_node,
             best_stage2_node=best_stage2_node,
             best_stage1_node=best_stage1_node,
+            memory_manager=self.memory_manager,
+            root_branch_id=self.root_branch_id,
         )
 
     def _parse_vlm_feedback(self, node: Node) -> str:
@@ -412,21 +474,19 @@ class AgentManager:
         self, current_substage: Stage, journal: Journal
     ) -> bool:
         """Check if the current sub-stage is complete"""
-        best_node = journal.get_best_node(cfg=self.cfg)
+        memory_context = self._memory_context(journal, "best_node_selection")
+        best_node = journal.get_best_node(cfg=self.cfg, memory_context=memory_context)
         if not best_node:
             return False, "No best node found"
 
         vlm_feedback = self._parse_vlm_feedback(best_node)
-        eval_prompt = f"""
-        Evaluate if the current sub-stage is complete based on the following evidence:
-        1. Figure Analysis:
-        {vlm_feedback}
-
-        Requirements for completion:
-        - {current_substage.goals}
-
-        Provide a detailed evaluation of completion status.
-        """
+        eval_prompt = SUBSTAGE_COMPLETION_PROMPT_TEMPLATE.format(
+            vlm_feedback=vlm_feedback,
+            substage_goals=current_substage.goals,
+        )
+        eval_prompt = self._inject_memory_into_text(
+            eval_prompt, journal, "stage_completion"
+        )
 
         try:
             # LLM context: sub-stage completion prompt with VLM plot feedback and current sub-stage goals.
@@ -511,7 +571,8 @@ class AgentManager:
                 return True, "Found working implementation"
 
         if stage.stage_number == 2:
-            best_node = journal.get_best_node(cfg=self.cfg)
+            memory_context = self._memory_context(journal, "best_node_selection")
+            best_node = journal.get_best_node(cfg=self.cfg, memory_context=memory_context)
             if not best_node:
                 return False, "No best node found"
             if best_node == journal.nodes[0]:
@@ -522,21 +583,13 @@ class AgentManager:
 
             # Normal stage 2 completion check
             vlm_feedback = self._parse_vlm_feedback(best_node)
-            eval_prompt = f"""
-            Evaluate if stage 2 (baseline tuning) is complete based on the following evidence:
-
-            1. Figure Analysis:
-            {vlm_feedback}
-
-            2. Datasets Tested: {best_node.datasets_successfully_tested}
-
-            Requirements for completion:
-            1. Training curves should show stable convergence
-            2. Results should be tested on at least two datasets
-            3. No major instabilities or issues in the plots
-
-            Provide a detailed evaluation of completion status.
-            """
+            eval_prompt = STAGE2_COMPLETION_PROMPT_TEMPLATE.format(
+                vlm_feedback=vlm_feedback,
+                datasets_tested=best_node.datasets_successfully_tested,
+            )
+            eval_prompt = self._inject_memory_into_text(
+                eval_prompt, journal, "stage2_completion"
+            )
 
             try:
                 # LLM context: stage-2 completion prompt with VLM feedback, datasets tested, and completion criteria.
@@ -568,7 +621,8 @@ class AgentManager:
                 return False, "Error in stage 2 completion evaluation"
 
         if stage.stage_number == 3:
-            best_node = journal.get_best_node(cfg=self.cfg)
+            memory_context = self._memory_context(journal, "best_node_selection")
+            best_node = journal.get_best_node(cfg=self.cfg, memory_context=memory_context)
             if not best_node:
                 return False, "No best node found"
             if best_node == journal.nodes[0]:
@@ -585,13 +639,8 @@ class AgentManager:
                 self.cfg.agent.stages.stage3_max_iters / 2
             ):
                 if exec_time_minutes < self.cfg.exec.timeout / 60 / 2:
-                    exec_time_feedback = (
-                        f"Implementation works but runs too quickly ({exec_time_minutes:.2f} minutes)."
-                        "We have up to 60 minutes available for each experiment."
-                        "Make sure to scale up the experiment "
-                        "by increasing the number of epochs, using a larger model, or working with bigger datasets."
-                        "Given that the current execution time is {exec_time_minutes:.2f} minutes, think about how changing the number of epochs to run, or using a larger model, or working with bigger datasets to run"
-                        "will affect the execution time, and make sure to scale up the experiment accordingly."
+                    exec_time_feedback = EXEC_TIME_FEEDBACK_TEMPLATE.format(
+                        exec_time_minutes=exec_time_minutes,
                     )
                     print(f"[cyan]exec_time_feedback: {exec_time_feedback}[/cyan]")
                     self.journals[stage.name].nodes[
@@ -599,8 +648,50 @@ class AgentManager:
                     ].exec_time_feedback = exec_time_feedback
                     return False, exec_time_feedback
         if stage.stage_number == 4:
-            # Just let the agent run until max iterations is reached
-            pass
+            good_ablations = [n for n in journal.good_nodes if n.ablation_name]
+            if not good_ablations:
+                return False, "No successful ablation runs yet"
+
+            ablation_names = sorted(
+                {n.ablation_name for n in good_ablations if n.ablation_name}
+            )
+            eval_node = good_ablations[-1]
+            vlm_feedback = self._parse_vlm_feedback(eval_node)
+            eval_prompt = STAGE4_COMPLETION_PROMPT_TEMPLATE.format(
+                vlm_feedback=vlm_feedback,
+                ablation_names=ablation_names,
+            )
+            eval_prompt = self._inject_memory_into_text(
+                eval_prompt, journal, "stage4_completion"
+            )
+
+            try:
+                evaluation = query(
+                    system_message=eval_prompt,
+                    user_message=None,
+                    func_spec=stage_completion_eval_spec,
+                    model=self.cfg.agent.feedback.model,
+                    temperature=self.cfg.agent.feedback.temp,
+                )
+
+                if evaluation["is_complete"]:
+                    logger.info(
+                        f"Stage {stage.name} completed: {evaluation['reasoning']}"
+                    )
+                    print(
+                        f"[green]Stage {stage.name} completed: {evaluation['reasoning']}[/green]"
+                    )
+                    return True, "Found working ablations"
+                else:
+                    missing = ", ".join(evaluation["missing_criteria"])
+                    logger.info(f"Stage {stage.name} not complete. Missing: {missing}")
+                    print(
+                        f"[yellow]Stage {stage.name} not complete. Missing: {missing}[/yellow]"
+                    )
+                    return False, "Missing criteria: " + missing
+            except Exception as e:
+                logger.error(f"Error in stage 4 completion evaluation: {e}")
+                return False, "Error in stage 4 completion evaluation"
 
         print(f"[green]Stage {stage.name} not completed[/green]")
         return False, "stage not completed"
@@ -609,7 +700,10 @@ class AgentManager:
         """Get the best implementation from a completed stage"""
         if stage_name not in self.journals:
             return None
-        best_node = self.journals[stage_name].get_best_node(cfg=self.cfg)
+        memory_context = self._memory_context(self.journals[stage_name], "best_node_selection")
+        best_node = self.journals[stage_name].get_best_node(
+            cfg=self.cfg, memory_context=memory_context
+        )
         if best_node:
             # Create a clean copy of the node for the next stage
             copied_node = copy.deepcopy(best_node)
@@ -634,31 +728,19 @@ class AgentManager:
         issues = self._identify_issues(journal)
         progress = self._analyze_progress(journal)
 
-        # Create prompt for the LLM
-        prompt = f"""
-        Based on the current experimental progress, generate focused goals for the next sub-stage.
-
-        Main Stage Goals:
-        {main_stage_goal}
-
-        Current Progress:
-        - Total attempts: {metrics['total_nodes']}
-        - Successful implementations: {metrics['good_nodes']}
-        - Best performance: {metrics['best_metric']['value'] if metrics['best_metric'] else 'N/A'}
-        - Convergence status: {progress['convergence_status']}
-
-        Current Issues:
-        {json.dumps(issues, indent=2)}
-
-        Recent Changes:
-        {json.dumps(progress['recent_changes'], indent=2)}
-
-        Generate specific, actionable sub-stage goals that:
-        1. Address current issues and limitations
-        2. Build on recent progress
-        3. Move towards main stage goals
-        4. Are concrete and measurable
-        """
+        best_performance = (
+            metrics["best_metric"]["value"] if metrics["best_metric"] else "N/A"
+        )
+        prompt = SUBSTAGE_GOAL_PROMPT_TEMPLATE.format(
+            main_stage_goal=main_stage_goal,
+            total_nodes=metrics["total_nodes"],
+            good_nodes=metrics["good_nodes"],
+            best_performance=best_performance,
+            convergence_status=progress["convergence_status"],
+            issues_json=json.dumps(issues, indent=2),
+            recent_changes_json=json.dumps(progress["recent_changes"], indent=2),
+        )
+        prompt = self._inject_memory_into_text(prompt, journal, "substage_goals")
 
         # Define the function specification for the LLM
         substage_goal_spec = FunctionSpec(
@@ -978,20 +1060,7 @@ class AgentManager:
             with open(notes_dir / "stage_transition_analysis.json", "w") as f:
                 json.dump(analysis_data, f, indent=2)
 
-        prompt_parts.append(
-            "Based on the above comprehensive analysis, determine the appropriate "
-            "configuration for the next experimental stage. Consider:\n"
-            "1. Visual analysis insights from plots\n"
-            "2. Individual node performance and patterns\n"
-            "3. Overall progress and convergence status\n"
-            "4. Identified issues and challenges\n\n"
-            "Include:\n"
-            "1. Stage name (brief, descriptive)\n"
-            "2. Detailed description of the stage's purpose\n"
-            "3. Specific, measurable goals\n"
-            "4. Maximum iterations needed\n"
-            "5. Success metric threshold (if applicable)"
-        )
+        prompt_parts.append(STAGE_ANALYSIS_INSTRUCTIONS)
 
         return "\n\n".join(prompt_parts)
 
@@ -1132,7 +1201,8 @@ class AgentManager:
             if hasattr(node, "_vlm_feedback"):
                 metrics["vlm_feedback"].append(node._vlm_feedback)
 
-        best_node = journal.get_best_node(cfg=self.cfg)
+        memory_context = self._memory_context(journal, "best_node_selection")
+        best_node = journal.get_best_node(cfg=self.cfg, memory_context=memory_context)
         if best_node:
             metrics["best_metric"] = {
                 "value": best_node.metric.value,
@@ -1225,44 +1295,22 @@ class AgentManager:
     ) -> Dict[str, Any]:
         """Evaluate whether experiment is ready for next stage"""
 
-        eval_prompt = f"""
-        Evaluate whether the current experimental stage should progress to the next stage.
-        Consider all available evidence holistically:
-
-        Current Stage Information:
-        - Name: {current_stage.name}
-        - Description: {current_stage.description}
-        - Goals: {', '.join(current_stage.goals) if isinstance(current_stage.goals, list) else current_stage.goals}
-
-        Performance Metrics:
-        {json.dumps(previous_results.get('metrics', {}), indent=2)}
-
-        Identified Issues:
-        {json.dumps(previous_results.get('issues', []), indent=2)}
-
-        Progress Analysis:
-        {json.dumps(previous_results.get('progress', {}), indent=2)}
-
-        Expected Stage Progression:
-        1. Initial Implementation: Focus on basic working implementation
-        2. Baseline Tuning: Systematic optimization of core parameters
-        3. Creative Research: Novel improvements and approaches
-        4. Ablation Studies: Systematic component analysis
-
-        Consider factors like:
-        - Progress toward stage goals
-        - Performance trends and stability
-        - Quality and reliability of results
-        - Understanding of the problem
-        - Presence of systematic issues
-        - Convergence indicators
-        - Readiness for next stage challenges
-
-        Provide a holistic evaluation of whether the experiment should:
-        1. Progress to next stage
-        2. Continue current stage with specific focus
-        3. Extend current stage with modifications
-        """
+        stage_goals = (
+            ", ".join(current_stage.goals)
+            if isinstance(current_stage.goals, list)
+            else current_stage.goals
+        )
+        eval_prompt = STAGE_PROGRESSION_PROMPT_TEMPLATE.format(
+            stage_name=current_stage.name,
+            stage_description=current_stage.description,
+            stage_goals=stage_goals,
+            metrics_json=json.dumps(previous_results.get("metrics", {}), indent=2),
+            issues_json=json.dumps(previous_results.get("issues", []), indent=2),
+            progress_json=json.dumps(previous_results.get("progress", {}), indent=2),
+        )
+        eval_prompt = self._inject_memory_into_text(
+            eval_prompt, None, "stage_progression"
+        )
 
         try:
             # LLM context: stage progression prompt with stage description, metrics, issues, and progress analysis.

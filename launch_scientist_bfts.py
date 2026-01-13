@@ -156,6 +156,12 @@ def parse_arguments():
         help="Path to Singularity image for worker execution",
     )
     parser.add_argument(
+        "--use_gpu",
+        type=lambda x: str(x).lower() in ("1", "true", "yes", "on"),
+        default=None,
+        help="Enable GPU access in Singularity (--nv). Set false to force CPU-only containers.",
+    )
+    parser.add_argument(
         "--num_workers",
         type=int,
         default=None,
@@ -209,6 +215,35 @@ def parse_arguments():
         default=None,
         help="Path to resources JSON/YAML file defining local mounts, GitHub repos, and HuggingFace models/datasets.",
     )
+    parser.add_argument(
+        "--enable_memgpt",
+        action="store_true",
+        help="Enable MemGPT-style hierarchical memory.",
+    )
+    parser.add_argument(
+        "--memory_db",
+        type=str,
+        default=None,
+        help="Path to memory sqlite database (defaults to experiments/<run>/memory/memory.sqlite).",
+    )
+    parser.add_argument(
+        "--memory_core_max_chars",
+        type=int,
+        default=None,
+        help="Maximum characters reserved for core memory.",
+    )
+    parser.add_argument(
+        "--memory_recall_max_events",
+        type=int,
+        default=None,
+        help="Maximum number of recall events to inject.",
+    )
+    parser.add_argument(
+        "--memory_retrieval_k",
+        type=int,
+        default=None,
+        help="Top-k archival memories to retrieve.",
+    )
     return parser.parse_args()
 
 
@@ -252,8 +287,12 @@ if __name__ == "__main__":
     print(f"Set AI_SCIENTIST_ROOT to {os.environ['AI_SCIENTIST_ROOT']}")
 
     # Check available GPUs and adjust parallel processes if necessary
-    available_gpus = get_available_gpus()
-    print(f"Using GPUs: {available_gpus}")
+    enable_gpu = True if args.use_gpu is None else args.use_gpu
+    available_gpus = get_available_gpus() if enable_gpu else []
+    if enable_gpu:
+        print(f"Using GPUs: {available_gpus}")
+    else:
+        print("Using GPUs: [] (disabled via --use_gpu false)")
 
     with open(args.load_ideas, "r") as f:
         ideas = json.load(f)
@@ -291,6 +330,7 @@ if __name__ == "__main__":
         str(idea_path_md),
         phase_mode=args.phase_mode,
         singularity_image=args.singularity_image,
+        use_gpu=args.use_gpu,
         num_workers=args.num_workers,
         writable_tmpfs=not args.disable_writable_tmpfs,
         container_overlay=args.container_overlay,
@@ -300,6 +340,11 @@ if __name__ == "__main__":
         writable_mode=args.writable_mode,
         phase1_max_steps=args.phase1_max_steps,
         resources_path=args.resources,
+        memory_enabled=args.enable_memgpt,
+        memory_db_path=args.memory_db,
+        memory_core_max_chars=args.memory_core_max_chars,
+        memory_recall_max_events=args.memory_recall_max_events,
+        memory_retrieval_k=args.memory_retrieval_k,
     )
 
     perform_experiments_bfts(idea_config_path)

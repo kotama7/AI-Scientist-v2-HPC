@@ -26,10 +26,42 @@ const stageData = {
   Stage_4: null
 };
 
+const defaultStageDirMap = {
+  Stage_1: 'stage_1_initial_implementation_1_preliminary',
+  Stage_2: 'stage_2_baseline_tuning_1_first_attempt',
+  Stage_3: 'stage_3_creative_research_1_first_attempt',
+  Stage_4: 'stage_4_ablation_studies_1_first_attempt'
+};
+
 // Keep track of current selected stage
 let currentStage = null;
 let currentSketch = null;
 let availableStages = [];
+let memoryPhaseIndex = 0;
+let memoryPhaseKeys = [];
+let memoryEventsByPhase = {};
+
+function inferStageIdFromPath(pathname) {
+  const match = pathname.match(/stage_(\d+)/);
+  return match ? `Stage_${match[1]}` : null;
+}
+
+function inferLogDirPath(pathname) {
+  const parts = pathname.split('/');
+  const stageIndex = parts.findIndex(part => part.startsWith('stage_'));
+  if (stageIndex > 0) {
+    const prefix = parts.slice(0, stageIndex).join('/');
+    return prefix || '.';
+  }
+  const prefix = parts.slice(0, -1).join('/');
+  return prefix || '.';
+}
+
+function addAvailableStage(stageId) {
+  if (!availableStages.includes(stageId)) {
+    availableStages.push(stageId);
+  }
+}
 
 // Class definitions for nodes and edges
 class Node {
@@ -341,7 +373,8 @@ function createTreeSketch(stageId) {
           treeData.vlm_feedback_summary?.[nodeIndex] || '',
           treeData.datasets_successfully_tested?.[nodeIndex] || [],
           treeData.exec_time_feedback?.[nodeIndex] || '',
-          treeData.exec_time?.[nodeIndex] || ''
+          treeData.exec_time?.[nodeIndex] || '',
+          treeData.memory_events?.[nodeIndex] || []
         );
       }
     }
@@ -397,9 +430,9 @@ async function loadAllStageData(baseTreeData) {
   const currentStageId = baseTreeData.current_stage || 'Stage_1';
 
   // Ensure base tree data is valid and has required properties
-  if (baseTreeData && baseTreeData.layout && baseTreeData.edges) {
+  if (baseTreeData && Array.isArray(baseTreeData.layout) && Array.isArray(baseTreeData.edges)) {
     stageData[currentStageId] = baseTreeData;
-    availableStages.push(currentStageId);
+    addAvailableStage(currentStageId);
     console.log(`Added current stage ${currentStageId} to available stages`);
   } else {
     console.warn(`Current stage ${currentStageId} data is invalid:`, baseTreeData);
@@ -411,27 +444,30 @@ async function loadAllStageData(baseTreeData) {
 
   // Load data for each stage if available
   const stageNames = ['Stage_1', 'Stage_2', 'Stage_3', 'Stage_4'];
-  const stageNames2actualNames = {
-    'Stage_1': 'stage_1_initial_implementation_1_preliminary',
-    'Stage_2': 'stage_2_baseline_tuning_1_first_attempt',
-    'Stage_3': 'stage_3_creative_research_1_first_attempt',
-    'Stage_4': 'stage_4_ablation_studies_1_first_attempt'
-    }
+  const stageDirMap = baseTreeData.stage_dir_map || defaultStageDirMap;
 
   for (const stage of stageNames) {
 
     if (baseTreeData.completed_stages && baseTreeData.completed_stages.includes(stage)) {
+      if (stageData[stage]) {
+        continue;
+      }
       try {
-        console.log(`Attempting to load data for ${stage} from ${logDirPath}/${stageNames2actualNames[stage]}/tree_data.json`);
-        const response = await fetch(`${logDirPath}/${stageNames2actualNames[stage]}/tree_data.json`);
+        const stageDirName = stageDirMap[stage] || stage.toLowerCase();
+        if (!stageDirName) {
+          console.warn(`No stage directory mapping for ${stage}`);
+          continue;
+        }
+        console.log(`Attempting to load data for ${stage} from ${logDirPath}/${stageDirName}/tree_data.json`);
+        const response = await fetch(`${logDirPath}/${stageDirName}/tree_data.json`);
 
         if (response.ok) {
           const data = await response.json();
 
           // Validate the loaded data
-          if (data && data.layout && data.edges) {
+          if (data && Array.isArray(data.layout) && Array.isArray(data.edges)) {
             stageData[stage] = data;
-            availableStages.push(stage);
+            addAvailableStage(stage);
             console.log(`Successfully loaded and validated data for ${stage}`);
           } else {
             console.warn(`Loaded data for ${stage} is invalid:`, data);
@@ -474,10 +510,107 @@ function updateTabVisibility() {
   });
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function groupMemoryEvents(events) {
+  const grouped = {};
+  if (!Array.isArray(events)) {
+    return grouped;
+  }
+  for (const event of events) {
+    if (!event || typeof event !== 'object') {
+      continue;
+    }
+    const phase = event.phase || 'unknown';
+    if (!grouped[phase]) {
+      grouped[phase] = [];
+    }
+    grouped[phase].push(event);
+  }
+  return grouped;
+}
+
+function sortMemoryPhases(phases) {
+  const order = ['phase0', 'phase1', 'phase2', 'phase3', 'phase4'];
+  return phases.slice().sort((a, b) => {
+    const aIndex = order.indexOf(a);
+    const bIndex = order.indexOf(b);
+    if (aIndex !== -1 || bIndex !== -1) {
+      return (aIndex === -1 ? 99 : aIndex) - (bIndex === -1 ? 99 : bIndex);
+    }
+    return String(a).localeCompare(String(b));
+  });
+}
+
+function formatMemoryEvent(event) {
+  const header = `${event.op || 'memory_event'} (${event.memory_type || 'unknown'})`;
+  const ts = event.ts ? new Date(event.ts * 1000).toLocaleString() : '';
+  const metaParts = [];
+  if (ts) metaParts.push(ts);
+  if (event.node_id) metaParts.push(`node_id=${event.node_id}`);
+  if (event.branch_id) metaParts.push(`branch_id=${event.branch_id}`);
+  const metaText = metaParts.join(' | ');
+  const details = event.details ? JSON.stringify(event.details, null, 2) : '';
+  const detailsHtml = details ? `<pre class="memory-event-details">${escapeHtml(details)}</pre>` : '';
+  return `
+    <div class="memory-event">
+      <div class="memory-event-header">${escapeHtml(header)}</div>
+      <div class="memory-event-meta">${escapeHtml(metaText)}</div>
+      ${detailsHtml}
+    </div>
+  `;
+}
+
+function renderMemoryPhase() {
+  const labelElm = document.getElementById('memory-phase-label');
+  const contentElm = document.getElementById('memory-content');
+  const prevBtn = document.getElementById('memory-prev');
+  const nextBtn = document.getElementById('memory-next');
+  if (!labelElm || !contentElm || !prevBtn || !nextBtn) {
+    return;
+  }
+  if (!memoryPhaseKeys.length) {
+    labelElm.textContent = 'No memory events';
+    contentElm.innerHTML = '<p>No memory events recorded for this node.</p>';
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    return;
+  }
+  const phase = memoryPhaseKeys[memoryPhaseIndex] || 'unknown';
+  labelElm.textContent = phase;
+  const events = memoryEventsByPhase[phase] || [];
+  contentElm.innerHTML = events.map(formatMemoryEvent).join('');
+  const disableNav = memoryPhaseKeys.length <= 1;
+  prevBtn.disabled = disableNav;
+  nextBtn.disabled = disableNav;
+}
+
+function shiftMemoryPhase(direction) {
+  if (!memoryPhaseKeys.length) {
+    return;
+  }
+  memoryPhaseIndex = (memoryPhaseIndex + direction + memoryPhaseKeys.length) % memoryPhaseKeys.length;
+  renderMemoryPhase();
+}
+
+function updateMemoryPanel(events) {
+  memoryEventsByPhase = groupMemoryEvents(events);
+  memoryPhaseKeys = sortMemoryPhases(Object.keys(memoryEventsByPhase));
+  memoryPhaseIndex = 0;
+  renderMemoryPhase();
+}
+
 // Utility function to set the node info in the right panel
 const setNodeInfo = (code, plan, plot_code, plot_plan, metrics = null, exc_type = '', exc_info = '',
     exc_stack = [], plots = [], plot_analyses = [], vlm_feedback_summary = '',
-    datasets_successfully_tested = [], exec_time_feedback = '', exec_time = '') => {
+    datasets_successfully_tested = [], exec_time_feedback = '', exec_time = '', memory_events = []) => {
   const codeElm = document.getElementById("code");
   if (codeElm) {
     if (code) {
@@ -666,16 +799,23 @@ const setNodeInfo = (code, plan, plot_code, plot_plan, metrics = null, exc_type 
       }
       datasets_successfully_testedElm.innerHTML = datasets_successfully_testedContent;
   }
+
+  updateMemoryPanel(memory_events);
 };
 
 // Initialize with the provided tree data
 const treeStructData = "PLACEHOLDER_TREE_DATA";
 
-// Add log directory path and stage info to the tree data
-treeStructData.log_dir_path = window.location.pathname.split('/').slice(0, -1).join('/');
-treeStructData.current_stage = window.location.pathname.includes('stage_')
-  ? window.location.pathname.split('stage_')[1].split('/')[0]
-  : 'Stage_1';
+if (!treeStructData.log_dir_path) {
+  treeStructData.log_dir_path = inferLogDirPath(window.location.pathname);
+}
+
+const inferredStage = inferStageIdFromPath(window.location.pathname);
+if (!treeStructData.current_stage) {
+  treeStructData.current_stage = inferredStage || 'Stage_1';
+} else if (!treeStructData.current_stage.startsWith('Stage_') && inferredStage) {
+  treeStructData.current_stage = inferredStage;
+}
 
 // Initialize background color
 window.bgColCurrent = bgCol;

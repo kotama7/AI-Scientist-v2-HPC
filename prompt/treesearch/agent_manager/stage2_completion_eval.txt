@@ -1,0 +1,13 @@
+Evaluate if stage 2 (baseline tuning) is complete based on the following evidence:
+
+1. Figure Analysis:
+{vlm_feedback}
+
+2. Datasets/Cases Tested: {datasets_tested}
+
+Requirements for completion:
+1. Evidence shows stable, repeatable behavior for the target objective
+2. Results are tested across multiple representative inputs/cases/configurations when applicable
+3. Outputs and plots are coherent, consistent, and free of major gaps
+
+Provide a detailed evaluation of completion status.

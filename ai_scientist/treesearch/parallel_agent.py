@@ -5,6 +5,7 @@ import random
 import os
 import shutil
 import re
+import uuid
 from queue import Queue
 import logging
 import humanize
@@ -38,9 +39,15 @@ from .utils.resource import (
     build_resources_context,
     resolve_resources_path,
 )
+from .worker_plan import resolve_worker_plan
 import pickle
 from dataclasses import asdict
 from ai_scientist.prompt_loader import load_prompt, load_prompt_lines, format_prompt
+from ai_scientist.memory import MemoryManager
+from ai_scientist.memory.resource_memory import (
+    build_resource_snapshot,
+    update_resource_snapshot_if_changed,
+)
 
 from rich import print
 from rich.markup import escape
@@ -169,6 +176,7 @@ MAX_METRIC_PARSE_RETRIES = 3
 METRICS_PROMPT_INTRO = load_prompt(
     PROMPT_BASE + "metrics_prompt/introduction"
 ).rstrip("\n")
+VLM_ANALYSIS_PROMPT_TEMPLATE = load_prompt(PROMPT_BASE + "vlm_analysis")
 
 
 def _normalize_language(language: str | None) -> str:
@@ -905,12 +913,16 @@ class MinimalAgent:
         phase0_history: dict | None = None,
         prompt_log_dir: Path | None = None,
         prompt_session_id: str | None = None,
+        memory_manager: Any | None = None,
+        branch_id: str | None = None,
     ):
         self.task_desc = task_desc
         self.memory_summary = memory_summary
         self.cfg = cfg
         self.evaluation_metrics = evaluation_metrics
         self.stage_name = stage_name
+        self.memory_manager = memory_manager
+        self.branch_id = branch_id
         self.data_preview = None
         self.environment_context = environment_context or {}
         self.phase0_plan = phase0_plan
@@ -927,6 +939,39 @@ class MinimalAgent:
                 self.resources_config = load_resources(resolve_resources_path(resources_path))
             except Exception as exc:
                 self.resources_error = str(exc)
+
+    def _memory_context(
+        self,
+        task_hint: str,
+        branch_id: str | None = None,
+        budget_chars: int | None = None,
+        allow_summary_fallback: bool = False,
+    ) -> str:
+        if not self.memory_manager:
+            return (self.memory_summary or "") if allow_summary_fallback else ""
+        use_branch = branch_id or self.branch_id
+        if not use_branch:
+            return self.memory_summary or ""
+        budget = budget_chars or getattr(getattr(self.cfg, "memory", None), "memory_budget_chars", 4000)
+        return self.memory_manager.render_for_prompt(use_branch, task_hint, budget_chars=budget)
+
+    def _inject_memory(
+        self,
+        prompt: dict[str, Any],
+        task_hint: str,
+        branch_id: str | None = None,
+        budget_chars: int | None = None,
+        allow_summary_fallback: bool = False,
+        allow_empty: bool = False,
+    ) -> None:
+        memory_context = self._memory_context(
+            task_hint,
+            branch_id=branch_id,
+            budget_chars=budget_chars,
+            allow_summary_fallback=allow_summary_fallback,
+        )
+        if memory_context or allow_empty:
+            prompt["Memory"] = memory_context
 
     @property
     def code_language(self) -> str:
@@ -1178,14 +1223,24 @@ class MinimalAgent:
             snippet["risks_and_mitigations"] = risks
         return snippet
 
-    def _apply_split_prompt_layers(self, prompt: dict[str, Any]) -> dict[str, Any]:
-        """Inject common split-phase system guidance and environment context."""
+    def _apply_split_prompt_layers(
+        self, prompt: dict[str, Any], *, task_hint: str = "phase2_coding"
+    ) -> dict[str, Any]:
+        """Inject common split-phase system guidance, environment context, and memory for Phase 2/3/4."""
         prompt = {"System": BASE_SYSTEM_PROMPT, **prompt}
         prompt["Domain"] = DOMAIN_NEUTRAL_PROMPT
         env_block = self._prompt_environment
         if env_block:
             prompt["Environment"] = env_block.get("Environment injection", env_block)
         self._inject_resources(prompt, phase="phase2")
+        # Inject memory for Phase 2/3/4 if not already present
+        if "Memory" not in prompt:
+            self._inject_memory(
+                prompt,
+                task_hint,
+                allow_summary_fallback=True,
+                allow_empty=False,
+            )
         phase0_snippet = self._phase0_plan_snippet(include_phase1=False, include_phase2_4=True)
         if phase0_snippet:
             prompt["Phase 0 plan"] = phase0_snippet
@@ -1213,13 +1268,15 @@ class MinimalAgent:
         prompt: Any = {
             "Introduction": DRAFT_INTRO,
             "Research idea": self.task_desc,
-            "Memory": self.memory_summary if self.memory_summary else "",
             "Instructions": {},
         }
+        self._inject_memory(
+            prompt, "draft", allow_summary_fallback=True, allow_empty=True
+        )
         prompt["Instructions"]["Experiment design sketch guideline"] = list(DRAFT_EXP_GUIDELINES)
         prompt["Instructions"]["Evaluation Metric(s)"] = self.evaluation_metrics
         if self.phase_mode == "split":
-            prompt = self._apply_split_prompt_layers(prompt)
+            prompt = self._apply_split_prompt_layers(prompt, task_hint="phase2_draft")
         else:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_resp_fmt
@@ -1263,10 +1320,11 @@ class MinimalAgent:
             "Feedback about execution time": parent_node.exec_time_feedback,
             "Instructions": {},
         }
+        self._inject_memory(prompt, "debug")
         prompt["Instructions"] |= self._prompt_debug_resp_fmt
         prompt["Instructions"]["Bugfix improvement sketch guideline"] = list(DEBUG_BUGFIX_GUIDELINES)
         if self.phase_mode == "split":
-            prompt = self._apply_split_prompt_layers(prompt)
+            prompt = self._apply_split_prompt_layers(prompt, task_hint="phase2_debug")
         else:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_impl_guideline
@@ -1296,17 +1354,19 @@ class MinimalAgent:
         prompt: Any = {
             "Introduction": IMPROVE_INTRO,
             "Research idea": self.task_desc,
-            "Memory": self.memory_summary if self.memory_summary else "",
             "Feedback based on generated plots": parent_node.vlm_feedback_summary,
             "Feedback about execution time": parent_node.exec_time_feedback,
             "Instructions": {},
         }
+        self._inject_memory(
+            prompt, "improve", allow_summary_fallback=True, allow_empty=True
+        )
         prompt["Previous solution"] = {
             "Code": wrap_code(parent_node.code, lang=self.code_language),
         }
 
         if self.phase_mode == "split":
-            prompt = self._apply_split_prompt_layers(prompt)
+            prompt = self._apply_split_prompt_layers(prompt, task_hint="phase2_improve")
         else:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_resp_fmt
@@ -1353,9 +1413,10 @@ class MinimalAgent:
             "Base code you are working on": wrap_code(parent_node.code, lang=self.code_language),
             "Instructions": {},
         }
+        self._inject_memory(prompt, "hyperparam_node")
         prompt["Instructions"]["Implementation guideline"] = list(HYPERPARAM_NODE_INSTRUCTIONS)
         if self.phase_mode == "split":
-            prompt = self._apply_split_prompt_layers(prompt)
+            prompt = self._apply_split_prompt_layers(prompt, task_hint="phase2_hyperparam")
         else:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_hyperparam_tuning_resp_fmt
@@ -1390,9 +1451,10 @@ class MinimalAgent:
             "Base code you are working on": wrap_code(parent_node.code, lang=self.code_language),
             "Instructions": {},
         }
+        self._inject_memory(prompt, "ablation_node")
         prompt["Instructions"]["Implementation guideline"] = list(ABLATION_NODE_INSTRUCTIONS)
         if self.phase_mode == "split":
-            prompt = self._apply_split_prompt_layers(prompt)
+            prompt = self._apply_split_prompt_layers(prompt, task_hint="phase2_ablation")
         else:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_ablation_resp_fmt
@@ -1623,6 +1685,7 @@ class MinimalAgent:
             "Implementation": wrap_code(node.code, lang=self.code_language),
             "Execution output": wrap_code(node.term_out, lang=""),
         }
+        self._inject_memory(prompt, "execution_review", branch_id=getattr(node, "branch_id", None))
 
         response = cast(
             dict,
@@ -1687,6 +1750,12 @@ class MinimalAgent:
         plotting_prompt["Instructions"] |= {
             "Plotting code guideline": prompt_guideline,
         }
+        self._inject_memory(
+            plotting_prompt,
+            "plotting_code",
+            branch_id=getattr(node, "branch_id", None),
+            budget_chars=2000,
+        )
 
         # For stage 3, initialize with stage 2's plotting code
         if (
@@ -1761,6 +1830,12 @@ class MinimalAgent:
             "Original plotting code": node.plot_code,
             "Response format": DETERMINE_DATASETS_RESPONSE,
         }
+        self._inject_memory(
+            determine_prompt,
+            "datasets_successfully_tested",
+            branch_id=getattr(node, "branch_id", None),
+            budget_chars=1500,
+        )
 
         retry_count = 0
         retry_limit = 5
@@ -1832,6 +1907,12 @@ class MinimalAgent:
                 "Introduction": SELECT_PLOTS_INTRO,
                 "Plot paths": node.plot_paths,
             }
+            self._inject_memory(
+                prompt_select_plots,
+                "plot_selection",
+                branch_id=getattr(node, "branch_id", None),
+                budget_chars=1000,
+            )
 
             try:
                 response_select_plots = cast(
@@ -1889,19 +1970,22 @@ class MinimalAgent:
                 selected_plots = node.plot_paths[:10]
 
         print("[cyan]Before encoding images[/cyan]")
+        memory_context = self._memory_context(
+            "vlm_analysis",
+            branch_id=getattr(node, "branch_id", None),
+            budget_chars=1000,
+        )
+        memory_context_block = (
+            f"Memory:\n{memory_context}\n\n" if memory_context else ""
+        )
+        analysis_text = VLM_ANALYSIS_PROMPT_TEMPLATE.format(
+            memory_context_block=memory_context_block,
+            task_desc=self.task_desc,
+        )
         user_message = [
             {
                 "type": "text",
-                "text": (
-                    "You are an experienced AI researcher analyzing experimental results. "
-                    "You have been provided with plots from a machine learning experiment. "
-                    f"This experiment is based on the following research idea: {self.task_desc}"
-                    "Please analyze these plots and provide detailed insights about the results. "
-                    "If you don't receive any plots, say 'No plots received'. "
-                    "Never make up plot analysis. "
-                    "Please return the analyzes with strict order of uploaded images, but DO NOT include any word "
-                    "like 'the first plot'."
-                ),
+                "text": analysis_text,
             }
         ] + [
             {
@@ -1961,6 +2045,12 @@ class MinimalAgent:
                 else ""
             ),
         }
+        self._inject_memory(
+            summary_prompt,
+            "node_summary",
+            branch_id=getattr(node, "branch_id", None),
+            budget_chars=2000,
+        )
 
         return cast(
             dict,
@@ -2033,38 +2123,6 @@ class GPUManager:
             del self.gpu_assignments[process_id]
 
 
-def get_gpu_count(
-    *,
-    singularity_image: str | None,
-    workspace_dir: Path | str,
-    workspace_mount: str,
-) -> int:
-    """Get number of available NVIDIA GPUs without running host commands."""
-    if singularity_image:
-        try:
-            bind_arg = f"{Path(workspace_dir).resolve()}:{workspace_mount}"
-            nvidia_smi = run_in_container(
-                worker_id=None,
-                image_path=singularity_image,
-                cmd="nvidia-smi --query-gpu=gpu_name --format=csv,noheader",
-                env={},
-                binds=[bind_arg],
-                use_nv=True,
-                pwd=workspace_mount,
-            )
-            if nvidia_smi.returncode == 0 and nvidia_smi.stdout.strip():
-                gpus = nvidia_smi.stdout.strip().split("\n")
-                return len(gpus)
-        except Exception:
-            pass
-
-    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cuda_visible_devices:
-        devices = [d for d in cuda_visible_devices.split(",") if d and d != "-1"]
-        return len(devices)
-    return 0
-
-
 class ParallelAgent:
     def __init__(
         self,
@@ -2075,12 +2133,16 @@ class ParallelAgent:
         best_stage3_node=None,
         best_stage2_node=None,
         best_stage1_node=None,
+        memory_manager: Any | None = None,
+        root_branch_id: str | None = None,
     ):
         super().__init__()
         self.task_desc = task_desc
         self.cfg = cfg
         self.journal = journal
         self.stage_name = stage_name
+        self.memory_manager = memory_manager
+        self.root_branch_id = root_branch_id
         self.best_stage3_node = (
             best_stage3_node  # to initialize ablation stuides (stage 4)
         )
@@ -2091,26 +2153,57 @@ class ParallelAgent:
             best_stage2_node  # to initialize plotting code (stage 3)
         )
         self.data_preview = None
-        self.num_workers = cfg.agent.num_workers
-        self.num_gpus = get_gpu_count(
-            singularity_image=getattr(self.cfg.exec, "singularity_image", None),
-            workspace_dir=self.cfg.workspace_dir,
-            workspace_mount=getattr(self.cfg.exec, "workspace_mount", "/workspace"),
+        plan = resolve_worker_plan(cfg)
+        self.worker_plan = plan
+        self.num_workers = plan.actual_workers
+        self.num_gpus = plan.gpu_count
+        logger.info(
+            "Worker plan requested=%s actual=%s reasons=%s",
+            plan.requested_workers,
+            plan.actual_workers,
+            ",".join(plan.reasons),
         )
-        print(f"num_gpus: {self.num_gpus}")
+        logger.info(
+            "GPU detection torch_cuda_device_count=%s cuda_visible_devices=%s detected_gpus=%s",
+            plan.torch_device_count,
+            plan.cuda_visible_devices,
+            plan.gpu_count,
+        )
         if self.num_gpus == 0:
-            print("No GPUs detected, falling back to CPU-only mode")
+            logger.info("No GPUs detected; CPU workers allowed")
         else:
-            print(f"Detected {self.num_gpus} GPUs")
+            logger.info("Detected %s GPUs", self.num_gpus)
 
         self.gpu_manager = GPUManager(self.num_gpus) if self.num_gpus > 0 else None
 
-        if self.num_gpus > 0:
-            self.num_workers = min(self.num_workers, self.num_gpus)
-            logger.info(f"Limiting workers to {self.num_workers} to match GPU count")
+        if getattr(self.cfg.exec, "phase_mode", "single") == "split":
+            run_root = _resolve_run_root(self.cfg)
+            per_worker_sif = getattr(self.cfg.exec, "per_worker_sif", True)
+            overlay_path = getattr(self.cfg.exec, "container_overlay", None)
+            workspace_root = Path(self.cfg.workspace_dir)
+            for idx in range(self.num_workers):
+                worker_label = f"worker-{idx}" if per_worker_sif else "worker-shared"
+                container_root = run_root / "workers" / worker_label / "container"
+                worker_sif = container_root / f"{worker_label}.sif"
+                sandbox_dir = container_root / f"{worker_label}.sandbox"
+                logger.info(
+                    "Split worker=%s sif=%s sandbox=%s overlay=%s workdir=%s",
+                    worker_label,
+                    worker_sif,
+                    sandbox_dir,
+                    overlay_path,
+                    workspace_root,
+                )
+                if not per_worker_sif:
+                    break
 
         self.timeout = self.cfg.exec.timeout
         self.executor = ProcessPoolExecutor(max_workers=self.num_workers)
+        logger.info(
+            "Process pool initialized max_workers=%s requested=%s",
+            getattr(self.executor, "_max_workers", self.num_workers),
+            self.worker_plan.requested_workers if hasattr(self, "worker_plan") else self.num_workers,
+        )
         self._is_shutdown = False
         # Define the metric once at initialization
         self.evaluation_metrics = self._define_global_metrics()
@@ -2120,6 +2213,12 @@ class ParallelAgent:
         self._hyperparam_tuning_state = {  # store hyperparam tuning ideas
             "tried_hyperparams": set(),
         }
+
+    def _memory_context(self, branch_id: str | None, task_hint: str) -> str:
+        if not self.memory_manager or not branch_id:
+            return ""
+        budget = getattr(getattr(self.cfg, "memory", None), "memory_budget_chars", 4000)
+        return self.memory_manager.render_for_prompt(branch_id, task_hint, budget_chars=budget)
 
     @property
     def code_language(self) -> str:
@@ -2133,6 +2232,9 @@ class ParallelAgent:
             "Research idea": self.task_desc,
             "Instructions": list(DEFINE_METRICS_INSTRUCTIONS),
         }
+        memory_context = self._memory_context(self.root_branch_id, "define_metrics")
+        if memory_context:
+            prompt["Memory"] = memory_context
 
         # LLM context (global metrics): Introduction + Research idea + metric-definition Instructions.
         response = query(
@@ -2391,6 +2493,32 @@ class ParallelAgent:
 
         print("Starting _process_node_wrapper")
 
+        memory_cfg = getattr(cfg, "memory", None)
+        memory_manager: MemoryManager | None = None
+        root_branch_id = getattr(memory_cfg, "root_branch_id", None) if memory_cfg else None
+        if memory_cfg and getattr(memory_cfg, "enabled", False):
+            db_path = getattr(memory_cfg, "db_path", None) or (
+                Path(cfg.workspace_dir) / "memory" / "memory.sqlite"
+            )
+            if not getattr(memory_cfg, "run_id", None):
+                memory_cfg.run_id = Path(cfg.workspace_dir).name
+            memory_cfg.workspace_root = str(Path(cfg.workspace_dir))
+            memory_cfg.ai_scientist_root = os.environ.get("AI_SCIENTIST_ROOT")
+            memory_cfg.phase_mode = getattr(cfg.exec, "phase_mode", "single")
+            memory_cfg.memory_log_dir = str(Path(cfg.log_dir) / "memory")
+            memory_manager = MemoryManager(db_path, memory_cfg)
+            if not root_branch_id:
+                root_branch_id = uuid.uuid4().hex
+                memory_manager.mem_node_fork(None, root_branch_id)
+                memory_manager.update_branch_node_uid(root_branch_id, "root")
+                memory_manager.set_root_branch_id(root_branch_id)
+                try:
+                    memory_cfg.root_branch_id = root_branch_id
+                except Exception:
+                    pass
+            else:
+                memory_manager.set_root_branch_id(root_branch_id)
+
         # Create process-specific workspace
         process_id = multiprocessing.current_process().name
         workspace = os.path.join(cfg.workspace_dir, f"process_{process_id}")
@@ -2400,6 +2528,21 @@ class ParallelAgent:
         working_dir = os.path.join(workspace, "working")
         os.makedirs(working_dir, exist_ok=True)
         workspace_path = Path(workspace)
+        if memory_manager:
+            memory_manager.workspace_root = workspace_path
+        resources_path = getattr(cfg.exec, "resources", None)
+        if memory_manager and resources_path:
+            try:
+                snapshot = build_resource_snapshot(
+                    resources_path,
+                    workspace_root=workspace_path,
+                    ai_scientist_root=os.environ.get("AI_SCIENTIST_ROOT"),
+                    phase_mode=getattr(cfg.exec, "phase_mode", "single"),
+                    log=logger,
+                )
+                update_resource_snapshot_if_changed(snapshot, memory_manager)
+            except Exception as exc:
+                logger.warning("Failed to persist resource snapshot: %s", exc)
         phase_log_dir: Path | None = None
         prompt_session_id = f"{int(time.time() * 1000)}_{os.getpid()}"
         prompt_log_root: Path | None = None
@@ -2479,12 +2622,16 @@ class ParallelAgent:
                         return False, outputs, result
             return True, outputs, None
 
-        if gpu_id is not None:
+        use_gpu = bool(getattr(cfg.exec, "use_gpu", True))
+        if use_gpu and gpu_id is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             logger.info(f"Process {process_id} assigned to GPU {gpu_id}")
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
-            logger.info(f"Process {process_id} running on CPU")
+            cpu_note = "running on CPU"
+            if not use_gpu:
+                cpu_note += " (GPU disabled)"
+            logger.info(f"Process {process_id} {cpu_note}")
 
         environment_context: dict[str, Any] = {}
         exec_env: ExecutionEnvironment | None = None
@@ -2504,6 +2651,7 @@ class ParallelAgent:
                     runtime_preference="singularity",
                     workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
                     gpu_id=None,
+                    enable_gpu=use_gpu,
                     enable_writable_tmpfs=False,
                     overlay_path=None,
                     extra_start_args=None,
@@ -2531,14 +2679,17 @@ class ParallelAgent:
                     environment_context["memory_info"] = summarize_text(mem_res.stdout, max_lines=40, max_chars=2000)
                 except Exception as exc:
                     logger.warning("Failed to read memory info: %s", exc)
-                try:
-                    gpu_res = info_env.run(
-                        ["bash", "-lc", "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L || echo 'nvidia-smi not available'"],
-                        cwd=workspace_path,
-                    )
-                    environment_context["gpu_info"] = summarize_text(gpu_res.stdout, max_lines=20, max_chars=1200)
-                except Exception as exc:
-                    logger.warning("Failed to read GPU info: %s", exc)
+                if use_gpu:
+                    try:
+                        gpu_res = info_env.run(
+                            ["bash", "-lc", "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L || echo 'nvidia-smi not available'"],
+                            cwd=workspace_path,
+                        )
+                        environment_context["gpu_info"] = summarize_text(gpu_res.stdout, max_lines=20, max_chars=1200)
+                    except Exception as exc:
+                        logger.warning("Failed to read GPU info: %s", exc)
+                else:
+                    environment_context["gpu_info"] = "disabled by config"
                 try:
                     net_res = info_env.run(
                         ["bash", "-lc", "command -v getent >/dev/null 2>&1 && getent hosts github.com >/dev/null 2>&1 && echo ok || echo fail"],
@@ -2618,6 +2769,15 @@ class ParallelAgent:
                         "workspace_mount": environment_context.get("workspace_mount", "/workspace"),
                     },
                 }
+                if memory_manager and root_branch_id:
+                    budget = getattr(
+                        getattr(cfg, "memory", None), "memory_budget_chars", 4000
+                    )
+                    memory_context = memory_manager.render_for_prompt(
+                        root_branch_id, "phase0_planning", budget_chars=budget
+                    )
+                    if memory_context:
+                        phase0_prompt["Memory"] = memory_context
                 resources_path = getattr(cfg.exec, "resources", None)
                 if resources_path:
                     try:
@@ -2663,6 +2823,41 @@ class ParallelAgent:
                     )
                 except Exception as exc:
                     logger.warning("Failed to write Phase 0 plan: %s", exc)
+            if memory_manager and root_branch_id and getattr(memory_cfg, "persist_phase0_internal", True):
+                artifact_paths = [str(phase0_plan_path), str(phase0_history_path)]
+                llm_out = plans_dir / "phase0_llm_output.txt"
+                if llm_out.exists():
+                    artifact_paths.append(str(llm_out))
+
+                def _extract_phase0_commands(plan: Any) -> str | None:
+                    if not isinstance(plan, dict):
+                        return None
+                    phase_artifacts = plan.get("phase_artifacts") or plan.get("plan") or {}
+                    if isinstance(phase_artifacts, dict):
+                        commands: list[str] = []
+                        for section in ("download", "compile", "run"):
+                            section_data = phase_artifacts.get(section, {})
+                            if isinstance(section_data, dict):
+                                section_cmds = section_data.get("commands") or []
+                                for cmd in section_cmds:
+                                    if isinstance(cmd, list):
+                                        commands.append(" ".join([str(c) for c in cmd]))
+                                    else:
+                                        commands.append(str(cmd))
+                        return " | ".join(commands) if commands else None
+                    return None
+
+                command_str = _extract_phase0_commands(phase0_plan)
+                try:
+                    memory_manager.ingest_phase0_internal_info(
+                        root_branch_id,
+                        node_uid=worker_label,
+                        phase0_payload=phase0_plan,
+                        artifact_paths=artifact_paths,
+                        command_str=command_str,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to ingest Phase 0 internal info: %s", exc)
             phase0_history_summary = history_summary
 
         if prompt_log_root is None and getattr(cfg.exec, "log_prompts", True):
@@ -2681,6 +2876,8 @@ class ParallelAgent:
             phase0_history=phase0_history_summary,
             prompt_log_dir=prompt_session_dir,
             prompt_session_id=prompt_session_id,
+            memory_manager=memory_manager,
+            branch_id=None,
         )
 
         process_interpreter: Optional[Interpreter] = None
@@ -2721,6 +2918,22 @@ class ParallelAgent:
             else:
                 parent_node = None
                 print("No parent node to recreate")
+
+            child_branch_id = None
+            if memory_manager:
+                parent_branch_id = (
+                    getattr(parent_node, "branch_id", None) if parent_node else None
+                )
+                if not parent_branch_id:
+                    parent_branch_id = root_branch_id
+                if not parent_branch_id:
+                    parent_branch_id = uuid.uuid4().hex
+                    memory_manager.mem_node_fork(None, parent_branch_id)
+                    memory_manager.update_branch_node_uid(parent_branch_id, "root")
+                    memory_manager.set_root_branch_id(parent_branch_id)
+                child_branch_id = uuid.uuid4().hex
+                memory_manager.mem_node_fork(parent_branch_id, child_branch_id)
+                worker_agent.branch_id = child_branch_id
 
             # Process the node using worker agent
             print("Starting node processing")
@@ -2767,6 +2980,51 @@ class ParallelAgent:
                         print("Improving node with id: ", parent_node.id)
                         child_node = worker_agent._improve(parent_node)
                         child_node.parent = parent_node
+
+            if child_branch_id:
+                child_node.branch_id = child_branch_id
+                try:
+                    memory_manager.update_branch_node_uid(child_branch_id, child_node.id)
+                except Exception:
+                    pass
+            if memory_manager and child_branch_id and getattr(memory_cfg, "persist_idea_md", True):
+                candidates = []
+                desc_file = getattr(cfg, "desc_file", None)
+                for candidate in (
+                    desc_file,
+                    Path(cfg.workspace_dir) / "idea.md",
+                    workspace_path / "idea.md",
+                    workspace_path / "working" / "idea.md",
+                ):
+                    if not candidate:
+                        continue
+                    path = Path(candidate)
+                    if path.exists():
+                        candidates.append(path)
+                if candidates:
+                    latest_path = max(candidates, key=lambda p: p.stat().st_mtime)
+                    try:
+                        memory_manager.ingest_idea_md(
+                            child_branch_id, node_uid=child_node.id, idea_path=latest_path
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to ingest idea.md: %s", exc)
+            if memory_manager and child_branch_id:
+                try:
+                    plan_snippet = (child_node.plan or "")[:1200]
+                    memory_manager.mem_recall_append(
+                        {
+                            "ts": time.time(),
+                            "run_id": memory_manager.run_id,
+                            "node_id": child_node.id,
+                            "phase": stage_name,
+                            "kind": "node_created",
+                            "summary": f"stage={stage_name} node_id={child_node.id}\n{plan_snippet}",
+                            "refs": [],
+                        }
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to write node_created event: %s", exc)
 
             # Execute and parse results
             print("Running code")
@@ -2832,6 +3090,15 @@ class ParallelAgent:
                             enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
                             overlay_path=getattr(cfg.exec, "container_overlay", None),
                             resource_binds=resource_binds,
+                            enable_gpu=use_gpu,
+                        )
+                        logger.info(
+                            "Worker container ready worker=%s root=%s sif=%s overlay=%s workdir=%s",
+                            worker_label,
+                            worker_container.container_root,
+                            worker_container.worker_sif,
+                            worker_container.overlay_path,
+                            workspace_path,
                         )
                     active_env: ExecutionEnvironment | None = None
                     def norm_section(val, default):
@@ -2924,6 +3191,8 @@ class ParallelAgent:
                             resources_ctx = build_resources_context(resources_config, phase="phase1")
                             prompt["Resources"] = resources_ctx
 
+                        worker_agent._inject_memory(prompt, "phase1_iterative")
+
                         if prompt_session_dir:
                             _write_prompt_log(
                                 prompt_session_dir,
@@ -2976,15 +3245,22 @@ class ParallelAgent:
                                 workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
                                 download_log=download_log_path,
                                 steps_log=steps_log_path,
-                                extra_env={"CUDA_VISIBLE_DEVICES": str(gpu_id)} if gpu_id is not None else None,
+                                extra_env={"CUDA_VISIBLE_DEVICES": str(gpu_id)} if use_gpu and gpu_id is not None else None,
                                 iterative_driver=phase1_iterative_driver,
                                 max_steps=phase1_max_steps,
                             )
                             term_outputs.extend(outputs)
                             if success:
+                                if memory_manager and resources_path:
+                                    try:
+                                        memory_manager.mem_resources_resolve_and_refresh(
+                                            memory_manager.run_id or ""
+                                        )
+                                    except Exception as exc:
+                                        logger.warning("Failed to update resource snapshot after Phase 1: %s", exc)
                                 try:
                                     active_env = worker_container.create_execution_env(
-                                        gpu_id=gpu_id,
+                                        gpu_id=gpu_id if use_gpu else None,
                                         enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
                                         overlay_path=worker_container.overlay_path,
                                         extra_start_args=getattr(cfg.exec, "container_extra_args", None),
@@ -3010,7 +3286,8 @@ class ParallelAgent:
                                     image=getattr(cfg.exec, "singularity_image", None),
                                     runtime_preference="singularity",
                                     workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
-                                    gpu_id=gpu_id,
+                                    gpu_id=gpu_id if use_gpu else None,
+                                    enable_gpu=use_gpu,
                                     enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
                                     overlay_path=getattr(cfg.exec, "container_overlay", None),
                                     extra_start_args=getattr(cfg.exec, "container_extra_args", None),
@@ -3210,6 +3487,12 @@ class ParallelAgent:
                             ],
                             "Response format": worker_agent._prompt_metricparse_resp_fmt(),
                         }
+                        worker_agent._inject_memory(
+                            parse_metrics_prompt,
+                            "parse_metrics",
+                            branch_id=getattr(child_node, "branch_id", None),
+                            budget_chars=2000,
+                        )
 
                         # LLM context (parse-metrics plan): Introduction + Context (original code + prior errors/code) + Instructions + Example parser + Response format.
                         (
@@ -3251,6 +3534,12 @@ class ParallelAgent:
                                 "Introduction": METRICS_PROMPT_INTRO,
                                 "Execution Output": metrics_exec_result.term_out,
                             }
+                            worker_agent._inject_memory(
+                                metrics_prompt,
+                                "metrics_extraction",
+                                branch_id=getattr(child_node, "branch_id", None),
+                                budget_chars=1500,
+                            )
                             print(
                                 f"[blue]Metrics_exec_result.term_out: {metrics_exec_result.term_out}[/blue]"
                             )
@@ -3473,6 +3762,38 @@ class ParallelAgent:
                 except Exception as exc:
                     logger.warning("Failed to save phase artifacts: %s", exc)
 
+            if memory_manager and child_branch_id:
+                try:
+                    result_text = (
+                        f"node_id={child_node.id} "
+                        f"metric={child_node.metric} "
+                        f"is_buggy={child_node.is_buggy} "
+                        f"exc_type={child_node.exc_type}"
+                    )
+                    memory_manager.mem_recall_append(
+                        {
+                            "ts": time.time(),
+                            "run_id": memory_manager.run_id,
+                            "node_id": child_node.id,
+                            "phase": stage_name,
+                            "kind": "node_result",
+                            "summary": result_text,
+                            "refs": [],
+                        }
+                    )
+                    if child_node.is_buggy and child_node.exc_info:
+                        memory_manager.mem_archival_write(
+                            f"Execution error: {child_node.exc_info}",
+                            tags=["ERROR", f"node_uid:{child_node.id}"],
+                            meta={
+                                "node_id": child_node.id,
+                                "branch_id": child_branch_id,
+                                "run_id": memory_manager.run_id,
+                            },
+                        )
+                except Exception as exc:
+                    logger.warning("Failed to write node_result memory: %s", exc)
+
             # Convert result node to dict
             print("Converting result to dict")
             result_data = child_node.to_dict()
@@ -3499,6 +3820,8 @@ class ParallelAgent:
                 process_interpreter.cleanup_session()
             if parse_interpreter:
                 parse_interpreter.cleanup_session()
+            if memory_manager:
+                memory_manager.close()
 
     def _generate_hyperparam_tuning_idea(self) -> Optional[HyperparamTuningIdea]:
         """Generate the next hyperparam tuning idea based on what's been done.
@@ -3517,6 +3840,9 @@ class ParallelAgent:
             },
             "Response format": HYPERPARAM_PROMPT_RESPONSE,
         }
+        memory_context = self._memory_context(self.root_branch_id, "hyperparam_idea")
+        if memory_context:
+            hyperparam_tuning_prompt["Memory"] = memory_context
 
         retry_count = 0
         retry_limit = 5
@@ -3569,6 +3895,9 @@ class ParallelAgent:
             },
             "Response format": ABLATION_PROMPT_RESPONSE,
         }
+        memory_context = self._memory_context(self.root_branch_id, "ablation_idea")
+        if memory_context:
+            ablation_prompt["Memory"] = memory_context
 
         retry_count = 0
         retry_limit = 5
@@ -3704,7 +4033,10 @@ class ParallelAgent:
                     continue
 
                 # Get best node from unprocessed tree if possible
-                best_node = self.journal.get_best_node(cfg=self.cfg)
+                memory_context = self._memory_context(self.root_branch_id, "best_node_selection")
+                best_node = self.journal.get_best_node(
+                    cfg=self.cfg, memory_context=memory_context
+                )
                 tree_root = best_node
                 while tree_root.parent:
                     tree_root = tree_root.parent
@@ -3751,16 +4083,20 @@ class ParallelAgent:
             else:
                 node_data_list.append(None)  # None means new draft
 
+        memory_context = self._memory_context(self.root_branch_id, "journal_summary")
         if self.cfg.agent.get("summary", None) is not None:
             memory_summary = self.journal.generate_summary(
-                include_code=False, 
+                include_code=False,
+                memory_context=memory_context,
                 **{
-                    "model": self.cfg.agent.summary.model, 
-                    "temp": self.cfg.agent.summary.temp
-                }
+                    "model": self.cfg.agent.summary.model,
+                    "temp": self.cfg.agent.summary.temp,
+                },
             )
         else:
-            memory_summary = self.journal.generate_summary(include_code=False)
+            memory_summary = self.journal.generate_summary(
+                include_code=False, memory_context=memory_context
+            )
 
         print("Submitting tasks to process pool")
         futures = []
@@ -3873,6 +4209,19 @@ class ParallelAgent:
                     self.gpu_manager.release_gpu(process_id)
                     logger.info(f"Released GPU for process {process_id}")
 
+        if self.memory_manager and self.root_branch_id:
+            try:
+                memory_context = self._memory_context(self.root_branch_id, "best_node_selection")
+                best_node = self.journal.get_best_node(
+                    cfg=self.cfg, memory_context=memory_context
+                )
+                if best_node and getattr(best_node, "branch_id", None):
+                    self.memory_manager.mem_node_promote(
+                        best_node.branch_id, self.root_branch_id, policy="selected_best"
+                    )
+            except Exception as exc:
+                logger.warning("Failed to promote best-node memory: %s", exc)
+
     def _update_hyperparam_tuning_state(self, result_node: Node):
         """Update hyperparam tuning tracking state based on execution results."""
         if not self.stage_name or not self.stage_name.startswith("2_"):
@@ -3941,6 +4290,12 @@ class ParallelAgent:
                 "plotting code 3:\n" + seed_nodes[2].plot_code + "\n\n"
             ),
         }
+        memory_context = self._memory_context(
+            getattr(parent_node, "branch_id", None) or self.root_branch_id,
+            "seed_plotting",
+        )
+        if memory_context:
+            plotting_prompt["Memory"] = memory_context
         seed_data_paths = []
         for seed_node in seed_nodes:
             exp_dir = Path(seed_node.exp_results_dir) if seed_node.exp_results_dir else None

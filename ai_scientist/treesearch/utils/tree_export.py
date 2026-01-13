@@ -1,6 +1,7 @@
 """Export journal to HTML visualization of tree + code."""
 
 import json
+import os
 import textwrap
 from pathlib import Path
 
@@ -71,6 +72,103 @@ def get_completed_stages(log_dir):
                 break  # No need to check other directories for this stage
 
     return completed_stages
+
+
+def get_stage_dir_map(log_dir: Path) -> dict[str, str]:
+    """
+    Map Stage_X to the actual stage directory name under log_dir.
+    Picks the newest directory when multiple matches exist for a stage.
+    """
+    stage_map: dict[str, str] = {}
+    for stage_dir in log_dir.iterdir():
+        if not stage_dir.is_dir():
+            continue
+        if not stage_dir.name.startswith("stage_"):
+            continue
+        parts = stage_dir.name.split("_")
+        if len(parts) < 2 or not parts[1].isdigit():
+            continue
+        stage_id = f"Stage_{parts[1]}"
+        try:
+            mtime = stage_dir.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        previous = stage_map.get(stage_id)
+        if not previous:
+            stage_map[stage_id] = stage_dir.name
+            continue
+        try:
+            previous_mtime = (log_dir / previous).stat().st_mtime
+        except OSError:
+            previous_mtime = 0.0
+        if mtime >= previous_mtime:
+            stage_map[stage_id] = stage_dir.name
+    return stage_map
+
+
+def stage_dir_to_stage_id(stage_dir_name: str) -> str | None:
+    if not stage_dir_name.startswith("stage_"):
+        return None
+    parts = stage_dir_name.split("_")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return None
+    return f"Stage_{parts[1]}"
+
+
+def _load_memory_events(log_dir: Path) -> list[dict]:
+    candidates = [
+        log_dir / "memory" / "memory_calls.jsonl",
+        log_dir / "memory_calls.jsonl",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        events: list[dict] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        payload = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(payload, dict):
+                        events.append(payload)
+        except Exception:
+            continue
+        if events:
+            return events
+    return []
+
+
+def _index_memory_events(
+    events: list[dict],
+    node_ids: list[str],
+    branch_ids: list[str | None],
+) -> list[list[dict]]:
+    indexed: list[list[dict]] = [[] for _ in node_ids]
+    node_index = {node_id: idx for idx, node_id in enumerate(node_ids) if node_id}
+    branch_index = {
+        branch_id: idx for idx, branch_id in enumerate(branch_ids) if branch_id
+    }
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        node_id = event.get("node_id")
+        branch_id = event.get("branch_id")
+        idx = None
+        if node_id and node_id in node_index:
+            idx = node_index[node_id]
+        elif branch_id and branch_id in branch_index:
+            idx = branch_index[branch_id]
+        if idx is None:
+            continue
+        indexed[idx].append(event)
+    for entries in indexed:
+        entries.sort(key=lambda entry: entry.get("ts", 0) or 0)
+    return indexed
 
 
 def cfg_to_tree_struct(cfg, jou: Journal, out_path: Path = None):
@@ -170,6 +268,18 @@ def cfg_to_tree_struct(cfg, jou: Journal, out_path: Path = None):
         ]
     except Exception as e:
         print(f"Error setting analysis: {e}")
+        raise
+
+    try:
+        tmp["node_id"] = [n.id for n in jou]
+    except Exception as e:
+        print(f"Error setting node_id: {e}")
+        raise
+
+    try:
+        tmp["branch_id"] = [getattr(n, "branch_id", None) for n in jou]
+    except Exception as e:
+        print(f"Error setting branch_id: {e}")
         raise
 
     try:
@@ -355,6 +465,24 @@ def cfg_to_tree_struct(cfg, jou: Journal, out_path: Path = None):
     if out_path:
         log_dir = out_path.parent.parent
         tmp["completed_stages"] = get_completed_stages(log_dir)
+        tmp["stage_dir_map"] = get_stage_dir_map(log_dir)
+        tmp["log_dir_path"] = os.path.relpath(log_dir, out_path.parent)
+        stage_id = stage_dir_to_stage_id(out_path.parent.name)
+        if stage_id:
+            tmp["current_stage"] = stage_id
+        try:
+            memory_events = _load_memory_events(log_dir)
+            if memory_events:
+                tmp["memory_events"] = _index_memory_events(
+                    memory_events,
+                    tmp.get("node_id") or [n.id for n in jou],
+                    tmp.get("branch_id") or [getattr(n, "branch_id", None) for n in jou],
+                )
+            else:
+                tmp["memory_events"] = [[] for _ in jou]
+        except Exception as e:
+            print(f"Error setting memory_events: {e}")
+            tmp["memory_events"] = [[] for _ in jou]
 
     return tmp
 
@@ -420,13 +548,7 @@ def create_unified_viz(cfg, current_stage_viz_path):
     log_dir = current_stage_viz_path.parent.parent
 
     # Get the current stage name from the path
-    current_stage = current_stage_viz_path.parent.name
-    if current_stage.startswith("stage_"):
-        # Extract the stage number from the directory name
-        parts = current_stage.split("_")
-        if len(parts) >= 2 and parts[1].isdigit():
-            stage_num = parts[1]
-            current_stage = f"Stage_{stage_num}"
+    current_stage = stage_dir_to_stage_id(current_stage_viz_path.parent.name)
 
     # Create a combined visualization at the top level
     unified_viz_path = log_dir / "unified_tree_viz.html"
@@ -442,34 +564,16 @@ def create_unified_viz(cfg, current_stage_viz_path):
 
     # Get completed stages by checking directories
     completed_stages = get_completed_stages(log_dir)
+    stage_dir_map = get_stage_dir_map(log_dir)
+    if not current_stage:
+        current_stage = completed_stages[0] if completed_stages else "Stage_1"
 
-    # Try to load the current stage's tree data to use as a basis
-    try:
-        current_stage_data_path = current_stage_viz_path.parent / "tree_data.json"
-        if current_stage_data_path.exists():
-            with open(current_stage_data_path, "r") as f:
-                base_data = json.load(f)
-                # Add the necessary metadata
-                base_data["current_stage"] = current_stage
-                base_data["completed_stages"] = completed_stages
-        else:
-            # If we can't load the tree data, create a minimal structure
-            base_data = {
-                "current_stage": current_stage,
-                "completed_stages": completed_stages,
-                # Add empty layout and edges to prevent errors
-                "layout": [],
-                "edges": [],
-            }
-    except Exception as e:
-        print(f"Error loading stage data: {e}")
-        # Create a minimal data structure that won't cause JS errors
-        base_data = {
-            "current_stage": current_stage,
-            "completed_stages": completed_stages,
-            "layout": [],
-            "edges": [],
-        }
+    base_data = {
+        "current_stage": current_stage,
+        "completed_stages": completed_stages,
+        "stage_dir_map": stage_dir_map,
+        "log_dir_path": ".",
+    }
 
     # Replace the placeholder in the JS with our data
     js = js.replace('"PLACEHOLDER_TREE_DATA"', json.dumps(base_data))

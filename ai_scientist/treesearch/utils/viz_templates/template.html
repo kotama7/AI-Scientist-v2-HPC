@@ -258,6 +258,72 @@
       .stage-status.not-started {
         background-color: #9e9e9e;
       }
+
+      .memory-panel {
+        margin-top: 20px;
+        padding: 10px;
+        background-color: #1f2430;
+        color: #f2f0e7;
+        border-left: 3px solid #f0b429;
+      }
+
+      .memory-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .memory-nav {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .memory-btn {
+        background-color: #444;
+        color: #f2f0e7;
+        border: none;
+        padding: 4px 8px;
+        cursor: pointer;
+      }
+
+      .memory-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .memory-phase-label {
+        font-size: 0.9em;
+      }
+
+      .memory-content {
+        margin-top: 8px;
+        white-space: pre-wrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.9em;
+      }
+
+      .memory-event {
+        margin-bottom: 10px;
+        padding: 8px;
+        background-color: #2a2f3a;
+        border-radius: 4px;
+      }
+
+      .memory-event-header {
+        font-weight: bold;
+      }
+
+      .memory-event-meta {
+        margin-top: 4px;
+        font-size: 0.85em;
+        color: #c5c9d3;
+      }
+
+      .memory-event-details {
+        margin-top: 6px;
+      }
     </style>
   </head>
   <body>
@@ -281,6 +347,18 @@
         <div id="exec_time_feedback"></div>
         <hr>
         <div id="metrics"></div>
+        <hr>
+        <div id="memory-panel" class="memory-panel">
+          <div class="memory-header">
+            <div class="memory-title">Memory Calls</div>
+            <div class="memory-nav">
+              <button id="memory-prev" class="memory-btn" onclick="shiftMemoryPhase(-1)">Prev</button>
+              <span id="memory-phase-label" class="memory-phase-label"></span>
+              <button id="memory-next" class="memory-btn" onclick="shiftMemoryPhase(1)">Next</button>
+            </div>
+          </div>
+          <div id="memory-content" class="memory-content"></div>
+        </div>
         <hr>
         <div id="plot_plan"></div>
         <hr>
