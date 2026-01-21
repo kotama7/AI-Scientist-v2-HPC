@@ -2816,6 +2816,12 @@ class ParallelAgent:
                                     shutil.copytree(src, dst, ignore=ignore_mounted_data, dirs_exist_ok=True)
                                 else:
                                     shutil.copy2(src, dst)
+                            except OSError as exc:
+                                # EBUSY on 'data' inside 'input' is expected (mounted/symlinked)
+                                if exc.errno == 16 and item.name == "input" and getattr(exc, 'filename', None) == 'data':
+                                    pass  # Silently ignore - data is intentionally skipped
+                                else:
+                                    logger.warning(f"Failed to copy {src} to {dst}: {exc}")
                             except Exception as exc:
                                 logger.warning(f"Failed to copy {src} to {dst}: {exc}")
 
