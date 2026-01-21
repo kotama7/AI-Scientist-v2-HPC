@@ -47,6 +47,17 @@ def extract_phase_artifacts(raw_text: str, *, default_language: str = "c") -> Di
                     "print('Placeholder code; LLM omitted files')\n"
                 ),
             )
+        if lang == "fortran":
+            return (
+                "src/main.f90",
+                (
+                    "! Auto-generated fallback to keep pipeline alive\n"
+                    "program main\n"
+                    "    implicit none\n"
+                    "    print *, 'Placeholder code; LLM omitted files'\n"
+                    "end program main\n"
+                ),
+            )
         return (
             "src/main.c",
             (
@@ -213,9 +224,86 @@ def apply_workspace_plan(workspace_root: Path, workspace_plan: Dict[str, Any], *
     return created
 
 
+def _get_lang_for_path(path: str) -> str:
+    """Return the appropriate language identifier for code blocks based on file extension."""
+    path_lower = path.lower()
+    filename = path_lower.split('/')[-1]
+
+    # Python
+    if path_lower.endswith('.py'):
+        return "python"
+    # C
+    if path_lower.endswith('.c'):
+        return "c"
+    # C++
+    if path_lower.endswith(('.cpp', '.cc', '.cxx', '.hpp', '.hxx')):
+        return "cpp"
+    # C/C++ headers
+    if path_lower.endswith('.h'):
+        return "c"
+    # Makefile
+    if filename == 'makefile' or filename.startswith('makefile.') or filename.endswith('.mk'):
+        return "makefile"
+    # Shell
+    if path_lower.endswith(('.sh', '.bash', '.zsh')):
+        return "bash"
+    # YAML
+    if path_lower.endswith(('.yaml', '.yml')):
+        return "yaml"
+    # JSON
+    if path_lower.endswith('.json'):
+        return "json"
+    # Fortran
+    if path_lower.endswith(('.f', '.f90', '.f95', '.for')):
+        return "fortran"
+    # Default
+    return ""
+
+
 def combine_sources_for_display(files: List[Dict[str, Any]]) -> str:
-    """Build a readable string representation of generated files."""
+    """Build a readable string representation of generated files (no code block wrappers)."""
     parts: list[str] = []
     for entry in files:
         parts.append(f"// File: {entry.get('path','')}\n{entry.get('content','')}")
+    return "\n\n".join(parts)
+
+
+def wrap_sources_for_display(files: List[Dict[str, Any]]) -> str:
+    """Build a readable string with each file wrapped in its own appropriately-typed code block."""
+    parts: list[str] = []
+    for entry in files:
+        path = entry.get('path', '')
+        content = entry.get('content', '')
+        lang = _get_lang_for_path(path)
+        parts.append(f"```{lang}\n// File: {path}\n{content}\n```")
+    return "\n\n".join(parts)
+
+
+def wrap_combined_code(code: str, fallback_lang: str = "") -> str:
+    """Parse a combined sources string and rewrap each file in its own appropriately-typed code block.
+
+    This handles the output of combine_sources_for_display by parsing '// File: ...' markers.
+    """
+    import re
+    # Pattern to match: // File: <path>\n<content until next // File: or end>
+    pattern = re.compile(r'// File:\s*([^\n]+)\n', re.MULTILINE)
+
+    matches = list(pattern.finditer(code))
+    if not matches:
+        # No file markers found, wrap the whole code with fallback language
+        return f"```{fallback_lang}\n{code}\n```"
+
+    parts: list[str] = []
+    for i, match in enumerate(matches):
+        path = match.group(1).strip()
+        start = match.end()
+        # Content goes until the next match or end of string
+        if i + 1 < len(matches):
+            end = matches[i + 1].start()
+        else:
+            end = len(code)
+        content = code[start:end].rstrip('\n')
+        lang = _get_lang_for_path(path)
+        parts.append(f"```{lang}\n// File: {path}\n{content}\n```")
+
     return "\n\n".join(parts)

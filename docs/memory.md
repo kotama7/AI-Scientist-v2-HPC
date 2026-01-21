@@ -30,13 +30,11 @@ overridden with `--memory_db`.
 
 - Child nodes inherit Core/Recall/Archival visibility from ancestors.
 - Writes are isolated to the current branch (siblings do not see each other).
-- When a node is selected as best, memory can be promoted to parents.
 
 ## Persistence hooks
 
-- Phase 0 internal info is captured into
-  `experiments/<run>/memory/phase0_internal_info.json|md`, tagged
-  `PHASE0_INTERNAL`, and summarized into Core.
+- Phase 0 internal info is captured into archival memory (tag
+  `PHASE0_INTERNAL`) and summarized into Core.
 - `idea.md` is archived at run start (tags `IDEA_MD`, `ROOT_IDEA`) and on updates
   per node; a short summary is always injected.
 - Run end generates `experiments/<run>/memory/final_memory_for_paper.md|json`.
@@ -59,6 +57,59 @@ memory:
   `resource_path:<path>`).
 - Final paper memory includes a "Resources used" section with ids/digests/staged
   paths for referenced resources.
+
+## LLM-based compression
+
+When `memory.use_llm_compression=true` (default), the memory system uses an LLM
+to intelligently compress content instead of simple truncation. This preserves
+key information while fitting within size limits.
+
+- Compression uses the model specified in `memory.compression_model`.
+- The prompt template lives at `prompt/config/memory/compression.txt`.
+- Compression is cached per text hash to avoid redundant LLM calls.
+- Falls back to simple truncation on errors or when LLM is unavailable.
+- Use `--memory_max_compression_iterations` (default 3) to control iterative
+  compression attempts when content exceeds budget.
+
+### Compression prompt template
+
+The compression prompt (`prompt/config/memory/compression.txt`) instructs the LLM to:
+
+1. Preserve key facts, metrics, and numerical values.
+2. Keep critical decisions and conclusions.
+3. Retain essential technical details and relationships.
+4. Remove redundant information and verbose explanations.
+5. Produce coherent, readable summaries (not keyword fragments).
+
+The template accepts `{max_chars}`, `{current_chars}`, `{context_hint}`, and
+`{text}` placeholders.
+
+### Section budgets
+
+Section budgets control per-section character limits. Configure via
+`memory.section_budgets.<key>` in `bfts_config.yaml`:
+
+| Section | Default chars | Purpose |
+| --- | --- | --- |
+| `idea_summary` | 9600 | Compressed research idea |
+| `idea_section_limit` | 4800 | Per-section limit for idea summary bullets |
+| `phase0_summary` | 5000 | Phase 0 configuration summary |
+| `archival_snippet` | 3000 | Archival memory excerpts |
+| `results` | 4000 | Result summaries |
+
+Additional per-section budget keys (configure directly under `memory`):
+
+| Key | Default chars | Purpose |
+| --- | --- | --- |
+| `datasets_tested_budget_chars` | 4000 | Tested datasets summary |
+| `metrics_extraction_budget_chars` | 4000 | Metrics extraction |
+| `plotting_code_budget_chars` | 4000 | Plotting code summary |
+| `plot_selection_budget_chars` | 4000 | Plot selection summary |
+| `vlm_analysis_budget_chars` | 4000 | VLM analysis summary |
+| `node_summary_budget_chars` | 4000 | Node summaries |
+| `parse_metrics_budget_chars` | 4000 | Parsed metrics |
+
+The overall budget is controlled by `memory.memory_budget_chars` (default 24000).
 
 ## Tuning memory size
 
@@ -103,8 +154,6 @@ Available adapter methods (internal; arguments omitted):
   (`scope=all|core|recall|archival`).
 - `mem_node_write`: batch write core updates, recall event, and/or archival
   records for a node.
-- `mem_node_promote`: promote child memory to a parent (`selected_best`,
-  `resources_update`, `writeup_ready`).
 - `mem_resources_index_update`: update the resource index entry for the run.
 - `mem_resources_snapshot_upsert`: upsert a resource item snapshot into
   archival memory.

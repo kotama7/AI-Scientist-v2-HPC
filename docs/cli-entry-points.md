@@ -17,20 +17,57 @@ Inputs:
 
 - `--load_ideas` path to an idea JSON list.
 - `--idea_idx` to choose a specific idea.
+- `--additional-information` path to supplementary text file to append to idea.
 - `--singularity_image` for split mode.
 
 Outputs:
 
 - A run directory under `experiments/` with logs, artifacts, and optional
   writeups.
+- Token tracking files: `token_tracker.json` and `token_tracker_interactions.json`.
 
-Common flags:
+Core flags:
 
+- `--phase_mode`: execution mode (`split` or `single`).
 - `--skip_plot`, `--skip_writeup`, `--skip_review` to disable downstream stages.
 - `--writable_mode` and `--phase1_max_steps` to control split-mode installs.
 - `--use_gpu` to toggle GPU access inside Singularity.
+- `--num_workers` to set parallel worker count.
 - `--resources` to add mounted data and prompt context.
+- `--attempt_id` to distinguish parallel runs of the same idea.
+
+Container flags:
+
+- `--container_overlay` writable overlay for apt-get inside Singularity.
+- `--disable_writable_tmpfs` disable tmpfs for container instances.
+- `--per_worker_sif` build per-worker SIFs (default true).
+- `--keep_sandbox` keep sandbox after SIF build.
+- `--use_fakeroot` use fakeroot for Singularity operations.
+
+Memory flags:
+
 - `--enable_memgpt` to turn on hierarchical memory.
+- `--memory_db` custom SQLite database path.
+- `--memory_core_max_chars`, `--memory_recall_max_events`, `--memory_retrieval_k`
+  to tune memory injection.
+- `--memory_max_compression_iterations` max LLM compression attempts (default 3).
+
+Writeup flags:
+
+- `--writeup-type`: format (`normal`, `auto`).
+- `--writeup-page-limit`: page limit for normal writeups.
+- `--writeup-retries`: number of writeup attempts.
+- `--writeup-reflections`: reflection steps during writeup.
+
+Model selection flags:
+
+- `--model_agg_plots`: model for plot aggregation.
+- `--model_agg_plots_ref`: reflections for plot aggregation.
+- `--model_writeup`: model for writeup.
+- `--model_writeup_small`: smaller model for writeup tasks.
+- `--model_citation`: model for citations.
+- `--num_cite_rounds`: citation rounds.
+- `--model_review`: model for review.
 
 Example:
 
@@ -39,7 +76,9 @@ python launch_scientist_bfts.py \
   --load_ideas ai_scientist/ideas/himeno_benchmark_challenge.json \
   --idea_idx 0 \
   --singularity_image template/base.sif \
-  --num_workers 4
+  --num_workers 4 \
+  --enable_memgpt \
+  --writeup-type normal
 ```
 
 ## `generate_paper.py`
@@ -57,7 +96,7 @@ Example:
 ```bash
 python generate_paper.py \
   --experiment-dir experiments/<run> \
-  --writeup-type icbinb
+  --writeup-type normal
 ```
 
 ## `ai_scientist/perform_ideation_temp_free.py`
@@ -94,11 +133,29 @@ python ai_scientist/perform_plotting.py \
 
 ## `ai_scientist/perform_writeup.py`
 
-Eight-page writeup pipeline. Use for full-length writeups.
+Writeup pipeline. Use for generating paper writeups.
 
-## `ai_scientist/perform_icbinb_writeup.py`
+## `regenerate_final_memory.py`
 
-Four-page writeup pipeline (shorter format).
+Utility script to regenerate final memory artifacts for an existing experiment
+run. Use this when you need to rebuild `final_memory_for_paper.md` and
+`final_writeup_memory.json` after modifying memory configuration or fixing
+corrupted memory data.
+
+Key features:
+
+- Restores idea.md from the original idea source JSON.
+- Refreshes Phase 0 summary in core memory.
+- Regenerates final memory artifacts for paper writeup.
+
+Example:
+
+```bash
+python regenerate_final_memory.py
+```
+
+Note: You need to edit the script to specify the experiment directory and
+source idea file path before running.
 
 ## `ai_scientist/treesearch/perform_experiments_bfts_with_agentmanager.py`
 

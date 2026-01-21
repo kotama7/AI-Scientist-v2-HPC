@@ -1,4 +1,4 @@
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from typing import List, Optional, Set, Any, Callable, cast, Dict, Tuple
 import json
 import random
@@ -6,6 +6,7 @@ import os
 import shutil
 import re
 import uuid
+import copy
 from queue import Queue
 import logging
 import humanize
@@ -13,7 +14,6 @@ import time
 from .backend import FunctionSpec, compile_prompt_to_md, query
 from .interpreter import ExecutionResult
 from .journal import Journal, Node
-from .utils import data_preview
 from .utils.config import Config
 from .utils.metric import MetricValue, WorstMetricValue
 from .utils.response import extract_code, extract_text_up_to_code, wrap_code
@@ -22,6 +22,8 @@ from .utils.phase_execution import (
     SingularityWorkerContainer,
     collect_available_compilers,
     collect_available_libs,
+    collect_system_performance_tools,
+    collect_installed_system_packages,
     summarize_text,
     summarize_command_output,
     run_in_container,
@@ -31,6 +33,7 @@ from .utils.phase_plan import (
     apply_workspace_plan,
     combine_sources_for_display,
     extract_phase_artifacts,
+    wrap_combined_code,
 )
 from .utils.resource import (
     ResourceConfig,
@@ -41,6 +44,8 @@ from .utils.resource import (
 )
 from .worker_plan import resolve_worker_plan
 import pickle
+import ast
+import numpy as np
 from dataclasses import asdict
 from ai_scientist.prompt_loader import load_prompt, load_prompt_lines, format_prompt
 from ai_scientist.memory import MemoryManager
@@ -54,6 +59,7 @@ from rich.markup import escape
 from pathlib import Path
 import base64
 import sys
+import filelock
 
 
 logger = logging.getLogger("ai-scientist")
@@ -61,24 +67,18 @@ logger = logging.getLogger("ai-scientist")
 ExecCallbackType = Callable[[str, bool], ExecutionResult]
 
 
-PROMPT_BASE = "treesearch/parallel_agent/"
+PROMPT_BASE = "agent/parallel/"
 
-BASE_SYSTEM_PROMPT = load_prompt("base_system").rstrip("\n")
-DOMAIN_NEUTRAL_PROMPT = load_prompt("domain_neutral").rstrip("\n")
-ENVIRONMENT_INJECTION_TEMPLATE = load_prompt("environment_injection").rstrip("\n")
-AI_OPTIONAL_PROMPT = load_prompt("ai_optional").rstrip("\n")
-PHASE1_ITERATIVE_INSTALLER_PROMPT = load_prompt("phase1_iterative_installer").rstrip("\n")
-PHASE0_WHOLE_PLANNING_PROMPT = load_prompt("phase0_whole_planning").rstrip("\n")
-ENVIRONMENT_RESOURCES_INJECTION_TEMPLATE = load_prompt("environment_resources_injection").rstrip("\n")
+BASE_SYSTEM_PROMPT = load_prompt("core/system").rstrip("\n")
+DOMAIN_NEUTRAL_PROMPT = load_prompt("core/domain_neutral").rstrip("\n")
+ENVIRONMENT_INJECTION_TEMPLATE = load_prompt("config/environment/injection").rstrip("\n")
+AI_OPTIONAL_PROMPT = load_prompt("core/ai_optional").rstrip("\n")
+PHASE1_ITERATIVE_INSTALLER_PROMPT = load_prompt("config/phases/phase1_installer").rstrip("\n")
+PHASE0_WHOLE_PLANNING_PROMPT = load_prompt("config/phases/phase0_planning").rstrip("\n")
+ENVIRONMENT_RESOURCES_INJECTION_TEMPLATE = load_prompt("config/environment/resources_injection").rstrip("\n")
 
-IMPLEMENTATION_GUIDELINE_PRE = tuple(
-    load_prompt_lines(PROMPT_BASE + "implementation_guideline/pre")
-)
-IMPLEMENTATION_GUIDELINE_POST = tuple(
-    load_prompt_lines(PROMPT_BASE + "implementation_guideline/post")
-)
 IMPLEMENTATION_GUIDELINE_DATASET = tuple(
-    load_prompt_lines(PROMPT_BASE + "implementation_guideline/dataset")
+    load_prompt_lines(PROMPT_BASE + "guidelines/implementation/dataset")
 )
 DATA_SOURCE_GUIDELINES = {
     "auto": tuple(load_prompt_lines(PROMPT_BASE + "data_source/auto")),
@@ -90,7 +90,7 @@ RESPONSE_FORMAT_DEFAULT = load_prompt(
     PROMPT_BASE + "response_format/default"
 ).rstrip("\n")
 RESPONSE_FORMAT_SPLIT_PHASE = load_prompt(
-    "execution_split_schema"
+    PROMPT_BASE + "response_format/execution_split"
 ).rstrip("\n")
 RESPONSE_FORMAT_METRIC_PARSE = load_prompt(
     PROMPT_BASE + "response_format/metric_parse"
@@ -99,84 +99,85 @@ RESPONSE_FORMAT_DEBUG = load_prompt(
     PROMPT_BASE + "response_format/debug"
 ).rstrip("\n")
 RESPONSE_FORMAT_HPARAM = load_prompt(
-    PROMPT_BASE + "response_format/hyperparam_tuning"
+    PROMPT_BASE + "response_format/hyperparam"
 ).rstrip("\n")
 RESPONSE_FORMAT_ABLATION = load_prompt(
     PROMPT_BASE + "response_format/ablation"
 ).rstrip("\n")
 
-DRAFT_INTRO = load_prompt(PROMPT_BASE + "draft/introduction").rstrip("\n")
+DRAFT_INTRO = load_prompt(PROMPT_BASE + "tasks/draft/introduction").rstrip("\n")
 DRAFT_EXP_GUIDELINES = tuple(
-    load_prompt_lines(PROMPT_BASE + "draft/experiment_design_sketch_guideline")
+    load_prompt_lines(PROMPT_BASE + "tasks/draft/experiment_design_sketch_guideline")
 )
 
-DEBUG_INTRO = load_prompt(PROMPT_BASE + "debug/introduction").rstrip("\n")
+DEBUG_INTRO = load_prompt(PROMPT_BASE + "tasks/debug/introduction").rstrip("\n")
 DEBUG_BUGFIX_GUIDELINES = tuple(
-    load_prompt_lines(PROMPT_BASE + "debug/bugfix_improvement_sketch_guideline")
+    load_prompt_lines(PROMPT_BASE + "tasks/debug/bugfix_improvement_sketch_guideline")
 )
 
-IMPROVE_INTRO = load_prompt(PROMPT_BASE + "improve/introduction").rstrip("\n")
+IMPROVE_INTRO = load_prompt(PROMPT_BASE + "tasks/improve/introduction").rstrip("\n")
 
 HYPERPARAM_NODE_INTRO_PREFIX = load_prompt(
-    PROMPT_BASE + "hyperparam_node/introduction_prefix"
+    PROMPT_BASE + "nodes/hyperparam/introduction"
 ).rstrip("\n")
 HYPERPARAM_NODE_INSTRUCTIONS = tuple(
-    load_prompt_lines(PROMPT_BASE + "hyperparam_node/instructions")
+    load_prompt_lines(PROMPT_BASE + "nodes/hyperparam/instructions")
 )
 
 ABLATION_NODE_INTRO_PREFIX = load_prompt(
-    PROMPT_BASE + "ablation_node/introduction_prefix"
+    PROMPT_BASE + "nodes/ablation/introduction"
 ).rstrip("\n")
 ABLATION_NODE_INSTRUCTIONS = tuple(
-    load_prompt_lines(PROMPT_BASE + "ablation_node/instructions")
+    load_prompt_lines(PROMPT_BASE + "nodes/ablation/instructions")
 )
 
 EXECUTION_REVIEW_INTRO = load_prompt(
-    PROMPT_BASE + "execution_review/introduction"
+    PROMPT_BASE + "tasks/execution_review/introduction"
 ).rstrip("\n")
 
 PLOTTING_GUIDELINE_BASE = tuple(
-    load_prompt_lines(PROMPT_BASE + "plotting_guideline/base")
+    load_prompt_lines(PROMPT_BASE + "guidelines/plotting/base")
 )
 PLOTTING_GUIDELINE_TAIL = tuple(
-    load_prompt_lines(PROMPT_BASE + "plotting_guideline/tail")
+    load_prompt_lines(PROMPT_BASE + "guidelines/plotting/tail")
 )
 
 DETERMINE_DATASETS_INTRO = load_prompt(
-    PROMPT_BASE + "determine_datasets/introduction"
+    PROMPT_BASE + "tasks/determine_datasets/introduction"
 ).rstrip("\n")
 DETERMINE_DATASETS_RESPONSE = load_prompt(
-    PROMPT_BASE + "determine_datasets/response_format"
+    PROMPT_BASE + "tasks/determine_datasets/response_format"
 ).rstrip("\n")
 
 SELECT_PLOTS_INTRO = load_prompt(
-    PROMPT_BASE + "select_plots/introduction"
+    PROMPT_BASE + "tasks/select_plots/introduction"
 ).rstrip("\n")
 
-SUMMARY_INTRO = load_prompt(PROMPT_BASE + "summary/introduction").rstrip("\n")
+SUMMARY_INTRO = load_prompt(PROMPT_BASE + "tasks/summary/introduction").rstrip("\n")
 
 DEFINE_METRICS_INTRO = load_prompt(
-    PROMPT_BASE + "define_global_metrics/introduction"
+    PROMPT_BASE + "tasks/define_metrics/introduction"
 ).rstrip("\n")
 DEFINE_METRICS_INSTRUCTIONS = tuple(
-    load_prompt_lines(PROMPT_BASE + "define_global_metrics/instructions")
+    load_prompt_lines(PROMPT_BASE + "tasks/define_metrics/instructions")
 )
 
 PARSE_METRICS_INTRO = load_prompt(
-    PROMPT_BASE + "parse_metrics_prompt/introduction"
+    PROMPT_BASE + "tasks/parse_metrics/introduction"
 ).rstrip("\n")
 PARSE_METRICS_INSTRUCTIONS = tuple(
-    load_prompt_lines(PROMPT_BASE + "parse_metrics_prompt/instructions")
+    load_prompt_lines(PROMPT_BASE + "tasks/parse_metrics/instructions")
 )
 PARSE_METRICS_EXAMPLE = load_prompt(
-    PROMPT_BASE + "parse_metrics_prompt/example"
+    PROMPT_BASE + "tasks/parse_metrics/example"
 ).rstrip("\n")
 MAX_METRIC_PARSE_RETRIES = 3
 
 METRICS_PROMPT_INTRO = load_prompt(
-    PROMPT_BASE + "metrics_prompt/introduction"
+    PROMPT_BASE + "tasks/metrics/introduction"
 ).rstrip("\n")
 VLM_ANALYSIS_PROMPT_TEMPLATE = load_prompt(PROMPT_BASE + "vlm_analysis")
+SEED_INJECTION_PROMPT = load_prompt(PROMPT_BASE + "seed_injection").rstrip("\n")
 
 
 def _normalize_language(language: str | None) -> str:
@@ -446,6 +447,9 @@ def _render_prompt_for_log(prompt: Any) -> str:
     return str(rendered)
 
 
+from ai_scientist.persona import apply_persona_override
+
+
 def _write_prompt_log(
     log_dir: Path,
     name: str,
@@ -456,9 +460,14 @@ def _write_prompt_log(
     if prompt is None:
         return
     log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # improved logging: apply persona override to the prompt object
+    # so that the JSON log also reflects the substitution
+    safe_prompt = apply_persona_override(prompt)
+    
     payload = {
         "meta": meta or {},
-        "prompt": prompt,
+        "prompt": safe_prompt,
     }
     (log_dir / f"{name}.json").write_text(
         json.dumps(payload, indent=2, default=str),
@@ -642,36 +651,36 @@ def _collect_phase0_history(
     return summary, full
 
 HYPERPARAM_PROMPT_INTRO = load_prompt(
-    PROMPT_BASE + "hyperparam_tuning_prompt/introduction"
+    PROMPT_BASE + "tasks/hyperparam_tuning/introduction"
 ).rstrip("\n")
 HYPERPARAM_PROMPT_INSTRUCTIONS = tuple(
-    load_prompt_lines(PROMPT_BASE + "hyperparam_tuning_prompt/instructions")
+    load_prompt_lines(PROMPT_BASE + "tasks/hyperparam_tuning/instructions")
 )
 HYPERPARAM_PROMPT_RESPONSE = load_prompt(
-    PROMPT_BASE + "hyperparam_tuning_prompt/response_format"
+    PROMPT_BASE + "tasks/hyperparam_tuning/response_format"
 ).rstrip("\n")
 
 ABLATION_PROMPT_INTRO = load_prompt(
-    PROMPT_BASE + "ablation_prompt/introduction"
+    PROMPT_BASE + "tasks/ablation_analysis/introduction"
 ).rstrip("\n")
 ABLATION_PROMPT_INSTRUCTIONS = tuple(
-    load_prompt_lines(PROMPT_BASE + "ablation_prompt/instructions")
+    load_prompt_lines(PROMPT_BASE + "tasks/ablation_analysis/instructions")
 )
 ABLATION_PROMPT_RESPONSE = load_prompt(
-    PROMPT_BASE + "ablation_prompt/response_format"
+    PROMPT_BASE + "tasks/ablation_analysis/response_format"
 ).rstrip("\n")
 
 SEED_PLOTTING_GUIDELINE_BASE = tuple(
-    load_prompt_lines(PROMPT_BASE + "seed_plotting_guideline/base")
+    load_prompt_lines(PROMPT_BASE + "guidelines/seed_plotting/base")
 )
 SEED_PLOTTING_GUIDELINE_TAIL = tuple(
-    load_prompt_lines(PROMPT_BASE + "seed_plotting_guideline/tail")
+    load_prompt_lines(PROMPT_BASE + "guidelines/seed_plotting/tail")
 )
 SEED_PLOTTING_PROMPT_INTRO = load_prompt(
-    PROMPT_BASE + "seed_plotting_prompt/introduction"
+    PROMPT_BASE + "tasks/seed_plotting/introduction"
 ).rstrip("\n")
 SEED_PLOTTING_PROMPT_RESPONSE = load_prompt(
-    PROMPT_BASE + "seed_plotting_prompt/response_format"
+    PROMPT_BASE + "tasks/seed_plotting/response_format"
 ).rstrip("\n")
 
 def _safe_pickle_test(obj, name="object"):
@@ -682,6 +691,57 @@ def _safe_pickle_test(obj, name="object"):
     except Exception as e:
         logger.error(f"Cannot pickle {name}: {str(e)}")
         return False
+
+
+def _extract_npy_schema(file_path: Path, max_depth: int = 2) -> str:
+    """
+    Extract schema information from a .npy file.
+
+    Returns a string describing the structure of the data, including:
+    - Top-level type
+    - Keys (if dict)
+    - Nested structure up to max_depth
+
+    This helps LLM understand the actual data format for metrics parsing.
+    """
+    try:
+        data = np.load(str(file_path), allow_pickle=True)
+        # np.load returns ndarray; if it contains a dict, extract it
+        if isinstance(data, np.ndarray):
+            if data.ndim == 0:
+                # Scalar array containing an object (e.g., dict)
+                data = data.item()
+            elif data.size == 1:
+                data = data.flat[0]
+
+        def describe_structure(obj, depth=0) -> str:
+            indent = "  " * depth
+            if depth >= max_depth:
+                return f"{type(obj).__name__}"
+
+            if isinstance(obj, dict):
+                if not obj:
+                    return "dict (empty)"
+                keys_desc = []
+                for k, v in obj.items():
+                    v_desc = describe_structure(v, depth + 1)
+                    keys_desc.append(f"{indent}  '{k}': {v_desc}")
+                return "dict with keys:\n" + "\n".join(keys_desc)
+            elif isinstance(obj, (list, tuple)):
+                type_name = type(obj).__name__
+                if not obj:
+                    return f"{type_name} (empty)"
+                # Show first element's structure
+                elem_desc = describe_structure(obj[0], depth + 1)
+                return f"{type_name}[{len(obj)} items], each: {elem_desc}"
+            elif isinstance(obj, np.ndarray):
+                return f"ndarray(shape={obj.shape}, dtype={obj.dtype})"
+            else:
+                return type(obj).__name__
+
+        return describe_structure(data)
+    except Exception as e:
+        return f"(failed to read schema: {e})"
 
 
 def _parse_keyword_prefix_response(
@@ -814,19 +874,14 @@ metric_parse_spec = FunctionSpec(
                                         "type": "string",
                                         "description": "The name of the dataset. Never include 'train', 'val', or 'test' in the dataset name.",
                                     },
-                                    "final_value": {
+                                    "value": {
                                         "type": "number",
-                                        "description": "The final value of the metric for this dataset",
-                                    },
-                                    "best_value": {
-                                        "type": "number",
-                                        "description": "The best value of the metric for this dataset",
+                                        "description": "The value of the metric for this dataset",
                                     },
                                 },
                                 "required": [
                                     "dataset_name",
-                                    "final_value",
-                                    "best_value",
+                                    "value",
                                 ],
                             },
                         },
@@ -923,7 +978,6 @@ class MinimalAgent:
         self.stage_name = stage_name
         self.memory_manager = memory_manager
         self.branch_id = branch_id
-        self.data_preview = None
         self.environment_context = environment_context or {}
         self.phase0_plan = phase0_plan
         self.phase0_history = phase0_history or {}
@@ -991,6 +1045,12 @@ class MinimalAgent:
                 "Do not use Python for the main implementation.",
                 'Use .cpp sources and set build_plan.language to "cpp" in split-phase.',
             ]
+        if lang == "fortran":
+            return [
+                "Implement the solution in Fortran (use ```fortran``` code blocks).",
+                "Do not use Python for the main implementation.",
+                'Use .f90 sources and set build_plan.language to "fortran" in split-phase.',
+            ]
         return [
             f"Implement the solution in {lang}.",
             "Do not use Python for the main implementation.",
@@ -1008,10 +1068,18 @@ class MinimalAgent:
         if self.phase_mode == "split":
             compilers = self.environment_context.get("available_compilers", [])
             libs = self.environment_context.get("available_libs", [])
+            performance_tools = self.environment_context.get("system_performance_tools", [])
+            installed_packages = self.environment_context.get("installed_system_packages", [])
+            # Build system perf tool names list from probe results
+            performance_tool_names = ", ".join([t.get("name", "") for t in performance_tools if isinstance(t, dict)]) or "none"
             payload = {
                 "available_compilers_json": json.dumps(compilers, indent=2),
                 "available_compiler_names": ", ".join([c.get("name", "") for c in compilers if isinstance(c, dict)]) or "none",
                 "available_libs": json.dumps(libs, indent=2),
+                "system_performance_tools_json": json.dumps(performance_tools, indent=2),
+                "system_performance_tool_names": performance_tool_names if performance_tool_names != "none" else "none (no performance tools detected)",
+                "installed_system_packages_json": json.dumps(installed_packages, indent=2),
+                "installed_system_package_names": ", ".join([p.get("name", "") for p in installed_packages if isinstance(p, dict)]) or "none",
                 "container_runtime": self.environment_context.get("container_runtime") or "host",
                 "singularity_image": self.environment_context.get("singularity_image") or "none",
                 "workspace_mount": self.environment_context.get("workspace_mount", "/workspace"),
@@ -1019,24 +1087,25 @@ class MinimalAgent:
                 "memory_info": self.environment_context.get("memory_info", "unknown"),
                 "gpu_info": self.environment_context.get("gpu_info", "unknown"),
             }
-            rendered_message = format_prompt("environment_injection", **payload)
+            rendered_message = format_prompt("config/environment/injection", **payload)
             return {"Environment injection": rendered_message}
 
         if self.cfg.exec.env_packages_template:
             package_template = self.cfg.exec.env_packages_template
         else:
-            package_template = "treesearch/parallel_agent/environment/packages"
+            package_template = "agent/parallel/environment/packages"
 
         packages = load_prompt_lines(package_template)
 
         if self.cfg.exec.env_packages_template:
-            env_message_template = (
-                "treesearch/parallel_agent/environment/message_cpp"
-                if "cpp" in package_template
-                else "treesearch/parallel_agent/environment/message"
-            )
+            if "cpp" in package_template:
+                env_message_template = "agent/parallel/environment/message_cpp"
+            elif "fortran" in package_template:
+                env_message_template = "agent/parallel/environment/message_fortran"
+            else:
+                env_message_template = "agent/parallel/environment/message"
         else:
-            env_message_template = "treesearch/parallel_agent/environment/message"
+            env_message_template = "agent/parallel/environment/message"
 
         message = load_prompt(env_message_template).rstrip("\n")
 
@@ -1068,6 +1137,93 @@ class MinimalAgent:
         if ctx:
             prompt["Resources"] = ctx
 
+    def _inject_seed_with_llm(self, node: Node, seed: int) -> None:
+        prompt: dict[str, Any] = {
+            "Introduction": SEED_INJECTION_PROMPT,
+            "Language": self.code_language,
+            "Default seed": seed,
+        }
+        raw_phase_artifacts = getattr(node, "phase_artifacts", None)
+        phase_data = None
+        if isinstance(raw_phase_artifacts, dict):
+            phase_data = raw_phase_artifacts.get("phase_artifacts") or raw_phase_artifacts
+        elif isinstance(raw_phase_artifacts, list) and raw_phase_artifacts:
+            first = raw_phase_artifacts[0]
+            if isinstance(first, dict):
+                phase_data = first.get("phase_artifacts") or first
+        if isinstance(phase_data, list) and phase_data:
+            phase_data = phase_data[0]
+
+        files = None
+        if self.phase_mode == "split" and isinstance(phase_data, dict):
+            coding = phase_data.get("coding", {})
+            workspace = coding.get("workspace", {})
+            files = workspace.get("files", [])
+            if isinstance(files, list) and files:
+                prompt["Files"] = [
+                    {"path": f.get("path", ""), "content": f.get("content", "")}
+                    for f in files
+                    if isinstance(f, dict)
+                ]
+            else:
+                files = None
+
+        if files is None:
+            prompt["Code"] = wrap_combined_code(node.code, fallback_lang=self.code_language)
+
+        self._log_prompt(
+            prompt,
+            label="seed_injection",
+            meta={"phase": "seed_eval", "seed": seed},
+        )
+        response_text = query(
+            system_message=prompt,
+            user_message=None,
+            model=self.cfg.agent.code.model,
+            temperature=self.cfg.agent.code.temp,
+        )
+        try:
+            parsed = _parse_json_object(response_text, context="Seed injection")
+        except Exception as exc:
+            logger.warning("Seed injection failed to parse LLM response: %s", exc)
+            return
+
+        updates = parsed.get("files")
+        if not isinstance(updates, list) or not updates:
+            return
+
+        if files is not None:
+            file_map = {
+                f.get("path", ""): f for f in files if isinstance(f, dict)
+            }
+            updated = False
+            for update in updates:
+                if not isinstance(update, dict):
+                    continue
+                path = update.get("path")
+                content = update.get("content")
+                if isinstance(path, str) and path in file_map and isinstance(content, str):
+                    file_map[path]["content"] = content
+                    updated = True
+            if updated:
+                node.code = combine_sources_for_display(files)
+            return
+
+        target_name = str(getattr(self.cfg.exec, "agent_file_name", "") or "")
+        selected_content = None
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            if update.get("path") == target_name and isinstance(update.get("content"), str):
+                selected_content = update["content"]
+                break
+        if selected_content is None:
+            first = updates[0]
+            if isinstance(first, dict) and isinstance(first.get("content"), str):
+                selected_content = first["content"]
+        if selected_content:
+            node.code = selected_content
+
     def _log_prompt(self, prompt: Any, *, label: str, meta: dict[str, Any] | None = None) -> None:
         if not self.prompt_log_dir:
             return
@@ -1082,59 +1238,55 @@ class MinimalAgent:
             payload.update(meta)
         _write_prompt_log(self.prompt_log_dir, name, prompt, meta=payload)
 
-    @property
-    def _prompt_impl_guideline(self):
-        if self.phase_mode == "split":
-            domain_guideline = DOMAIN_NEUTRAL_PROMPT.splitlines()
-            language_notes = self._language_requirements()
-            if language_notes:
-                domain_guideline = language_notes + domain_guideline
-            return {"Implementation guideline": domain_guideline}
+    def _build_impl_guideline(self) -> list[str]:
+        """Build implementation guidelines dynamically based on language."""
+        impl_guideline: list[str] = []
 
-        if self.code_language != "python":
-            impl_guideline: list[str] = []
-            language_notes = self._language_requirements()
-            if language_notes:
-                impl_guideline.extend(language_notes)
-            else:
-                impl_guideline.append(f"Implement the solution in {self.code_language}.")
-            impl_guideline.append("Keep the program self-contained and runnable as-is.")
-            impl_guideline.append("Write outputs under ./working (create the directory if needed).")
+        # Language-specific requirements
+        language_notes = self._language_requirements()
+        if language_notes:
+            impl_guideline.extend(language_notes)
+        else:
+            impl_guideline.append(f"Implement the solution in {self.code_language}.")
+
+        # Common structure requirements
+        impl_guideline.append("Keep the program self-contained and runnable as-is.")
+        impl_guideline.append("Write outputs under ./working (create the directory if needed).")
+
+        # Python-specific: GPU and model requirements
+        if self.code_language == "python":
+            impl_guideline.extend([
+                "GPU REQUIREMENTS:",
+                "  - At the start of your code, add: device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')",
+                "  - Move models to device using .to(device)",
+                "  - Move input tensors to device using .to(device)",
+                "  - Create optimizers AFTER moving model to device",
+                "MODEL INPUT GUIDELINES:",
+                "  - Always ensure input to the model is properly normalized",
+            ])
+
+        # Reproducibility requirements
+        impl_guideline.append(
+            "REPRODUCIBILITY: If the code uses randomness, define a seed initialization function and call it before any stochastic operations."
+        )
+
+        # Data saving requirements
+        if self.code_language == "python":
+            impl_guideline.append(
+                "Save experiment data to working/experiment_data.npy using np.save()."
+            )
+        else:
             impl_guideline.append(
                 "Save experiment data to working/experiment_data.npy using cnpy or a compatible .npy writer."
             )
-            if self.evaluation_metrics:
-                impl_guideline.append(
-                    f"Track and report these additional metrics: {self.evaluation_metrics}"
-                )
-            if hasattr(self.cfg.experiment, "num_syn_datasets"):
-                num_syn_datasets = self.cfg.experiment.num_syn_datasets
-                if num_syn_datasets > 1:
-                    formatted_dataset_guideline = [
-                        line.format(num_syn_datasets=num_syn_datasets)
-                        for line in IMPLEMENTATION_GUIDELINE_DATASET
-                    ]
-                    impl_guideline.extend(formatted_dataset_guideline)
-            dataset_source = getattr(self.cfg.experiment, "dataset_source", None)
-            dataset_source_key = (
-                str(dataset_source).lower() if dataset_source not in (None, "") else "auto"
-            )
-            dataset_guidance = DATA_SOURCE_GUIDELINES.get(
-                dataset_source_key, DATA_SOURCE_GUIDELINES["auto"]
-            )
-            impl_guideline.extend(dataset_guidance)
-            if self.cfg.agent.k_fold_validation > 1:
-                impl_guideline.append(
-                    f"The evaluation should be based on {self.cfg.agent.k_fold_validation}-fold cross-validation but only if that's an appropriate evaluation for the task at hand."
-                )
+
+        # Metrics tracking
+        if self.evaluation_metrics:
             impl_guideline.append(
-                "Be aware of the running time of the code, it should complete within "
-                f"{humanize.naturaldelta(self.cfg.exec.timeout)}."
+                f"Track and report these additional metrics: {self.evaluation_metrics}"
             )
-            return {"Implementation guideline": impl_guideline}
 
-        impl_guideline = list(IMPLEMENTATION_GUIDELINE_PRE)
-
+        # Dataset requirements
         if hasattr(self.cfg.experiment, "num_syn_datasets"):
             num_syn_datasets = self.cfg.experiment.num_syn_datasets
             if num_syn_datasets > 1:
@@ -1144,6 +1296,7 @@ class MinimalAgent:
                 ]
                 impl_guideline.extend(formatted_dataset_guideline)
 
+        # Dataset source guidelines
         dataset_source = getattr(self.cfg.experiment, "dataset_source", None)
         dataset_source_key = (
             str(dataset_source).lower() if dataset_source not in (None, "") else "auto"
@@ -1153,26 +1306,35 @@ class MinimalAgent:
         )
         impl_guideline.extend(dataset_guidance)
 
-        impl_guideline.extend(IMPLEMENTATION_GUIDELINE_POST)
+        # Python-specific: code structure and evaluation
+        if self.code_language == "python":
+            impl_guideline.extend([
+                "CODE STRUCTURE:",
+                "  - Do NOT put execution code inside 'if __name__ == \"__main__\":' block",
+                "  - All code should be at the global scope or in functions called from global scope",
+                "  - Start with: import os; working_dir = os.path.join(os.getcwd(), 'working'); os.makedirs(working_dir, exist_ok=True)",
+                "EVALUATION:",
+                "  - Track and print validation loss at each epoch",
+                "  - Save metrics at the end using np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data)",
+            ])
 
-        timeout_line = "Be aware of the running time of the code, it should complete within {timeout}."
-        if timeout_line in impl_guideline:
-            idx = impl_guideline.index(timeout_line)
-            impl_guideline[idx] = timeout_line.replace(
-                "{timeout}", humanize.naturaldelta(self.cfg.exec.timeout)
-            )
+        # Timeout warning
+        impl_guideline.append(
+            f"Be aware of the running time of the code, it should complete within {humanize.naturaldelta(self.cfg.exec.timeout)}."
+        )
 
-        metrics_line = "  2. Track and update ALL these additional metrics: "
-        if metrics_line in impl_guideline:
-            idx = impl_guideline.index(metrics_line)
-            impl_guideline[idx] += str(self.evaluation_metrics)
+        return impl_guideline
 
-        if self.cfg.agent.k_fold_validation > 1:
-            impl_guideline.append(
-                f"The evaluation should be based on {self.cfg.agent.k_fold_validation}-fold cross-validation but only if that's an appropriate evaluation for the task at hand."
-            )
+    @property
+    def _prompt_impl_guideline(self):
+        if self.phase_mode == "split":
+            domain_guideline = DOMAIN_NEUTRAL_PROMPT.splitlines()
+            language_notes = self._language_requirements()
+            if language_notes:
+                domain_guideline = language_notes + domain_guideline
+            return {"Implementation guideline": domain_guideline}
 
-        return {"Implementation guideline": impl_guideline}
+        return {"Implementation guideline": self._build_impl_guideline()}
 
     @property
     def _prompt_resp_fmt(self):
@@ -1284,9 +1446,6 @@ class MinimalAgent:
             prompt["Instructions"] |= self._prompt_environment
             self._inject_resources(prompt, phase="phase2")
 
-        if self.cfg.agent.data_preview:
-            prompt["Data Overview"] = self.data_preview
-
         print("[cyan]--------------------------------[/cyan]")
         print("[cyan]self.task_desc[/cyan]")
         print("[cyan]" + self.task_desc + "[/cyan]")
@@ -1314,7 +1473,7 @@ class MinimalAgent:
         prompt: Any = {
             "Introduction": DEBUG_INTRO,
             "Research idea": self.task_desc,
-            "Previous (buggy) implementation": wrap_code(parent_node.code, lang=self.code_language),
+            "Previous (buggy) implementation": wrap_combined_code(parent_node.code, fallback_lang=self.code_language),
             "Execution output": wrap_code(parent_node.term_out, lang=""),
             "Feedback based on generated plots": parent_node.vlm_feedback_summary,
             "Feedback about execution time": parent_node.exec_time_feedback,
@@ -1329,9 +1488,6 @@ class MinimalAgent:
             prompt["Instructions"] |= self._prompt_phase_guidance
             prompt["Instructions"] |= self._prompt_impl_guideline
             self._inject_resources(prompt, phase="phase2")
-
-        if self.cfg.agent.data_preview:
-            prompt["Data Overview"] = self.data_preview
 
         if self.phase_mode == "split":
             # LLM context (debug node, split): Introduction/Research idea/buggy code + execution output + plot/time feedback, Instructions (debug format + bugfix guidelines + phase guidance + impl), plus System/Domain, Environment injection, Resources, and Phase 0 plan snippet.
@@ -1362,7 +1518,7 @@ class MinimalAgent:
             prompt, "improve", allow_summary_fallback=True, allow_empty=True
         )
         prompt["Previous solution"] = {
-            "Code": wrap_code(parent_node.code, lang=self.code_language),
+            "Code": wrap_combined_code(parent_node.code, fallback_lang=self.code_language),
         }
 
         if self.phase_mode == "split":
@@ -1400,8 +1556,9 @@ class MinimalAgent:
             code=parent_node.code,
             parent=parent_node,
             is_seed_node=True,
-            phase_artifacts=parent_node.phase_artifacts,
+            phase_artifacts=copy.deepcopy(parent_node.phase_artifacts),
             phase_artifacts_raw=getattr(parent_node, "phase_artifacts_raw", ""),
+            worker_sif_path=getattr(parent_node, "worker_sif_path", None),
         )
 
     def _generate_hyperparam_tuning_node(
@@ -1410,7 +1567,7 @@ class MinimalAgent:
         intro_prefix = HYPERPARAM_NODE_INTRO_PREFIX
         prompt: Any = {
             "Introduction": intro_prefix + hyperparam_idea.name + ". " + hyperparam_idea.description,
-            "Base code you are working on": wrap_code(parent_node.code, lang=self.code_language),
+            "Base code you are working on": wrap_combined_code(parent_node.code, fallback_lang=self.code_language),
             "Instructions": {},
         }
         self._inject_memory(prompt, "hyperparam_node")
@@ -1448,7 +1605,7 @@ class MinimalAgent:
         intro_prefix = ABLATION_NODE_INTRO_PREFIX
         prompt: Any = {
             "Introduction": intro_prefix + ablation_idea.name + ". " + ablation_idea.description,
-            "Base code you are working on": wrap_code(parent_node.code, lang=self.code_language),
+            "Base code you are working on": wrap_combined_code(parent_node.code, fallback_lang=self.code_language),
             "Instructions": {},
         }
         self._inject_memory(prompt, "ablation_node")
@@ -1520,6 +1677,29 @@ class MinimalAgent:
             }
             compile_commands = [
                 "{compiler_selected} -std=c++17 -O2 src/main.cpp -o bin/a.out"
+            ]
+            run_commands = ["./bin/a.out"]
+            compile_notes = "fallback compile plan"
+        elif lang == "fortran":
+            file_path = "src/main.f90"
+            content = (
+                "! Fallback placeholder due to LLM parse failure\n"
+                f"! Error: {last_error}\n"
+                "program main\n"
+                "    implicit none\n"
+                "    print *, 'Placeholder execution; no real code generated'\n"
+                "end program main\n"
+            )
+            compile_plan = {
+                "language": "fortran",
+                "compiler_selected": "gfortran",
+                "cflags": ["-O2"],
+                "ldflags": [],
+                "workdir": "/workspace",
+                "output": "bin/a.out",
+            }
+            compile_commands = [
+                "{compiler_selected} -O2 src/main.f90 -o bin/a.out"
             ]
             run_commands = ["./bin/a.out"]
             compile_notes = "fallback compile plan"
@@ -1682,14 +1862,14 @@ class MinimalAgent:
         prompt = {
             "Introduction": EXECUTION_REVIEW_INTRO,
             "Research idea": self.task_desc,
-            "Implementation": wrap_code(node.code, lang=self.code_language),
+            "Implementation": wrap_combined_code(node.code, fallback_lang=self.code_language),
             "Execution output": wrap_code(node.term_out, lang=""),
         }
         self._inject_memory(prompt, "execution_review", branch_id=getattr(node, "branch_id", None))
 
         response = cast(
             dict,
-            # LLM context (execution review): Introduction + Research idea + Implementation + Execution output.
+            # LLM context (execution review): Introduction + Research idea + Implementation + Execution output + Memory.
             query(
                 system_message=prompt,
                 user_message=None,
@@ -1754,7 +1934,7 @@ class MinimalAgent:
             plotting_prompt,
             "plotting_code",
             branch_id=getattr(node, "branch_id", None),
-            budget_chars=2000,
+            budget_chars=getattr(self.cfg.memory, "plotting_code_budget_chars", 2000),
         )
 
         # For stage 3, initialize with stage 2's plotting code
@@ -1834,7 +2014,7 @@ class MinimalAgent:
             determine_prompt,
             "datasets_successfully_tested",
             branch_id=getattr(node, "branch_id", None),
-            budget_chars=1500,
+            budget_chars=getattr(self.cfg.memory, "datasets_tested_budget_chars", 1500),
         )
 
         retry_count = 0
@@ -1911,7 +2091,7 @@ class MinimalAgent:
                 prompt_select_plots,
                 "plot_selection",
                 branch_id=getattr(node, "branch_id", None),
-                budget_chars=1000,
+                budget_chars=getattr(self.cfg.memory, "plot_selection_budget_chars", 1000),
             )
 
             try:
@@ -1973,7 +2153,7 @@ class MinimalAgent:
         memory_context = self._memory_context(
             "vlm_analysis",
             branch_id=getattr(node, "branch_id", None),
-            budget_chars=1000,
+            budget_chars=getattr(self.cfg.memory, "vlm_analysis_budget_chars", 1000),
         )
         memory_context_block = (
             f"Memory:\n{memory_context}\n\n" if memory_context else ""
@@ -2017,7 +2197,7 @@ class MinimalAgent:
             node.is_buggy_plots = True
 
         for index, analysis in enumerate(response["plot_analyses"]):
-            analysis["plot_path"] = node.plot_paths[index]
+            analysis["plot_path"] = selected_plots[index]
 
         node.plot_analyses = response["plot_analyses"]
         node.vlm_feedback_summary = response["vlm_feedback_summary"]
@@ -2031,7 +2211,7 @@ class MinimalAgent:
         summary_prompt = {
             "Introduction": SUMMARY_INTRO,
             "Research idea": self.task_desc,
-            "Implementation": wrap_code(node.code, lang=self.code_language),
+            "Implementation": wrap_combined_code(node.code, fallback_lang=self.code_language),
             "Plan": node.plan,
             "Execution output": wrap_code(node.term_out, lang=""),
             "Analysis": node.analysis,
@@ -2049,12 +2229,12 @@ class MinimalAgent:
             summary_prompt,
             "node_summary",
             branch_id=getattr(node, "branch_id", None),
-            budget_chars=2000,
+            budget_chars=getattr(self.cfg.memory, "node_summary_budget_chars", 2000),
         )
 
         return cast(
             dict,
-            # LLM context (node summary): Introduction + Research idea + Implementation + Plan + Execution output + Analysis + Metric + Plot analyses + VLM feedback.
+            # LLM context (node summary): Introduction + Research idea + Implementation + Plan + Execution output + Analysis + Metric + Plot analyses + VLM feedback + Memory.
             query(
                 system_message=summary_prompt,
                 user_message=None,
@@ -2152,7 +2332,6 @@ class ParallelAgent:
         self.best_stage2_node = (
             best_stage2_node  # to initialize plotting code (stage 3)
         )
-        self.data_preview = None
         plan = resolve_worker_plan(cfg)
         self.worker_plan = plan
         self.num_workers = plan.actual_workers
@@ -2219,6 +2398,49 @@ class ParallelAgent:
             return ""
         budget = getattr(getattr(self.cfg, "memory", None), "memory_budget_chars", 4000)
         return self.memory_manager.render_for_prompt(branch_id, task_hint, budget_chars=budget)
+
+    def _run_execution_review_for_timeout(
+        self, node: Node, branch_id: str | None
+    ) -> tuple[str, bool]:
+        """Run the execution review prompt for a timeout node to get LLM analysis."""
+        prompt = {
+            "Introduction": EXECUTION_REVIEW_INTRO,
+            "Research idea": self.task_desc,
+            "Implementation": wrap_combined_code(node.code, fallback_lang=self.code_language),
+            "Execution output": wrap_code(node.term_out, lang=""),
+        }
+        memory_context = self._memory_context(branch_id, "execution_review")
+        if memory_context:
+            prompt["Memory"] = memory_context
+
+        try:
+            response = cast(
+                dict,
+                query(
+                    system_message=prompt,
+                    user_message=None,
+                    func_spec=review_func_spec,
+                    model=self.cfg.agent.feedback.model,
+                    temperature=self.cfg.agent.feedback.temp,
+                ),
+            )
+        except Exception as exc:
+            logger.error("Timeout execution review failed: %s", exc)
+            return "", True
+
+        is_bug = True
+        summary = ""
+        if isinstance(response, dict):
+            is_bug = bool(response.get("is_bug", True))
+            summary = response.get("summary") or ""
+        else:
+            logger.warning(
+                "Timeout execution review returned non-dict response: %s", type(response)
+            )
+
+        if summary:
+            logger.info("Timeout execution review summary: %s", summary)
+        return summary, is_bug
 
     @property
     def code_language(self) -> str:
@@ -2294,7 +2516,6 @@ class ParallelAgent:
 
         # Convert node to dict for parallel processing
         node_data = node.to_dict()
-        node_code = node.code
 
         # Submit parallel jobs for different seeds
         seed_nodes = []
@@ -2310,28 +2531,6 @@ class ParallelAgent:
                     logger.warning(
                         f"Could not acquire GPU for seed {seed}: {e}. Running on CPU"
                     )
-
-            if self.code_language == "python":
-                seed_prefix = (
-                    f"# Set random seed\n"
-                    f"import random\n"
-                    f"import numpy as np\n"
-                    f"import torch\n\n"
-                    f"seed = {seed}\n"
-                    "random.seed(seed)\n"
-                    "np.random.seed(seed)\n"
-                    "torch.manual_seed(seed)\n"
-                    "if torch.cuda.is_available():\n"
-                    "    torch.cuda.manual_seed(seed)\n\n"
-                )
-            else:
-                seed_prefix = (
-                    "// Set random seed\n"
-                    "#include <random>\n\n"
-                    f"std::mt19937 rng({seed}u);\n\n"
-                )
-
-            node_data["code"] = seed_prefix + node_code
 
             new_ablation_idea = None
             new_hyperparam_idea = None
@@ -2357,6 +2556,7 @@ class ParallelAgent:
                     best_stage2_plot_code,
                     best_stage3_plot_code,
                     seed_eval,
+                    seed,
                     seed,
                 )
             )
@@ -2483,13 +2683,23 @@ class ParallelAgent:
         best_stage2_plot_code=None,
         best_stage1_plot_code=None,
         seed_eval=False,
+        seed: int | None = None,
         worker_id: int | None = None,
     ):
         """Wrapper function that creates a fresh environment for each process"""
-        from .interpreter import Interpreter
-        from .journal import Node
         import os
         import multiprocessing
+
+        # Set CUDA_VISIBLE_DEVICES BEFORE any imports that might initialize CUDA
+        # This must happen before PyTorch or any CUDA library is imported
+        use_gpu = bool(getattr(cfg.exec, "use_gpu", True))
+        if use_gpu and gpu_id is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+        from .interpreter import Interpreter
+        from .journal import Node
 
         print("Starting _process_node_wrapper")
 
@@ -2520,10 +2730,91 @@ class ParallelAgent:
                 memory_manager.set_root_branch_id(root_branch_id)
 
         # Create process-specific workspace
-        process_id = multiprocessing.current_process().name
-        workspace = os.path.join(cfg.workspace_dir, f"process_{process_id}")
+        # Use worker_id for predictable path (allows timeout recovery to find intermediate results)
+        if worker_id is not None:
+            workspace = os.path.join(cfg.workspace_dir, f"worker_{worker_id}")
+        else:
+            workspace = os.path.join(cfg.workspace_dir, f"worker_{multiprocessing.current_process().name}")
         os.makedirs(workspace, exist_ok=True)
-        print(f"Process {process_id} using workspace: {workspace}")
+
+        # Path for intermediate results (used for timeout recovery)
+        intermediate_result_path = Path(workspace) / "intermediate_result.json"
+
+        def _save_intermediate_result(child_node, stage: str = "unknown"):
+            """Save intermediate result for timeout recovery."""
+            try:
+                intermediate_data = {
+                    "plan": child_node.plan or "",
+                    "code": child_node.code or "",
+                    "analysis": child_node.analysis or "",
+                    "exc_type": child_node.exc_type,
+                    "exc_info": child_node.exc_info,
+                    "is_buggy": child_node.is_buggy,
+                    "metric": child_node.metric.to_dict() if child_node.metric and hasattr(child_node.metric, "to_dict") else None,
+                    "stage": stage,
+                    "node_id": child_node.id,
+                    "branch_id": getattr(child_node, "branch_id", None),
+                    "term_out": child_node._term_out if child_node._term_out else [],
+                    "exec_time": child_node.exec_time,
+                    "plot_plan": child_node.plot_plan,
+                    "plot_code": child_node.plot_code,
+                    "ablation_name": child_node.ablation_name,
+                    "hyperparam_name": child_node.hyperparam_name,
+                }
+                intermediate_result_path.write_text(json.dumps(intermediate_data, default=str), encoding="utf-8")
+                logger.info(f"Saved intermediate result at stage '{stage}' to {intermediate_result_path}")
+            except Exception as exc:
+                logger.warning(f"Failed to save intermediate result: {exc}")
+
+        # Copy files from parent workspace if available (for cross-stage file inheritance)
+        # Lock both current workspace (for writing) and parent workspace (for reading)
+        # to prevent race conditions with other processes
+        parent_workspace_path = node_data.get("workspace_path") if node_data else None
+        current_lock_path = Path(workspace) / ".workspace.lock"
+        with filelock.FileLock(current_lock_path, timeout=300):
+            if parent_workspace_path:
+                parent_workspace = Path(parent_workspace_path)
+                if parent_workspace.exists() and parent_workspace != Path(workspace):
+                    print(f"Copying files from parent workspace: {parent_workspace}")
+                    parent_lock_path = parent_workspace / ".workspace.lock"
+                    with filelock.FileLock(parent_lock_path, timeout=300):
+                        def ignore_mounted_data(directory, contents):
+                            # Skip 'data' only inside 'input' directory
+                            if os.path.basename(directory) == "input":
+                                return ["data"] if "data" in contents else []
+                            return []
+
+                        def rmtree_skip_data(directory: Path):
+                            """Remove directory tree but skip 'data' inside 'input' directory."""
+                            for subitem in directory.iterdir():
+                                if directory.name == "input" and subitem.name == "data":
+                                    continue  # Skip mounted data
+                                if subitem.is_dir():
+                                    shutil.rmtree(subitem)
+                                else:
+                                    subitem.unlink()
+
+                        for item in parent_workspace.iterdir():
+                            if item.name == ".workspace.lock":
+                                continue  # Skip the lock file itself
+                            src = parent_workspace / item.name
+                            dst = Path(workspace) / item.name
+                            try:
+                                if src.is_dir():
+                                    if dst.exists():
+                                        if item.name == "input":
+                                            # Don't rmtree the whole input dir, as data might be mounted
+                                            rmtree_skip_data(dst)
+                                        else:
+                                            shutil.rmtree(dst)
+                                    shutil.copytree(src, dst, ignore=ignore_mounted_data, dirs_exist_ok=True)
+                                else:
+                                    shutil.copy2(src, dst)
+                            except Exception as exc:
+                                logger.warning(f"Failed to copy {src} to {dst}: {exc}")
+
+        worker_name = f"worker_{worker_id}" if worker_id is not None else f"worker_{multiprocessing.current_process().name}"
+        print(f"Process {worker_name} using workspace: {workspace}")
         # Create process-specific working directory
         working_dir = os.path.join(workspace, "working")
         os.makedirs(working_dir, exist_ok=True)
@@ -2531,18 +2822,18 @@ class ParallelAgent:
         if memory_manager:
             memory_manager.workspace_root = workspace_path
         resources_path = getattr(cfg.exec, "resources", None)
+        resource_snapshot = None  # Will be saved after child_branch_id is created
         if memory_manager and resources_path:
             try:
-                snapshot = build_resource_snapshot(
+                resource_snapshot = build_resource_snapshot(
                     resources_path,
                     workspace_root=workspace_path,
                     ai_scientist_root=os.environ.get("AI_SCIENTIST_ROOT"),
                     phase_mode=getattr(cfg.exec, "phase_mode", "single"),
                     log=logger,
                 )
-                update_resource_snapshot_if_changed(snapshot, memory_manager)
             except Exception as exc:
-                logger.warning("Failed to persist resource snapshot: %s", exc)
+                logger.warning("Failed to build resource snapshot: %s", exc)
         phase_log_dir: Path | None = None
         prompt_session_id = f"{int(time.time() * 1000)}_{os.getpid()}"
         prompt_log_root: Path | None = None
@@ -2622,16 +2913,14 @@ class ParallelAgent:
                         return False, outputs, result
             return True, outputs, None
 
-        use_gpu = bool(getattr(cfg.exec, "use_gpu", True))
-        if use_gpu and gpu_id is not None:
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-            logger.info(f"Process {process_id} assigned to GPU {gpu_id}")
+        # Log GPU assignment (CUDA_VISIBLE_DEVICES was already set at the top of this function)
+        if gpu_id is not None:
+            logger.info(f"Process {worker_name} assigned to GPU {gpu_id}")
         else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = ""
             cpu_note = "running on CPU"
-            if not use_gpu:
+            if not bool(getattr(cfg.exec, "use_gpu", True)):
                 cpu_note += " (GPU disabled)"
-            logger.info(f"Process {process_id} {cpu_note}")
+            logger.info(f"Process {worker_name} {cpu_note}")
 
         environment_context: dict[str, Any] = {}
         exec_env: ExecutionEnvironment | None = None
@@ -2650,7 +2939,7 @@ class ParallelAgent:
                     image=image_path,
                     runtime_preference="singularity",
                     workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
-                    gpu_id=None,
+                    gpu_id=gpu_id if use_gpu else None,
                     enable_gpu=use_gpu,
                     enable_writable_tmpfs=False,
                     overlay_path=None,
@@ -2664,6 +2953,14 @@ class ParallelAgent:
                     environment_context["available_libs"] = collect_available_libs(info_env)
                 except Exception as exc:
                     logger.warning("Failed to collect libs: %s", exc)
+                try:
+                    environment_context["system_performance_tools"] = collect_system_performance_tools(info_env)
+                except Exception as exc:
+                    logger.warning("Failed to collect system perf tools: %s", exc)
+                try:
+                    environment_context["installed_system_packages"] = collect_installed_system_packages(info_env)
+                except Exception as exc:
+                    logger.warning("Failed to collect installed system packages: %s", exc)
                 try:
                     os_release_res = info_env.run(["bash", "-lc", "cat /etc/os-release"], cwd=workspace_path)
                     environment_context["os_release"] = summarize_text(os_release_res.stdout, max_lines=20, max_chars=1200)
@@ -2703,6 +3000,8 @@ class ParallelAgent:
         run_root: Path | None = None
         phase0_plan: dict | None = None
         phase0_history_summary: dict | None = None
+        phase0_artifact_paths: list[str] | None = None
+        phase0_command_str: str | None = None
         worker_label = f"worker-{worker_id if worker_id is not None else 0}"
         if getattr(cfg.exec, "phase_mode", "single") == "split":
             run_root = _resolve_run_root(cfg)
@@ -2721,8 +3020,14 @@ class ParallelAgent:
             history_full["environment_context"] = environment_context
             phase0_history_path.write_text(json.dumps(history_full, indent=2), encoding="utf-8")
 
+            # Build verified system perf tools note for history injection
+            performance_tools_for_history = environment_context.get("system_performance_tools", [])
+            performance_tools_names_for_history = [t.get("name", "") for t in performance_tools_for_history if isinstance(t, dict) and t.get("name")]
+            performance_tools_note_for_history = (
+                f"Verified and functional: {', '.join(performance_tools_names_for_history)}. Use directly without assuming availability issues."
+            ) if performance_tools_names_for_history else "No system performance tools detected."
             history_injection = format_prompt(
-                "environment_history_injection",
+                "config/environment/history_injection",
                 phase_summaries=json.dumps(history_summary.get("phase_summaries", {}), indent=2),
                 phase1_steps_summary=json.dumps(history_summary.get("phase1_steps_summary", {}), indent=2),
                 compile_log_summary=history_summary.get("compile_log_summary", ""),
@@ -2738,6 +3043,9 @@ class ParallelAgent:
                         "gpu_info": environment_context.get("gpu_info", ""),
                         "available_compilers": environment_context.get("available_compilers", []),
                         "available_libs": environment_context.get("available_libs", []),
+                        "system_performance_tools": environment_context.get("system_performance_tools", []),
+                        "system_performance_tools_note": performance_tools_note_for_history,
+                        "installed_system_packages": environment_context.get("installed_system_packages", []),
                         "network_access": environment_context.get("network_access", "unknown"),
                         "container_runtime": environment_context.get("container_runtime"),
                         "singularity_image": environment_context.get("singularity_image"),
@@ -2755,6 +3063,13 @@ class ParallelAgent:
                     logger.warning("Failed to load existing Phase 0 plan: %s", exc)
                     phase0_plan = None
             if phase0_plan is None:
+                # Build verified system perf tools note
+                performance_tools_list = environment_context.get("system_performance_tools", [])
+                performance_tools_names = [t.get("name", "") for t in performance_tools_list if isinstance(t, dict) and t.get("name")]
+                performance_tools_note = (
+                    f"The following system performance tools have been verified and are confirmed functional inside this container: {', '.join(performance_tools_names)}. "
+                    "Use them directly without assuming availability issues."
+                ) if performance_tools_names else "No system performance tools detected in this environment."
                 phase0_prompt: dict[str, Any] = {
                     "Introduction": PHASE0_WHOLE_PLANNING_PROMPT,
                     "Task": task_desc,
@@ -2763,6 +3078,9 @@ class ParallelAgent:
                         "os_release": environment_context.get("os_release", ""),
                         "available_compilers": environment_context.get("available_compilers", []),
                         "available_libs": environment_context.get("available_libs", []),
+                        "system_performance_tools": environment_context.get("system_performance_tools", []),
+                        "system_performance_tools_note": performance_tools_note,
+                        "installed_system_packages": environment_context.get("installed_system_packages", []),
                         "network_access": environment_context.get("network_access", "unknown"),
                         "container_runtime": environment_context.get("container_runtime"),
                         "singularity_image": environment_context.get("singularity_image"),
@@ -2823,11 +3141,12 @@ class ParallelAgent:
                     )
                 except Exception as exc:
                     logger.warning("Failed to write Phase 0 plan: %s", exc)
-            if memory_manager and root_branch_id and getattr(memory_cfg, "persist_phase0_internal", True):
-                artifact_paths = [str(phase0_plan_path), str(phase0_history_path)]
+            if getattr(memory_cfg, "persist_phase0_internal", True):
+                # Prepare phase0 artifacts for later ingestion (will be ingested per child node)
+                phase0_artifact_paths = [str(phase0_plan_path), str(phase0_history_path)]
                 llm_out = plans_dir / "phase0_llm_output.txt"
                 if llm_out.exists():
-                    artifact_paths.append(str(llm_out))
+                    phase0_artifact_paths.append(str(llm_out))
 
                 def _extract_phase0_commands(plan: Any) -> str | None:
                     if not isinstance(plan, dict):
@@ -2847,17 +3166,7 @@ class ParallelAgent:
                         return " | ".join(commands) if commands else None
                     return None
 
-                command_str = _extract_phase0_commands(phase0_plan)
-                try:
-                    memory_manager.ingest_phase0_internal_info(
-                        root_branch_id,
-                        node_uid=worker_label,
-                        phase0_payload=phase0_plan,
-                        artifact_paths=artifact_paths,
-                        command_str=command_str,
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to ingest Phase 0 internal info: %s", exc)
+                phase0_command_str = _extract_phase0_commands(phase0_plan)
             phase0_history_summary = history_summary
 
         if prompt_log_root is None and getattr(cfg.exec, "log_prompts", True):
@@ -2921,9 +3230,14 @@ class ParallelAgent:
 
             child_branch_id = None
             if memory_manager:
+                # Try to get parent branch_id from parent node
+                # Fall back to parent node's id if branch_id is not set
                 parent_branch_id = (
                     getattr(parent_node, "branch_id", None) if parent_node else None
                 )
+                if not parent_branch_id and parent_node:
+                    # Use parent node's id as branch_id if branch_id is not explicitly set
+                    parent_branch_id = parent_node.id
                 if not parent_branch_id:
                     parent_branch_id = root_branch_id
                 if not parent_branch_id:
@@ -2932,8 +3246,31 @@ class ParallelAgent:
                     memory_manager.update_branch_node_uid(parent_branch_id, "root")
                     memory_manager.set_root_branch_id(parent_branch_id)
                 child_branch_id = uuid.uuid4().hex
-                memory_manager.mem_node_fork(parent_branch_id, child_branch_id)
+
+                # Build ancestor chain from parent node for correct tree structure
+                # This ensures that if intermediate nodes are missing in the DB,
+                # they are created with the correct parent-child relationships
+                ancestor_chain = []
+                if parent_node:
+                    current = parent_node
+                    while current is not None:
+                        node_id = getattr(current, "branch_id", None) or current.id
+                        ancestor_chain.append(node_id)
+                        current = getattr(current, "parent", None)
+                    # Reverse to get root-to-parent order
+                    ancestor_chain = ancestor_chain[::-1]
+
+                memory_manager.mem_node_fork(parent_branch_id, child_branch_id, ancestor_chain=ancestor_chain)
                 worker_agent.branch_id = child_branch_id
+
+                # Save resource snapshot to child branch (not root branch)
+                if resource_snapshot is not None:
+                    try:
+                        update_resource_snapshot_if_changed(
+                            resource_snapshot, memory_manager, branch_id=child_branch_id
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to persist resource snapshot to child branch: %s", exc)
 
             # Process the node using worker agent
             print("Starting node processing")
@@ -2943,6 +3280,9 @@ class ParallelAgent:
                 child_node.parent = parent_node
                 # Plot code should also be the same as the parent node
                 child_node.plot_code = parent_node.plot_code
+                if seed is not None:
+                    child_node.seed_value = seed
+                    worker_agent._inject_seed_with_llm(child_node, seed)
             else:
                 if parent_node is None:
                     print("Drafting new node")
@@ -2987,6 +3327,10 @@ class ParallelAgent:
                     memory_manager.update_branch_node_uid(child_branch_id, child_node.id)
                 except Exception:
                     pass
+
+            # Save intermediate result after node creation (for timeout recovery)
+            _save_intermediate_result(child_node, stage="after_node_creation")
+
             if memory_manager and child_branch_id and getattr(memory_cfg, "persist_idea_md", True):
                 candidates = []
                 desc_file = getattr(cfg, "desc_file", None)
@@ -3009,6 +3353,18 @@ class ParallelAgent:
                         )
                     except Exception as exc:
                         logger.warning("Failed to ingest idea.md: %s", exc)
+            # Ingest Phase 0 internal info for this child node (not root branch)
+            if memory_manager and child_branch_id and phase0_plan and phase0_artifact_paths:
+                try:
+                    memory_manager.ingest_phase0_internal_info(
+                        child_branch_id,
+                        node_uid=child_node.id,
+                        phase0_payload=phase0_plan,
+                        artifact_paths=phase0_artifact_paths,
+                        command_str=phase0_command_str,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to ingest Phase 0 internal info: %s", exc)
             if memory_manager and child_branch_id:
                 try:
                     plan_snippet = (child_node.plan or "")[:1200]
@@ -3238,7 +3594,31 @@ class ParallelAgent:
                             steps_log_path = run_root / "workers" / worker_label / "phase1_steps.jsonl"
                             phase1_llm_log_path = run_root / "workers" / worker_label / "phase1_llm_outputs.jsonl"
                             steps_log_path.parent.mkdir(parents=True, exist_ok=True)
-                        if worker_container:
+
+                        # For seed_eval, reuse parent node's worker SIF instead of running Phase 1 again
+                        parent_sif_path = getattr(child_node, "worker_sif_path", None)
+                        if seed_eval and parent_sif_path and Path(parent_sif_path).exists():
+                            logger.info("seed_eval: Reusing parent worker SIF: %s", parent_sif_path)
+                            term_outputs.append(f"[seed_eval] Reusing parent worker SIF: {parent_sif_path}")
+                            try:
+                                active_env = ExecutionEnvironment(
+                                    workspace=workspace_path,
+                                    image=parent_sif_path,
+                                    runtime_preference="singularity",
+                                    workspace_mount=getattr(cfg.exec, "workspace_mount", "/workspace"),
+                                    gpu_id=gpu_id if use_gpu else None,
+                                    enable_gpu=use_gpu,
+                                    enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
+                                    overlay_path=getattr(cfg.exec, "container_overlay", None),
+                                    extra_start_args=getattr(cfg.exec, "container_extra_args", None),
+                                    resource_binds=resource_binds,
+                                )
+                                active_env.start()
+                            except Exception as exc:
+                                exc_type = "EnvironmentError"
+                                exc_info = {"message": f"Failed to start execution environment from parent SIF: {exc}"}
+                                logger.warning("seed_eval: Failed to reuse parent SIF: %s", exc)
+                        elif worker_container:
                             success, outputs, failure = worker_container.prepare_phase1(
                                 download_commands,
                                 workspace=workspace_path,
@@ -3251,6 +3631,8 @@ class ParallelAgent:
                             )
                             term_outputs.extend(outputs)
                             if success:
+                                # Save worker SIF path for potential seed_eval reuse
+                                child_node.worker_sif_path = str(worker_container.worker_sif)
                                 if memory_manager and resources_path:
                                     try:
                                         memory_manager.mem_resources_resolve_and_refresh(
@@ -3291,6 +3673,7 @@ class ParallelAgent:
                                     enable_writable_tmpfs=getattr(cfg.exec, "writable_tmpfs", True),
                                     overlay_path=getattr(cfg.exec, "container_overlay", None),
                                     extra_start_args=getattr(cfg.exec, "container_extra_args", None),
+                                    resource_binds=resource_binds,
                                 )
                                 try:
                                     active_env.start()
@@ -3423,6 +3806,9 @@ class ParallelAgent:
                 node=child_node, exec_result=exec_result, workspace=str(workspace_path)
             )
 
+            # Save intermediate result after execution (for timeout recovery)
+            _save_intermediate_result(child_node, stage="after_execution")
+
             # Add check for saved data files
             data_dir = Path(working_dir)
             data_files = list(data_dir.rglob("*.npy")) if data_dir.exists() else []
@@ -3457,15 +3843,18 @@ class ParallelAgent:
                         # Call LLM to parse data files and extract metrics
                         context_blocks = ["Original Code: " + child_node.code]
                         if data_files:
-                            rel_paths = []
+                            file_info_lines = []
                             for p in sorted(data_files):
                                 try:
-                                    rel_paths.append(str(p.relative_to(workspace_path)))
+                                    rel_path = str(p.relative_to(workspace_path))
                                 except ValueError:
-                                    rel_paths.append(str(p))
+                                    rel_path = str(p)
+                                # Extract schema from each npy file
+                                schema = _extract_npy_schema(p)
+                                file_info_lines.append(f"- {rel_path}\n  Schema: {schema}")
                             context_blocks.append(
-                                "Available .npy files (relative to workspace unless absolute):\n"
-                                + "\n".join(rel_paths)
+                                "Available .npy files with their data schemas:\n"
+                                + "\n".join(file_info_lines)
                             )
                         if previous_error_message:
                             context_blocks.append(
@@ -3491,10 +3880,10 @@ class ParallelAgent:
                             parse_metrics_prompt,
                             "parse_metrics",
                             branch_id=getattr(child_node, "branch_id", None),
-                            budget_chars=2000,
+                            budget_chars=getattr(cfg.memory, "parse_metrics_budget_chars", 2000),
                         )
 
-                        # LLM context (parse-metrics plan): Introduction + Context (original code + prior errors/code) + Instructions + Example parser + Response format.
+                        # LLM context (parse-metrics plan): Introduction + Context (original code + prior errors/code) + Instructions + Example parser + Response format + Memory.
                         (
                             parse_metrics_plan,
                             parse_metrics_code,
@@ -3538,7 +3927,7 @@ class ParallelAgent:
                                 metrics_prompt,
                                 "metrics_extraction",
                                 branch_id=getattr(child_node, "branch_id", None),
-                                budget_chars=1500,
+                                budget_chars=getattr(cfg.memory, "metrics_extraction_budget_chars", 1500),
                             )
                             print(
                                 f"[blue]Metrics_exec_result.term_out: {metrics_exec_result.term_out}[/blue]"
@@ -3549,7 +3938,7 @@ class ParallelAgent:
 
                             metrics_response = cast(
                                 dict,
-                                # LLM context (metric extraction): Introduction + Execution Output from metrics parser.
+                                # LLM context (metric extraction): Introduction + Execution Output from metrics parser + Memory.
                                 query(
                                     system_message=metrics_prompt,
                                     user_message=None,
@@ -3794,6 +4183,12 @@ class ParallelAgent:
                 except Exception as exc:
                     logger.warning("Failed to write node_result memory: %s", exc)
 
+            # Set workspace_path on child node for cross-stage file inheritance
+            child_node.workspace_path = str(workspace_path)
+
+            # Save final intermediate result (for timeout recovery)
+            _save_intermediate_result(child_node, stage="final")
+
             # Convert result node to dict
             print("Converting result to dict")
             result_data = child_node.to_dict()
@@ -3831,7 +4226,7 @@ class ParallelAgent:
 
         hyperparam_tuning_prompt = {
             "Introduction": HYPERPARAM_PROMPT_INTRO,
-            "Base code you are working on": wrap_code(self.best_stage1_node.code, lang=self.code_language),
+            "Base code you are working on": wrap_combined_code(self.best_stage1_node.code, fallback_lang=self.code_language),
             "Previous Hyperparam Tuning Attempts": {
                 "Has been tried": tried if tried else "Nothing has been tried yet.",
             },
@@ -3884,7 +4279,7 @@ class ParallelAgent:
 
         ablation_prompt = {
             "Introduction": ABLATION_PROMPT_INTRO,
-            "Base code you are working on": wrap_code(self.best_stage3_node.code, lang=self.code_language),
+            "Base code you are working on": wrap_combined_code(self.best_stage3_node.code, fallback_lang=self.code_language),
             "Previous Ablations": {
                 "Has been tried": (
                     completed if completed else "Nothing has been tried yet."
@@ -4160,67 +4555,234 @@ class ParallelAgent:
                     best_stage2_plot_code,
                     best_stage3_plot_code,
                     seed_eval,
+                    None,
                     worker_idx,
                 )
             )
 
         # Add results to journal
         print("Waiting for results")
+
+        # Create mapping from future to index for proper error handling
+        future_to_index = {future: i for i, future in enumerate(futures)}
+        completed_indices = set()
+
+        # Use as_completed with overall timeout to process results as they complete
+        try:
+            for future in as_completed(futures, timeout=self.timeout):
+                i = future_to_index[future]
+                completed_indices.add(i)
+                try:
+                    print(f"About to get result from future (worker {i})")
+                    result_data = future.result()  # Already completed, no timeout needed
+                    if "metric" in result_data:
+                        print(f"metric type: {type(result_data['metric'])}")
+                        print(f"metric contents: {result_data['metric']}")
+
+                    # Create node and restore relationships using journal.
+                    # Journal acts as a database to look up a parent node,
+                    # and add the result node as a child.
+                    result_node = Node.from_dict(result_data, self.journal)
+                    print("[red]Investigating if result node has metric[/red]", flush=True)
+                    print(result_node.metric)
+                    # Update hyperparam tuning state if in Stage 2
+                    self._update_hyperparam_tuning_state(result_node)
+                    # Update ablation state if in Stage 4
+                    self._update_ablation_state(result_node)
+
+                    # Add node to journal's list and assign its step number
+                    self.journal.append(result_node)
+                    print("Added result node to journal")
+
+                except Exception as e:
+                    print(f"Error processing node from worker {i}: {escape(str(e))}")
+                    logger.error(f"Error processing node from worker {i}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+                finally:
+                    # Release GPU for this process if it was using one
+                    process_id = f"worker_{i}"
+                    if (
+                        self.gpu_manager is not None
+                        and process_id in self.gpu_manager.gpu_assignments
+                    ):
+                        self.gpu_manager.release_gpu(process_id)
+                        logger.info(f"Released GPU for process {process_id}")
+
+        except FuturesTimeoutError:
+            # Handle futures that didn't complete within the timeout
+            print(f"Overall timeout of {self.timeout} seconds reached")
+            logger.error(f"Overall timeout of {self.timeout} seconds reached, processing incomplete futures")
+
+        # Process any futures that timed out
         for i, future in enumerate(futures):
-            try:
-                print("About to get result from future")
-                result_data = future.result(timeout=self.timeout)
-                if "metric" in result_data:
-                    print(f"metric type: {type(result_data['metric'])}")
-                    print(f"metric contents: {result_data['metric']}")
+            if i in completed_indices:
+                continue
 
-                # Create node and restore relationships using journal.
-                # Journal acts as a database to look up a parent node,
-                # and add the result node as a child.
-                result_node = Node.from_dict(result_data, self.journal)
-                print("[red]Investigating if result node has metric[/red]", flush=True)
-                print(result_node.metric)
-                # Update hyperparam tuning state if in Stage 2
-                self._update_hyperparam_tuning_state(result_node)
-                # Update ablation state if in Stage 4
-                self._update_ablation_state(result_node)
+            print(f"Worker process {i} timed out, couldn't get the result")
+            logger.error(f"Worker process {i} timed out after {self.timeout} seconds")
 
-                # Add node to journal's list and assign its step number
-                self.journal.append(result_node)
-                print("Added result node to journal")
+            # Cancel the future (may not stop already-running process in ProcessPoolExecutor)
+            future.cancel()
 
-            except TimeoutError:
-                print("Worker process timed out, couldn't get the result")
-                logger.error(f"Worker process timed out, couldn't get the result")
-            except Exception as e:
-                print(f"Error processing node: {escape(str(e))}")
-                logger.error(f"Error processing node: {str(e)}")
-                import traceback
+            # Create error node and add to journal
+            parent_node = nodes_to_process[i] if i < len(nodes_to_process) else None
+            node_data = node_data_list[i] if i < len(node_data_list) else None
 
-                traceback.print_exc()
-                raise
-            finally:
-                # Release GPU for this process if it was using one
-                process_id = f"worker_{i}"
-                if (
-                    self.gpu_manager is not None
-                    and process_id in self.gpu_manager.gpu_assignments
-                ):
-                    self.gpu_manager.release_gpu(process_id)
-                    logger.info(f"Released GPU for process {process_id}")
+            # Try to load intermediate result from worker's workspace
+            intermediate_result_path = Path(self.cfg.workspace_dir) / f"worker_{i}" / "intermediate_result.json"
+            intermediate_data = None
+            if intermediate_result_path.exists():
+                try:
+                    intermediate_data = json.loads(intermediate_result_path.read_text(encoding="utf-8"))
+                    logger.info(f"Loaded intermediate result from {intermediate_result_path} (stage: {intermediate_data.get('stage', 'unknown')})")
+                except Exception as exc:
+                    logger.warning(f"Failed to load intermediate result from {intermediate_result_path}: {exc}")
 
-        if self.memory_manager and self.root_branch_id:
-            try:
-                memory_context = self._memory_context(self.root_branch_id, "best_node_selection")
-                best_node = self.journal.get_best_node(
-                    cfg=self.cfg, memory_context=memory_context
+            def _normalize_text(value, fallback):
+                if value is None:
+                    return fallback
+                text = str(value).strip()
+                return text if text else fallback
+
+            # Prioritize intermediate result data over parent node data
+            if intermediate_data:
+                plan_source = intermediate_data.get("plan")
+                code_source = intermediate_data.get("code")
+                analysis_source = intermediate_data.get("analysis")
+                term_out_source = intermediate_data.get("term_out", [])
+                exec_time_source = intermediate_data.get("exec_time")
+                branch_hint = intermediate_data.get("branch_id") or (
+                    parent_node.branch_id
+                    if parent_node and getattr(parent_node, "branch_id", None)
+                    else self.root_branch_id
                 )
-                if best_node and getattr(best_node, "branch_id", None):
-                    self.memory_manager.mem_node_promote(
-                        best_node.branch_id, self.root_branch_id, policy="selected_best"
-                    )
-            except Exception as exc:
-                logger.warning("Failed to promote best-node memory: %s", exc)
+                # Try to restore metric from intermediate result
+                metric_data = intermediate_data.get("metric")
+            else:
+                plan_source = (
+                    parent_node.plan
+                    if parent_node
+                    else node_data.get("plan") if isinstance(node_data, dict) else None
+                )
+                code_source = (
+                    parent_node.code
+                    if parent_node
+                    else node_data.get("code") if isinstance(node_data, dict) else None
+                )
+                analysis_source = None
+                term_out_source = []
+                exec_time_source = None
+                branch_hint = (
+                    parent_node.branch_id
+                    if parent_node and getattr(parent_node, "branch_id", None)
+                    else self.root_branch_id
+                )
+                metric_data = None
+
+            plan_fallback = (
+                "Plan unavailable because execution timed out before the plan completed."
+            )
+            code_fallback = (
+                "Code unavailable because execution timed out before the implementation completed."
+            )
+            plan_text = _normalize_text(plan_source, plan_fallback)
+            code_text = _normalize_text(code_source, code_fallback)
+
+            def _snippet(value):
+                if len(value) <= 400:
+                    return value
+                return value[:400].rstrip() + "..."
+
+            plan_snippet = _snippet(plan_text)
+            code_snippet = _snippet(code_text)
+            memory_context = self._memory_context(branch_hint, "timeout_summary")
+            memory_snippet = (
+                memory_context.strip()
+                if memory_context and memory_context.strip()
+                else "No memory history recorded before this timeout."
+            )
+            if len(memory_snippet) > 400:
+                memory_snippet = memory_snippet[:400].rstrip() + "..."
+            stage_label = self.stage_name or "unknown stage"
+            intermediate_stage = intermediate_data.get("stage", "unknown") if intermediate_data else "not_started"
+            timeout_summary = (
+                f"Timeout after {humanize.naturaldelta(self.timeout)} while running {stage_label} "
+                f"(worker stopped at stage: {intermediate_stage}). "
+                f"Plan snapshot: {plan_snippet}. "
+                f"Code snapshot: {code_snippet}. "
+                f"Memory context: {memory_snippet}."
+            )
+
+            # Combine term_out from intermediate result with timeout message
+            combined_term_out = list(term_out_source) if term_out_source else []
+            combined_term_out.append(f"\n[TIMEOUT] {timeout_summary}")
+
+            exec_result = ExecutionResult(
+                term_out=combined_term_out,
+                exec_time=exec_time_source if exec_time_source else self.timeout,
+                exc_type="TimeoutError",
+                exc_info={
+                    "message": f"Worker process timed out after {self.timeout} seconds.",
+                    "memory_context": memory_snippet,
+                    "intermediate_stage": intermediate_stage,
+                },
+                exc_stack=[],
+            )
+
+            error_node = Node(
+                plan=plan_text,
+                code=code_text,
+                exc_type="TimeoutError",
+                exc_info={
+                    "message": f"Worker process timed out after {self.timeout} seconds.",
+                    "memory_context": memory_snippet,
+                    "intermediate_stage": intermediate_stage,
+                },
+                is_buggy=True,
+                parent=parent_node,
+                metric=WorstMetricValue(),
+                analysis=analysis_source if analysis_source else timeout_summary,
+                exec_time_feedback=(
+                    f"Execution stopped at {humanize.naturaldelta(self.timeout)} because of the timeout."
+                ),
+                branch_id=branch_hint,
+            )
+            # Copy additional fields from intermediate result if available
+            if intermediate_data:
+                if intermediate_data.get("plot_plan"):
+                    error_node.plot_plan = intermediate_data["plot_plan"]
+                if intermediate_data.get("plot_code"):
+                    error_node.plot_code = intermediate_data["plot_code"]
+                if intermediate_data.get("ablation_name"):
+                    error_node.ablation_name = intermediate_data["ablation_name"]
+                if intermediate_data.get("hyperparam_name"):
+                    error_node.hyperparam_name = intermediate_data["hyperparam_name"]
+
+            error_node.absorb_exec_result(exec_result)
+            review_summary, review_is_bug = self._run_execution_review_for_timeout(
+                error_node, branch_hint
+            )
+            final_analysis = error_node.analysis or timeout_summary
+            if review_summary:
+                final_analysis += f"\n\nLLM execution review:\n{review_summary}"
+                error_node._term_out.append(f"\nLLM review:\n{review_summary}")
+            error_node.analysis = final_analysis
+            error_node.is_buggy = error_node.is_buggy or review_is_bug
+            if parent_node:
+                parent_node.children.add(error_node)
+            self.journal.append(error_node)
+            logger.error(f"Added timeout error node {error_node.id} to journal (parent: {parent_node.id if parent_node else None}, intermediate_stage: {intermediate_stage})")
+
+            # Release GPU for this process if it was using one
+            process_id = f"worker_{i}"
+            if (
+                self.gpu_manager is not None
+                and process_id in self.gpu_manager.gpu_assignments
+            ):
+                self.gpu_manager.release_gpu(process_id)
+                logger.info(f"Released GPU for process {process_id}")
 
     def _update_hyperparam_tuning_state(self, result_node: Node):
         """Update hyperparam tuning tracking state based on execution results."""
@@ -4303,8 +4865,7 @@ class ParallelAgent:
                 npy_files = sorted(exp_dir.rglob("*.npy"))
                 if npy_files:
                     seed_data_paths.extend(str(p) for p in npy_files)
-                else:
-                    seed_data_paths.append(str(exp_dir / "experiment_data.npy"))
+                # Skip if no .npy files found - don't add non-existent paths
         if seed_data_paths:
             plotting_prompt["Instructions"] |= {
                 "Experiment Data Path": "\n".join(seed_data_paths)
@@ -4315,9 +4876,147 @@ class ParallelAgent:
         )
 
         print("[green]Plan:[/green]\n", plan)
-        print(f"[green]Generated aggregated plotting code:[/green]\n{code}")
+        print(f"[green]Generated aggregated plotting code (before path injection):[/green]\n{code}")
+
+        # Inject actual data paths into the generated code to ensure LLM-generated
+        # code uses the correct paths, even if LLM didn't properly embed them
+        if seed_data_paths:
+            import re
+            paths_str = ",\n        ".join(f'"{p}"' for p in seed_data_paths)
+            paths_replacement = f"experiment_data_path_list = [\n        {paths_str}\n    ]"
+
+            # Match various patterns of empty or placeholder experiment_data_path_list
+            patterns = [
+                r'experiment_data_path_list\s*=\s*\(\s*\[\s*#[^\]]*\]\s*\)',  # Tuple with comment
+                r'experiment_data_path_list\s*=\s*\[\s*#[^\]]*\]',  # With comment
+                r'experiment_data_path_list\s*=\s*\(\s*\[\s*\]\s*\)',  # Tuple wrapped empty
+                r'experiment_data_path_list\s*=\s*\[\s*\]',  # Simple empty list
+            ]
+            injected = False
+            for pattern in patterns:
+                if re.search(pattern, code):
+                    code = re.sub(pattern, paths_replacement, code, count=1)
+                    injected = True
+                    print(f"[yellow]Injected {len(seed_data_paths)} data paths into plotting code[/yellow]")
+                    break
+
+            if not injected:
+                print("[yellow]Warning: Could not find experiment_data_path_list pattern to inject paths[/yellow]")
+                print(f"[yellow]Available paths: {seed_data_paths}[/yellow]")
+
+        print(f"[green]Final aggregated plotting code:[/green]\n{code}")
+
+        # Validate syntax of generated code
+        code = self._validate_and_fix_python_syntax(code)
 
         return code
+
+    def _validate_and_fix_python_syntax(self, code: str, max_retries: int = 3) -> str:
+        """Validate Python syntax and attempt to fix errors using LLM.
+
+        Args:
+            code: The generated Python code to validate
+            max_retries: Maximum number of LLM fix attempts
+
+        Returns:
+            The validated (and possibly fixed) code
+
+        Raises:
+            SyntaxError: If the code cannot be fixed after max_retries
+        """
+        for attempt in range(max_retries):
+            try:
+                ast.parse(code)
+                if attempt > 0:
+                    print(f"[green]Syntax validated after {attempt} LLM fix(es)[/green]")
+                return code
+            except SyntaxError as e:
+                print(f"[yellow]Syntax error detected (attempt {attempt + 1}/{max_retries}): {e}[/yellow]")
+
+                # Show problematic code context
+                lines = code.split('\n')
+                start = max(0, e.lineno - 5) if e.lineno else 0
+                end = min(len(lines), e.lineno + 3) if e.lineno else min(len(lines), 8)
+                context_lines = []
+                for i in range(start, end):
+                    marker = ">>> " if e.lineno and i == e.lineno - 1 else "    "
+                    context_lines.append(f"{marker}{i + 1}: {lines[i]}")
+                error_context = '\n'.join(context_lines)
+                print(f"[yellow]Problematic code context:[/yellow]\n{error_context}")
+
+                # Attempt to fix using LLM
+                fixed_code = self._llm_syntax_fix(code, e)
+                if fixed_code is None or fixed_code == code:
+                    print(f"[red]LLM could not fix syntax error: {e}[/red]")
+                    raise
+                code = fixed_code
+
+        # Final validation
+        ast.parse(code)
+        return code
+
+    def _llm_syntax_fix(self, code: str, error: SyntaxError) -> str | None:
+        """Use LLM to fix syntax errors in generated code.
+
+        Args:
+            code: The code with syntax error
+            error: The SyntaxError exception
+
+        Returns:
+            Fixed code, or None if LLM could not fix it
+        """
+        # Build error context
+        lines = code.split('\n')
+        error_line = error.lineno - 1 if error.lineno else 0
+        start = max(0, error_line - 10)
+        end = min(len(lines), error_line + 5)
+
+        numbered_lines = []
+        for i in range(start, end):
+            marker = ">>>" if i == error_line else "   "
+            numbered_lines.append(f"{marker} {i + 1}: {lines[i]}")
+        error_context = '\n'.join(numbered_lines)
+
+        fix_prompt = {
+            "Task": "Fix the Python syntax error in the code below.",
+            "Error": {
+                "type": "SyntaxError",
+                "message": str(error.msg),
+                "line": error.lineno,
+                "offset": error.offset,
+            },
+            "Code context around error": error_context,
+            "Full code": code,
+            "Instructions": [
+                "Analyze the syntax error and fix it.",
+                "Return ONLY the complete fixed Python code.",
+                "Do NOT include any explanation, just the code.",
+                "Make minimal changes - only fix the syntax error.",
+                "Common issues include: unmatched brackets in comments, missing colons, unclosed strings.",
+                "Wrap the fixed code in ```python ... ``` markers.",
+            ],
+        }
+
+        print(f"[yellow]Requesting LLM to fix syntax error...[/yellow]")
+
+        try:
+            response = query(
+                system_message=fix_prompt,
+                user_message=None,
+                model=self.cfg.agent.code.model,
+                temperature=0.0,  # Use low temperature for deterministic fix
+            )
+
+            fixed_code = extract_code(response, language="python")
+            if fixed_code and fixed_code.strip():
+                print(f"[green]LLM returned fixed code ({len(fixed_code)} chars)[/green]")
+                return fixed_code
+            else:
+                print(f"[red]LLM response did not contain valid code[/red]")
+                return None
+        except Exception as e:
+            print(f"[red]LLM syntax fix query failed: {e}[/red]")
+            return None
 
     def __enter__(self):
         return self

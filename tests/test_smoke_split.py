@@ -34,8 +34,8 @@ class SplitSmokeTests(unittest.TestCase):
     def test_resources_prompt_exists(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         prompt_root = repo_root / "prompt"
-        resources_prompt = prompt_root / "environment_resources_injection.txt"
-        self.assertTrue(resources_prompt.exists(), "environment_resources_injection.txt should exist")
+        resources_prompt = prompt_root / "config" / "environment" / "resources_injection.txt"
+        self.assertTrue(resources_prompt.exists(), "config/environment/resources_injection.txt should exist")
 
     def test_cli_help(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -60,8 +60,8 @@ class SplitSmokeTests(unittest.TestCase):
     def test_phase1_prompt_exists(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         prompt_root = repo_root / "prompt"
-        phase1_prompt = prompt_root / "phase1_iterative_installer.txt"
-        self.assertTrue(phase1_prompt.exists(), "phase1_iterative_installer.txt should exist")
+        phase1_prompt = prompt_root / "config" / "phases" / "phase1_installer.txt"
+        self.assertTrue(phase1_prompt.exists(), "config/phases/phase1_installer.txt should exist")
         content = phase1_prompt.read_text()
         self.assertIn("Confirmation before done=true", content)
         self.assertIn("curl", content)

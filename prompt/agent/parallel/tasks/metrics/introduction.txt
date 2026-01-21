@@ -1,0 +1,1 @@
+Parse the metrics from the execution output. Extract the value of each metric for each dataset.

@@ -1,0 +1,33 @@
+0. Resolve the working directory robustly: if os.path.basename(os.getcwd()) == "working" use os.getcwd(), otherwise use os.path.join(os.getcwd(), "working").
+1. Load experiment_data.npy from the working directory. If it is missing, fall back to common outputs (prefer experiment_data*.npy over output*.npy) by checking:
+   - os.path.join(working_dir, "experiment_data.npy")
+   - os.path.join(os.getcwd(), "experiment_data.npy")
+   - glob for experiment_data_*.npy in working_dir and os.getcwd()
+   - os.path.join(os.getcwd(), "artifacts", "final", "output.npy")
+   - os.path.join(working_dir, "artifacts", "final", "output.npy")
+   - glob for output*.npy in working_dir and os.getcwd()
+   - a recursive search under working_dir only (do not recurse os.getcwd) for any .npy file, with preference order: experiment_data*.npy, then output*.npy, then any other .npy
+   - If the prompt context provides a list of "Available .npy files", prefer only those paths that live under working_dir or match experiment_data*.npy/output*.npy.
+   - Ignore any .npy under .pydeps, .venv, site-packages, dist-packages, or similar dependency/data directories.
+   If nothing is found, raise FileNotFoundError listing the attempted paths and patterns.
+2. Extract metrics for each dataset. If multiple .npy files are found, iterate over all and use the filename stem as the dataset name. Make sure to refer to the original code to understand the structure of the data.
+3. Always print the name of the dataset before printing the metrics
+4. Always print the name of the metric before printing the value by specifying the metric name clearly. Avoid vague terms like 'train,' 'val,' or 'test.' Instead, use precise labels such as 'train accuracy,' 'validation loss,' or 'test F1 score,' etc.
+5. You only need to print the best or final value for each metric for each dataset
+6. DO NOT CREATE ANY PLOTS
+
+CRITICAL - Handling missing or empty metrics:
+  - NEVER output fallback/placeholder metrics like "parsed_records_count", "record_count", "num_records", or similar metadata when no real performance metrics are found.
+  - If no meaningful performance metrics (e.g., MFLOPS, accuracy, loss, latency, throughput, F1 score, etc.) can be extracted from the data, raise a ValueError with a descriptive message explaining what was expected vs. what was found.
+  - Do NOT print "metric: ... value: 0" as a fallback when data is empty or unparseable. This causes the system to incorrectly believe metrics were successfully extracted.
+  - Examples of INVALID fallback outputs (DO NOT DO THIS):
+      print("metric: parsed_records_count value: 0")  # WRONG
+      print("metric: record_count value: 0")          # WRONG
+      print("metric: num_samples value: 0")           # WRONG
+  - Instead, if no valid metrics are found, raise an exception:
+      raise ValueError(f"No valid performance metrics found in {npy_path}. Data structure: {type(loaded)}, keys: {loaded.keys() if hasattr(loaded, 'keys') else 'N/A'}")
+
+Important code structure requirements:
+  - Do NOT put any execution code inside 'if __name__ == "__main__":' block. Do not use 'if __name__ == "__main__":' at all.
+  - All code should be at the global scope or in functions that are called from the global scope
+  - The script should execute immediately when run, without requiring any special entry point

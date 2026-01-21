@@ -40,8 +40,6 @@ artifacts, and optional memory snapshots.
 ## Memory (when enabled)
 
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/memory.sqlite`
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/phase0_internal_info.json`
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/phase0_internal_info.md`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/resource_snapshot.json`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory_for_paper.md`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory_for_paper.json`

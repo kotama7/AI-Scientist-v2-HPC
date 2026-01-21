@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,10 +36,8 @@ class TestPhase0InternalPersisted(unittest.TestCase):
 
             json_path = Path(tmpdir) / "phase0_internal_info.json"
             md_path = Path(tmpdir) / "phase0_internal_info.md"
-            self.assertTrue(json_path.exists())
-            self.assertTrue(md_path.exists())
-            payload_loaded = json.loads(json_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload_loaded["phase0_payload"]["threads"], 8)
+            self.assertFalse(json_path.exists())
+            self.assertFalse(md_path.exists())
 
             archival = mem.retrieve_archival(
                 root,

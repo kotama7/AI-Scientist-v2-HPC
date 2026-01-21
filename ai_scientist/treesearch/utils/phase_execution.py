@@ -173,6 +173,7 @@ class ExecutionEnvironment:
         enable_writable_tmpfs: bool = True,
         overlay_path: str | None = None,
         extra_start_args: Sequence[str] | None = None,
+        resource_binds: Sequence[str] | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         if isinstance(image, str) and not image.strip():
@@ -196,6 +197,7 @@ class ExecutionEnvironment:
         self.extra_start_args = list(extra_start_args) if extra_start_args else []
         if not self.enable_gpu and self.extra_start_args:
             self.extra_start_args = [arg for arg in self.extra_start_args if arg != "--nv"]
+        self.resource_binds = list(resource_binds) if resource_binds else []
 
     def __enter__(self):
         self.start()
@@ -265,7 +267,10 @@ class ExecutionEnvironment:
         if self.overlay_path:
             cmd.extend(["--overlay", f"{self.overlay_path}:rw"])
         cmd.extend(env_args)
-        cmd.extend(["--bind", bind_arg, str(self.image), self.instance_name])
+        cmd.extend(["--bind", bind_arg])
+        for rb in self.resource_binds:
+            cmd.extend(["--bind", rb])
+        cmd.extend([str(self.image), self.instance_name])
 
         logger.info("Starting %s instance %s with image %s", self.runtime, self.instance_name, self.image)
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -316,6 +321,7 @@ class ExecutionEnvironment:
 
         container_cwd = self._map_cwd(cwd)
         bind_arg = f"{self.workspace}:{self.workspace_mount}"
+        all_binds = [bind_arg] + self.resource_binds
         image_ref = f"instance://{self.instance_name}" if self.using_container else str(self.image)
         cmd_to_run: str | list[str]
         if isinstance(command, str):
@@ -330,7 +336,7 @@ class ExecutionEnvironment:
             image_path=image_ref,
             cmd=cmd_to_run,
             env=env_vars,
-            binds=[bind_arg],
+            binds=all_binds,
             use_nv=self.enable_gpu,
             pwd=container_cwd,
             runtime=self.runtime,
@@ -1051,6 +1057,7 @@ class SingularityWorkerContainer:
             enable_writable_tmpfs=enable_writable_tmpfs,
             overlay_path=str(overlay_path) if overlay_path else None,
             extra_start_args=extra_start_args,
+            resource_binds=self.resource_binds,
         )
         env.start()
         return env
@@ -1077,7 +1084,14 @@ def collect_available_compilers(env: ExecutionEnvironment) -> list[dict[str, str
     The caller is responsible for starting the environment if a container image is configured.
     """
     compilers: list[dict[str, str]] = []
-    for candidate in ("mpicc", "mpicxx", "gcc", "g++", "clang", "clang++", "cc", "c++", "icx", "icpx", "nvcc"):
+    # C/C++ compilers, MPI wrappers, Fortran compilers, and GPU compilers
+    for candidate in (
+        "mpicc", "mpicxx", "mpif90", "mpif77",  # MPI wrappers
+        "gcc", "g++", "clang", "clang++", "cc", "c++",  # C/C++ compilers
+        "gfortran", "ifort", "ifx", "flang", "f77", "f90", "f95",  # Fortran compilers
+        "icx", "icpx",  # Intel oneAPI compilers
+        "nvcc", "nvc", "nvc++", "nvfortran",  # NVIDIA compilers
+    ):
         try:
             which_res = env.run(["bash", "-lc", f"command -v {candidate}"], cwd=env.workspace)
         except FileNotFoundError:
@@ -1099,7 +1113,21 @@ def collect_available_compilers(env: ExecutionEnvironment) -> list[dict[str, str
 
 def collect_available_libs(env: ExecutionEnvironment, names: Sequence[str] | None = None) -> list[str]:
     """Probe for a short list of shared libraries available inside the environment."""
-    probe_names = list(names) if names else ["libcnpy", "libz", "libstdc++", "libc"]
+    default_probe_names = [
+        # Basic
+        "libcnpy", "libz", "libstdc++", "libc",
+        # Numerical / Linear Algebra
+        "libopenblas", "liblapack", "libmkl", "libatlas",
+        # Parallel / MPI
+        "libmpi", "libopenmpi", "libmpich", "libomp",
+        # Scientific Computing
+        "libfftw3", "libhdf5", "libnetcdf", "libgsl",
+        # GPU
+        "libcuda", "libcudart", "libcublas", "libcudnn",
+        # Others
+        "libboost", "libeigen3", "libarmadillo", "libpthread",
+    ]
+    probe_names = list(names) if names else default_probe_names
     found: list[str] = []
     for name in probe_names:
         try:
@@ -1109,3 +1137,104 @@ def collect_available_libs(env: ExecutionEnvironment, names: Sequence[str] | Non
         if res.returncode == 0 and res.stdout.strip():
             found.append(name)
     return found
+
+
+def collect_system_performance_tools(env: ExecutionEnvironment) -> list[dict[str, str]]:
+    """
+    Discover available system performance tools (numactl, perf, taskset, etc.) inside the execution environment.
+
+    The caller is responsible for starting the environment if a container image is configured.
+    These tools are verified to be available and functional within the container.
+    """
+    tools: list[dict[str, str]] = []
+    # System performance and affinity tools
+    candidates = [
+        ("numactl", "--show", "NUMA control tool"),
+        ("perf", "--version", "Linux perf profiler"),
+        ("taskset", "--version", "CPU affinity tool"),
+        ("likwid-pin", "-v", "LIKWID CPU pinning"),
+        ("likwid-perfctr", "-v", "LIKWID performance counters"),
+        ("hwloc-ls", "--version", "Hardware locality"),
+        ("lscpu", "--version", "CPU info utility"),
+        ("numastat", "-V", "NUMA statistics"),
+    ]
+    for candidate, version_flag, description in candidates:
+        try:
+            which_res = env.run(["bash", "-lc", f"command -v {candidate}"], cwd=env.workspace)
+        except FileNotFoundError:
+            continue
+        if which_res.returncode != 0:
+            continue
+        tool_path = which_res.stdout.strip().splitlines()[0] if which_res.stdout else candidate
+        # Try to get version info
+        version_line = ""
+        try:
+            version_res = env.run(["bash", "-lc", f"{candidate} {version_flag} 2>&1 | head -n 1"], cwd=env.workspace)
+            version_output = (version_res.stdout or version_res.stderr or "").strip().splitlines()
+            version_line = version_output[0] if version_output else ""
+        except Exception:
+            pass
+        tools.append(
+            {
+                "name": candidate,
+                "path": tool_path,
+                "version": version_line,
+                "description": description,
+            }
+        )
+    return tools
+
+
+def collect_installed_system_packages(env: ExecutionEnvironment) -> list[dict[str, str]]:
+    """
+    Discover installed system packages relevant to HPC workloads inside the execution environment.
+
+    This helps the LLM understand what packages are pre-installed and avoid unnecessary
+    installation attempts or risk assessments.
+    """
+    packages: list[dict[str, str]] = []
+    # HPC-relevant packages to check
+    package_patterns = [
+        "linux-tools-common",
+        "linux-tools-generic",
+        "linux-tools-[0-9]",  # kernel-specific linux-tools
+        "numactl",
+        "hwloc",
+        "libhwloc-dev",
+        "libnuma-dev",
+        "libopenblas-dev",
+        "liblapack-dev",
+        "libfftw3-dev",
+        "libhdf5-dev",
+        "openmpi-bin",
+        "libopenmpi-dev",
+        "mpich",
+        "libmpich-dev",
+        "build-essential",
+        "cmake",
+        "gfortran",
+    ]
+
+    for pattern in package_patterns:
+        try:
+            # Use dpkg-query for more reliable package checking
+            cmd = f"dpkg-query -W -f='${{Package}} ${{Version}} ${{Status}}\\n' '{pattern}' 2>/dev/null | grep 'install ok installed'"
+            res = env.run(["bash", "-lc", cmd], cwd=env.workspace)
+        except FileNotFoundError:
+            continue
+        if res.returncode != 0 or not res.stdout.strip():
+            continue
+        # Parse output lines
+        for line in res.stdout.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                pkg_name = parts[0]
+                pkg_version = parts[1]
+                packages.append(
+                    {
+                        "name": pkg_name,
+                        "version": pkg_version,
+                        "status": "installed",
+                    }
+                )
+    return packages

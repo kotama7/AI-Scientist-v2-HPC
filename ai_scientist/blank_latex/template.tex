@@ -1,0 +1,161 @@
+%%%%%%%% LATEX SUBMISSION FILE %%%%%%%%%%%%%%%%%
+
+\documentclass[10pt,twocolumn]{article}
+
+% Page layout
+\usepackage[margin=0.75in]{geometry}
+
+% Typography and formatting
+\usepackage{microtype}
+\usepackage{times}
+
+% Graphics and tables
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{booktabs} % for professional tables
+
+% Hyperlinks
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+% Algorithm support
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\newcommand{\theHalgorithm}{\arabic{algorithm}}
+
+% Math packages
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+
+% Additional packages
+\usepackage{multirow}
+\usepackage{color}
+\usepackage{colortbl}
+\usepackage[capitalize,noabbrev]{cleveref}
+\usepackage{xspace}
+\usepackage{natbib}
+
+% Math operators
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% THEOREMS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\graphicspath{{../figures/}} % To reference your generated figures, name the PNGs directly. DO NOT CHANGE THIS.
+
+\begin{filecontents}{references.bib}
+\end{filecontents}
+
+\title{
+%%%%%%%%%TITLE%%%%%%%%%
+TITLE HERE
+%%%%%%%%%TITLE%%%%%%%%%
+}
+
+\author{
+Author Name\\
+Institution\\
+\texttt{email@example.com}
+}
+
+\date{}
+
+\begin{document}
+
+\twocolumn[
+\maketitle
+
+\begin{abstract}
+%%%%%%%%%ABSTRACT%%%%%%%%%
+ABSTRACT HERE
+%%%%%%%%%ABSTRACT%%%%%%%%%
+\end{abstract}
+\vspace{0.3in}
+]
+
+\section{Introduction}
+\label{sec:intro}
+%%%%%%%%%INTRODUCTION%%%%%%%%%
+INTRO HERE
+%%%%%%%%%INTRODUCTION%%%%%%%%%
+
+\section{Related Work}
+\label{sec:related}
+%%%%%%%%%RELATED WORK%%%%%%%%%
+RELATED WORK HERE
+%%%%%%%%%RELATED WORK%%%%%%%%%
+
+\section{Background}
+\label{sec:background}
+%%%%%%%%%BACKGROUND%%%%%%%%%
+BACKGROUND HERE
+%%%%%%%%%BACKGROUND%%%%%%%%%
+
+\section{Method}
+\label{sec:method}
+%%%%%%%%%METHOD%%%%%%%%%
+METHOD HERE
+%%%%%%%%%METHOD%%%%%%%%%
+
+\section{Experimental Setup}
+\label{sec:experimental_setup}
+%%%%%%%%%EXPERIMENTAL SETUP%%%%%%%%%
+EXPERIMENTAL SETUP HERE
+%%%%%%%%%EXPERIMENTAL SETUP%%%%%%%%%
+
+\section{Experiments}
+\label{sec:experiments}
+%%%%%%%%%EXPERIMENTS%%%%%%%%%
+RESULTS HERE
+
+% EXAMPLE FIGURE: REPLACE AND ADD YOUR OWN FIGURES / CAPTIONS
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{example-image-a}
+\caption{PLEASE FILL IN CAPTION HERE}
+\label{fig:first_figure}
+\end{figure}
+%%%%%%%%%EXPERIMENTS%%%%%%%%%
+
+\section{Conclusion}
+\label{sec:conclusion}
+%%%%%%%%%CONCLUSION%%%%%%%%%
+CONCLUSIONS HERE
+%%%%%%%%%CONCLUSION%%%%%%%%%
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+% APPENDIX
+\newpage
+\appendix
+\onecolumn
+
+\section*{\Large Supplementary Material}
+\label{sec:appendix}
+
+%%%%%%%%%APPENDIX%%%%%%%%%
+\section{Appendix Section}
+APPENDIX TEXT
+%%%%%%%%%APPENDIX%%%%%%%%%
+
+\end{document}

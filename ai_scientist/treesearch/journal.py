@@ -21,15 +21,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-BEST_NODE_INTRO = load_prompt("treesearch/journal/best_node_intro").strip()
-BEST_NODE_TASK = load_prompt("treesearch/journal/best_node_task").strip()
-SUMMARY_INTRO = load_prompt("treesearch/journal/summary_intro").strip()
+BEST_NODE_INTRO = load_prompt("journal/best_node/intro").strip()
+BEST_NODE_TASK = load_prompt("journal/best_node/task").strip()
+SUMMARY_INTRO = load_prompt("journal/summary/intro").strip()
 SUMMARY_USER_MESSAGE = load_prompt(
-    "treesearch/journal/summary_user_message"
+    "journal/summary/user_message"
 ).strip()
-STAGE_NOTES_INTRO = load_prompt("treesearch/journal/stage_notes_intro").strip()
+STAGE_NOTES_INTRO = load_prompt("journal/stage_notes/intro").strip()
 STAGE_NOTES_USER_MESSAGE = load_prompt(
-    "treesearch/journal/stage_notes_user_message"
+    "journal/stage_notes/user_message"
 ).strip()
 
 node_selection_spec = FunctionSpec(
@@ -131,6 +131,20 @@ class Node(DataClassJsonMixin):
     # ---- seed node ----
     is_seed_node: bool = field(default=False, kw_only=True)
     is_seed_agg_node: bool = field(default=False, kw_only=True)
+    seed_value: int | None = field(default=None, kw_only=True)
+
+    # ---- worker container ----
+    # Path to the worker SIF built during Phase 1 (for seed_eval reuse)
+    worker_sif_path: str | None = field(default=None, kw_only=True)
+
+    # ---- workspace management ----
+    # Path to the workspace directory for this node (for cross-stage file inheritance)
+    workspace_path: str | None = field(default=None, kw_only=True)
+
+    # ---- cross-stage inheritance ----
+    # ID of the node from the previous stage that this node was inherited from
+    # Used to track lineage across stages for visualization
+    inherited_from_node_id: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         # Ensure children is a set even if initialized with a list
@@ -305,6 +319,8 @@ class Node(DataClassJsonMixin):
             "is_seed_node": self.is_seed_node,
             "is_seed_agg_node": self.is_seed_agg_node,
             "exec_time_feedback": self.exec_time_feedback,
+            "workspace_path": self.workspace_path,
+            "inherited_from_node_id": self.inherited_from_node_id,
         }
 
     @classmethod

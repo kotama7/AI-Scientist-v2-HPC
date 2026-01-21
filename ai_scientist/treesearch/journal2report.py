@@ -10,7 +10,7 @@ def journal2report(journal: Journal, task_desc: dict, rcfg: StageConfig):
     """
     report_input = journal.generate_summary(include_code=True)
     system_prompt_dict = load_prompt_json(
-        "treesearch/journal2report/system_prompt.json"
+        "journal/journal2report/system_prompt.json"
     )
     context_prompt = (
         f"Here is the research journal of the agent: <journal>{report_input}<\\journal>, "

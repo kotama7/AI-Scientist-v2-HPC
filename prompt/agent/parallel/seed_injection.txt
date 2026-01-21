@@ -1,0 +1,11 @@
+You are updating existing code to make stochastic behavior reproducible across runs.
+Insert seed handling that uses the provided default seed value directly.
+Keep edits minimal and localized. Do not change algorithms, I/O, or performance behavior.
+If multiple files are provided, update only the entrypoint or the file that performs randomness.
+
+Language guidance:
+- Python: seed random, numpy, and torch (and torch.cuda if available) before any stochastic work.
+- C/C++: seed std::mt19937 and std::srand before any stochastic work; use std::getenv and std::strtoul for parsing.
+
+Response format: return a JSON object with key "files" (list). Each entry must be {"path": "...", "content": "..."}.
+Include ONLY files you changed. If no changes are needed, return {"files": []}.

@@ -14,6 +14,9 @@ python -m unittest tests/test_phase0_internal_persisted.py
 python -m unittest tests/test_idea_md_persisted_and_injected.py
 python -m unittest tests/test_final_memory_generation.py
 python -m unittest tests/test_worker_parallelism.py
+python -m unittest tests/test_llm_compression.py
+python -m unittest tests/test_iterative_compression.py
+python -m unittest tests/test_writeup_memory_loading.py
 ```
 
 ## What each test covers
@@ -26,6 +29,9 @@ python -m unittest tests/test_worker_parallelism.py
 - `test_idea_md_persisted_and_injected`: idea memory injection.
 - `test_final_memory_generation`: final memory artifacts.
 - `test_worker_parallelism`: worker count and GPU assignment.
+- `test_llm_compression`: LLM-based memory compression.
+- `test_iterative_compression`: iterative LLM-based compression logic.
+- `test_writeup_memory_loading`: memory loading for paper writeup.
 
 ## Notes
 

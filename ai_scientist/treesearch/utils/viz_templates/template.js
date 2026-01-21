@@ -40,6 +40,44 @@ let availableStages = [];
 let memoryPhaseIndex = 0;
 let memoryPhaseKeys = [];
 let memoryEventsByPhase = {};
+let memoryCurrentFilter = 'all';
+
+// Memory operation categorization mapping
+const MEMORY_OP_CATEGORIES = {
+  // Read operations
+  'get_core': 'reads',
+  'render_for_prompt': 'reads',
+  // Write operations  
+  'set_core': 'writes',
+  'mem_core_set': 'writes',
+  'write_archival': 'writes',
+  'mem_archival_write': 'writes',
+  'ingest_idea_md': 'writes',
+  'ingest_phase0_internal_info': 'writes',
+  // Delete operations
+  'core_evict': 'deletes',
+  'core_delete': 'deletes',
+  'core_digest_compact': 'deletes',
+  // Fork operations
+  'mem_node_fork': 'forks',
+  // Recall operations
+  'mem_recall_append': 'recalls',
+  // Resource operations
+  'mem_resources_index_update': 'resources',
+  'mem_resources_snapshot_upsert': 'resources',
+  'mem_resources_resolve_and_refresh': 'resources',
+};
+
+// Category display configuration
+const CATEGORY_CONFIG = {
+  'reads': { icon: '📖', label: 'Reads', color: '#4dabf7' },
+  'writes': { icon: '💾', label: 'Writes', color: '#69db7c' },
+  'deletes': { icon: '🗑️', label: 'Deletes', color: '#ff6b6b' },
+  'forks': { icon: '🌿', label: 'Forks', color: '#da77f2' },
+  'recalls': { icon: '🔄', label: 'Recalls', color: '#ffd43b' },
+  'resources': { icon: '📦', label: 'Resources', color: '#74c0fc' },
+  'other': { icon: '❓', label: 'Other', color: '#868e96' },
+};
 
 function inferStageIdFromPath(pathname) {
   const match = pathname.match(/stage_(\d+)/);
@@ -519,6 +557,10 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function getEventCategory(op) {
+  return MEMORY_OP_CATEGORIES[op] || 'other';
+}
+
 function groupMemoryEvents(events) {
   const grouped = {};
   if (!Array.isArray(events)) {
@@ -537,6 +579,39 @@ function groupMemoryEvents(events) {
   return grouped;
 }
 
+// Calculate memory operation statistics for a phase
+function calculateMemoryStats(events) {
+  const stats = {
+    total: 0,
+    reads: 0,
+    writes: 0,
+    deletes: 0,
+    forks: 0,
+    recalls: 0,
+    resources: 0,
+    other: 0,
+  };
+  if (!Array.isArray(events)) {
+    return stats;
+  }
+  for (const event of events) {
+    if (!event || typeof event !== 'object') continue;
+    const category = getEventCategory(event.op);
+    stats.total++;
+    stats[category] = (stats[category] || 0) + 1;
+  }
+  return stats;
+}
+
+// Filter events by category
+function filterEventsByCategory(events, filter) {
+  if (filter === 'all') return events;
+  return events.filter(event => {
+    const category = getEventCategory(event.op);
+    return category === filter;
+  });
+}
+
 function sortMemoryPhases(phases) {
   const order = ['phase0', 'phase1', 'phase2', 'phase3', 'phase4'];
   return phases.slice().sort((a, b) => {
@@ -550,7 +625,10 @@ function sortMemoryPhases(phases) {
 }
 
 function formatMemoryEvent(event) {
-  const header = `${event.op || 'memory_event'} (${event.memory_type || 'unknown'})`;
+  const op = event.op || 'memory_event';
+  const memType = event.memory_type || 'unknown';
+  const category = getEventCategory(op);
+  const config = CATEGORY_CONFIG[category] || CATEGORY_CONFIG['other'];
   const ts = event.ts ? new Date(event.ts * 1000).toLocaleString() : '';
   const metaParts = [];
   if (ts) metaParts.push(ts);
@@ -559,18 +637,68 @@ function formatMemoryEvent(event) {
   const metaText = metaParts.join(' | ');
   const details = event.details ? JSON.stringify(event.details, null, 2) : '';
   const detailsHtml = details ? `<pre class="memory-event-details">${escapeHtml(details)}</pre>` : '';
+  // Extract key info for display
+  let keyInfoHtml = '';
+  if (event.details) {
+    const d = event.details;
+    if (d.key) keyInfoHtml += `<span class="memory-key">key: ${escapeHtml(d.key)}</span> `;
+    if (d.value_chars) keyInfoHtml += `<span class="memory-size">${d.value_chars} chars</span> `;
+    if (d.record_id) keyInfoHtml += `<span class="memory-id">record: ${d.record_id}</span> `;
+  }
   return `
-    <div class="memory-event">
-      <div class="memory-event-header">${escapeHtml(header)}</div>
+    <div class="memory-event" data-category="${category}">
+      <div class="memory-event-header">
+        <span class="memory-badge" style="background-color: ${config.color}">${config.icon} ${config.label}</span>
+        <span class="memory-op">${escapeHtml(op)}</span>
+        <span class="memory-type">(${escapeHtml(memType)})</span>
+      </div>
+      ${keyInfoHtml ? `<div class="memory-event-keyinfo">${keyInfoHtml}</div>` : ''}
       <div class="memory-event-meta">${escapeHtml(metaText)}</div>
       ${detailsHtml}
     </div>
   `;
 }
 
+// Render memory summary table
+function renderMemorySummary(stats) {
+  const categories = ['reads', 'writes', 'deletes', 'forks', 'recalls', 'resources'];
+  let rows = '';
+  for (const cat of categories) {
+    const config = CATEGORY_CONFIG[cat];
+    const count = stats[cat] || 0;
+    if (count > 0) {
+      rows += `<tr>
+        <td><span class="memory-badge" style="background-color: ${config.color}">${config.icon} ${config.label}</span></td>
+        <td class="memory-count">${count}</td>
+      </tr>`;
+    }
+  }
+  if (!rows) {
+    return '<p class="memory-no-events">No memory events</p>';
+  }
+  return `
+    <table class="memory-summary-table">
+      <thead><tr><th>Operation</th><th>Count</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><th>Total</th><th>${stats.total}</th></tr></tfoot>
+    </table>
+  `;
+}
+
+// Handle filter button clicks
+function setMemoryFilter(filter) {
+  memoryCurrentFilter = filter;
+  const buttons = document.querySelectorAll('.memory-filter');
+  buttons.forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-filter') === filter);
+  });
+  renderMemoryPhase();
+}
+
 function renderMemoryPhase() {
   const labelElm = document.getElementById('memory-phase-label');
   const contentElm = document.getElementById('memory-content');
+  const summaryElm = document.getElementById('memory-summary');
   const prevBtn = document.getElementById('memory-prev');
   const nextBtn = document.getElementById('memory-next');
   if (!labelElm || !contentElm || !prevBtn || !nextBtn) {
@@ -578,6 +706,7 @@ function renderMemoryPhase() {
   }
   if (!memoryPhaseKeys.length) {
     labelElm.textContent = 'No memory events';
+    if (summaryElm) summaryElm.innerHTML = '';
     contentElm.innerHTML = '<p>No memory events recorded for this node.</p>';
     prevBtn.disabled = true;
     nextBtn.disabled = true;
@@ -585,8 +714,17 @@ function renderMemoryPhase() {
   }
   const phase = memoryPhaseKeys[memoryPhaseIndex] || 'unknown';
   labelElm.textContent = phase;
-  const events = memoryEventsByPhase[phase] || [];
-  contentElm.innerHTML = events.map(formatMemoryEvent).join('');
+  const allEvents = memoryEventsByPhase[phase] || [];
+  const stats = calculateMemoryStats(allEvents);
+  if (summaryElm) {
+    summaryElm.innerHTML = renderMemorySummary(stats);
+  }
+  const filteredEvents = filterEventsByCategory(allEvents, memoryCurrentFilter);
+  if (filteredEvents.length === 0 && memoryCurrentFilter !== 'all') {
+    contentElm.innerHTML = `<p>No ${memoryCurrentFilter} events in this phase. <a href="#" onclick="setMemoryFilter('all'); return false;">Show all</a></p>`;
+  } else {
+    contentElm.innerHTML = filteredEvents.map(formatMemoryEvent).join('');
+  }
   const disableNav = memoryPhaseKeys.length <= 1;
   prevBtn.disabled = disableNav;
   nextBtn.disabled = disableNav;
@@ -604,6 +742,12 @@ function updateMemoryPanel(events) {
   memoryEventsByPhase = groupMemoryEvents(events);
   memoryPhaseKeys = sortMemoryPhases(Object.keys(memoryEventsByPhase));
   memoryPhaseIndex = 0;
+  memoryCurrentFilter = 'all';
+  // Reset filter buttons
+  const buttons = document.querySelectorAll('.memory-filter');
+  buttons.forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-filter') === 'all');
+  });
   renderMemoryPhase();
 }
 
@@ -661,15 +805,13 @@ const setNodeInfo = (code, plan, plot_code, plot_plan, metrics = null, exc_type 
               metricsContent += `<table class="metric-table">
                   <tr>
                       <th>Dataset</th>
-                      <th>Final Value</th>
-                      <th>Best Value</th>
+                      <th>Value</th>
                   </tr>`;
 
               for (const dataPoint of metric.data) {
                   metricsContent += `<tr>
                       <td>${dataPoint.dataset_name}</td>
-                      <td>${dataPoint.final_value?.toFixed(4) || 'N/A'}</td>
-                      <td>${dataPoint.best_value?.toFixed(4) || 'N/A'}</td>
+                      <td>${dataPoint.value?.toFixed(4) || 'N/A'}</td>
                   </tr>`;
               }
 

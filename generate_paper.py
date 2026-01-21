@@ -9,10 +9,6 @@ from pathlib import Path
 from ai_scientist.llm import create_client
 from ai_scientist.perform_plotting import aggregate_plots
 from ai_scientist.perform_writeup import perform_writeup, gather_citations
-from ai_scientist.perform_icbinb_writeup import (
-    perform_writeup as perform_icbinb_writeup,
-    gather_citations as gather_icbinb_citations,
-)
 from ai_scientist.perform_llm_review import perform_review, load_paper
 from ai_scientist.perform_vlm_review import perform_imgs_cap_ref_review
 from ai_scientist.utils.token_tracker import token_tracker
@@ -37,15 +33,15 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--writeup-type",
         type=str,
-        default="icbinb",
-        choices=["normal", "icbinb", "auto"],
-        help="Type of writeup to generate (normal=page-limited, icbinb=4 page, auto=no page limit).",
+        default="normal",
+        choices=["normal", "auto"],
+        help="Type of writeup to generate (normal=page-limited, auto=no page limit).",
     )
     parser.add_argument(
         "--writeup-page-limit",
         type=int,
         default=8,
-        help="Page limit for normal writeups; use 0 to disable. Ignored for icbinb and auto.",
+        help="Page limit for normal writeups; use 0 to disable. Ignored for auto.",
     )
     parser.add_argument(
         "--writeup-retries",
@@ -187,37 +183,22 @@ def main() -> None:
         writeup_success = False
         for attempt in range(args.writeup_retries):
             print(f"Writeup attempt {attempt + 1} of {args.writeup_retries}")
-            if args.writeup_type in ("normal", "auto"):
-                page_limit = None
-                if args.writeup_type == "normal":
-                    page_limit = args.writeup_page_limit if args.writeup_page_limit > 0 else None
-                citations_text = gather_citations(
-                    str(exp_dir),
-                    num_cite_rounds=args.num_cite_rounds,
-                    small_model=args.model_citation,
-                )
-                writeup_success = perform_writeup(
-                    base_folder=str(exp_dir),
-                    small_model=args.model_writeup_small,
-                    big_model=args.model_writeup,
-                    page_limit=page_limit,
-                    n_writeup_reflections=args.writeup_reflections,
-                    citations_text=citations_text,
-                )
-            else:
-                citations_text = gather_icbinb_citations(
-                    str(exp_dir),
-                    num_cite_rounds=args.num_cite_rounds,
-                    small_model=args.model_citation,
-                )
-                writeup_success = perform_icbinb_writeup(
-                    base_folder=str(exp_dir),
-                    small_model=args.model_writeup_small,
-                    big_model=args.model_writeup,
-                    page_limit=4,
-                    n_writeup_reflections=args.writeup_reflections,
-                    citations_text=citations_text,
-                )
+            page_limit = None
+            if args.writeup_type == "normal":
+                page_limit = args.writeup_page_limit if args.writeup_page_limit > 0 else None
+            citations_text = gather_citations(
+                str(exp_dir),
+                num_cite_rounds=args.num_cite_rounds,
+                small_model=args.model_citation,
+            )
+            writeup_success = perform_writeup(
+                base_folder=str(exp_dir),
+                small_model=args.model_writeup_small,
+                big_model=args.model_writeup,
+                page_limit=page_limit,
+                n_writeup_reflections=args.writeup_reflections,
+                citations_text=citations_text,
+            )
             if writeup_success:
                 break
 

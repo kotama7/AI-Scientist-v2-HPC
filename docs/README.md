@@ -17,7 +17,11 @@ between docs and code without losing context.
 - **New user**: requirements -> installation -> quickstart -> outputs.
 - **HPC operator**: requirements -> execution modes -> configuration -> outputs
   -> troubleshooting.
-- **Prompt/LLM tuning**: llm context -> configuration -> resource files -> memory.
+- **Prompt/LLM tuning**: llm context -> prompt structure -> configuration -> resource files.
+- **Understanding codebase**: file roles -> prompt structure -> llm context details.
+- **Persona customization**: llm context (Persona system) -> configuration (`agent.role_description`).
+- **Memory optimization**: memory -> memgpt features -> memgpt implementation -> configuration.
+- **MemGPT deep dive**: memgpt features -> memgpt implementation -> memory.
 - **Testing/QA**: testing -> outputs -> troubleshooting.
 
 ## Guides
@@ -45,12 +49,24 @@ alongside the corresponding guide.
   applied); related: [bfts_config.yaml](../bfts_config.yaml),
   [launch_scientist_bfts.py](../launch_scientist_bfts.py).
 - Execution modes: [execution-modes.md](execution-modes.md) (split vs single,
-  worker behavior); related: [prompt/execution_split_schema.txt](../prompt/execution_split_schema.txt),
+  worker behavior); related: [prompt/agent/parallel/response_format/execution_split.txt](../prompt/agent/parallel/response_format/execution_split.txt),
   [ai_scientist/treesearch/parallel_agent.py](../ai_scientist/treesearch/parallel_agent.py).
 - LLM context: [llm-context.md](llm-context.md) (prompt assembly and stage
-  inputs); related: [prompt/](../prompt/), [prompt/base_system.txt](../prompt/base_system.txt).
+  inputs); related: [prompt/](../prompt/), [prompt/core/system.txt](../prompt/core/system.txt).
+- LLM context details: [llm-context-details.md](llm-context-details.md) (detailed
+  context components per phase); related: [ai_scientist/treesearch/parallel_agent.py](../ai_scientist/treesearch/parallel_agent.py).
+- File roles: [file-roles.md](file-roles.md) (role and responsibility of each
+  file); related: [ai_scientist/](../ai_scientist/), [prompt/](../prompt/).
+- Prompt structure: [prompt-structure.md](prompt-structure.md) (prompt directory
+  organization and contents); related: [prompt/](../prompt/),
+  [ai_scientist/prompt_loader.py](../ai_scientist/prompt_loader.py).
 - MemGPT-style memory: [memory.md](memory.md) (hierarchical memory +
   persistence); related: [ai_scientist/memory/](../ai_scientist/memory/).
+- MemGPT features: [memgpt-features.md](memgpt-features.md) (available memory
+  features and configuration); related: [bfts_config.yaml](../bfts_config.yaml).
+- MemGPT implementation: [memgpt-implementation.md](memgpt-implementation.md)
+  (technical implementation details); related:
+  [ai_scientist/memory/memgpt_store.py](../ai_scientist/memory/memgpt_store.py).
 - Resource files: [resource-files.md](resource-files.md) (JSON/YAML schema and
   staging rules); related: [data_resources.json](../data_resources.json),
   [tests/test_resource.py](../tests/test_resource.py).
@@ -69,4 +85,11 @@ alongside the corresponding guide.
 - Templates and image assets: [template/](../template/), [docs/logo_v1.png](logo_v1.png).
 - Prompt templates: [prompt/](../prompt/) (system messages, stage instructions,
   response formats).
+  - Core prompts: [prompt/core/](../prompt/core/) (base system, domain-neutral).
+  - Phase prompts: [prompt/config/phases/](../prompt/config/phases/) (planning, installer).
+  - Memory prompts: [prompt/config/memory/](../prompt/config/memory/) (compression template).
+  - Response formats: [prompt/agent/parallel/response_format/](../prompt/agent/parallel/response_format/) (split execution format).
 - Example ideas: [ai_scientist/ideas/](../ai_scientist/ideas/).
+- Memory implementation: [ai_scientist/memory/](../ai_scientist/memory/).
+- Persona system: [ai_scientist/persona.py](../ai_scientist/persona.py).
+- Token tracking: [ai_scientist/utils/token_tracker.py](../ai_scientist/utils/token_tracker.py).

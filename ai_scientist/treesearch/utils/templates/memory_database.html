@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Check if we're running under Live Server
+      if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+          let lastModified = '';
+
+          // Check for file changes every second
+          setInterval(async () => {
+              try {
+                  const response = await fetch(window.location.href, { method: 'HEAD' });
+                  const currentModified = response.headers.get('last-modified');
+
+                  if (lastModified && lastModified !== currentModified) {
+                      window.location.reload();
+                  }
+
+                  lastModified = currentModified;
+              } catch (e) {
+                  console.error('Error checking for updates:', e);
+              }
+          }, 1000);
+      }
+  </script>
+    <title>__EXPERIMENT_NAME__ - Memory Database Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #1a1a2e;
+            color: #eee;
+            display: flex;
+            height: 100vh;
+        }
+        #canvas-container {
+            width: 35vw;
+            height: 100vh;
+            background-color: #16213e;
+            position: relative;
+        }
+        #info-container {
+            width: 65vw;
+            height: 100vh;
+            overflow-y: auto;
+            padding: 20px;
+            background-color: #0f0f23;
+        }
+        .header {
+            background-color: #1a1a2e;
+            padding: 15px;
+            border-bottom: 2px solid #e94560;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            font-size: 1.5rem;
+            color: #e94560;
+        }
+        .header .node-info {
+            font-size: 0.9rem;
+            color: #888;
+            margin-top: 5px;
+        }
+        .phase-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+        .phase-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+            background-color: #16213e;
+            color: #eee;
+            border: 1px solid #333;
+        }
+        .phase-btn:hover {
+            background-color: #1a1a2e;
+            border-color: #e94560;
+        }
+        .phase-btn.active {
+            background-color: #e94560;
+            border-color: #e94560;
+        }
+        .memory-section {
+            margin-bottom: 25px;
+            background-color: #16213e;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .section-header {
+            background-color: #1a1a2e;
+            padding: 12px 15px;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            border-left: 3px solid #e94560;
+        }
+        .section-header:hover {
+            background-color: #222;
+        }
+        .section-content {
+            padding: 15px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .section-content.collapsed {
+            display: none;
+        }
+        .kv-item {
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #0f0f23;
+            border-radius: 4px;
+            border-left: 3px solid #4dabf7;
+        }
+        .kv-key {
+            color: #4dabf7;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .kv-value {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: #ccc;
+        }
+        .event-item {
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #0f0f23;
+            border-radius: 4px;
+            border-left: 3px solid #69db7c;
+        }
+        .event-kind {
+            color: #69db7c;
+            font-weight: bold;
+        }
+        .event-text {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: monospace;
+            font-size: 0.85rem;
+            margin-top: 5px;
+        }
+        .event-meta {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 5px;
+        }
+        .archival-item {
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #0f0f23;
+            border-radius: 4px;
+            border-left: 3px solid #ffd43b;
+        }
+        .archival-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-bottom: 8px;
+        }
+        .archival-tag {
+            background-color: #333;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 0.75rem;
+            color: #ffd43b;
+        }
+        .archival-text {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: monospace;
+            font-size: 0.85rem;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .no-data {
+            color: #666;
+            font-style: italic;
+            padding: 20px;
+            text-align: center;
+        }
+        .count-badge {
+            background-color: #333;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.8rem;
+        }
+        .expand-icon {
+            transition: transform 0.2s;
+        }
+        .expand-icon.collapsed {
+            transform: rotate(-90deg);
+        }
+        /* Data group styles */
+        .data-group {
+            margin-bottom: 30px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .data-group-header {
+            background-color: #1a1a2e;
+            padding: 12px 15px;
+            font-weight: bold;
+            font-size: 1.1rem;
+            border-bottom: 2px solid #e94560;
+        }
+        .data-group-header.inherited {
+            border-bottom-color: #ffd43b;
+            color: #ffd43b;
+        }
+        /* Inherited item styles */
+        .kv-item.inherited {
+            opacity: 0.8;
+            border-left-color: #888;
+        }
+        .event-item.inherited {
+            opacity: 0.8;
+            border-left-color: #888;
+        }
+        .archival-item.inherited {
+            opacity: 0.8;
+            border-left-color: #888;
+        }
+        /* Ancestor info */
+        .ancestor-chain {
+            font-size: 0.8rem;
+            color: #888;
+            margin: 10px 15px;
+            padding: 8px;
+            background-color: #0f0f23;
+            border-radius: 4px;
+        }
+        .ancestor-chain a {
+            color: #4dabf7;
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .ancestor-chain a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="info-container">
+        <div class="header">
+            <h1>__EXPERIMENT_NAME__</h1>
+            <div class="node-info" id="current-node-info">Click a node to view memory state</div>
+        </div>
+        <div class="phase-buttons" id="phase-buttons"></div>
+        <div id="memory-content"></div>
+    </div>
+
+    <script>
+const memoryData = __JS_DATA__;
+
+let nodes = [];
+let edges = [];
+let selectedNodeIndex = null;
+let selectedPhase = null;
+
+class Node {
+    constructor(x, y, index, data) {
+        this.x = x;
+        this.y = y;
+        this.index = index;
+        this.data = data;
+        this.visible = true;
+        this.selected = false;
+        this.radius = 18;
+    }
+
+    render(p5) {
+        if (!this.visible) return;
+
+        p5.push();
+        p5.translate(this.x, this.y);
+
+        p5.noStroke();
+        p5.fill(0, 0, 0, 50);
+        p5.ellipse(2, 2, this.radius * 2);
+
+        if (this.selected) {
+            p5.fill(233, 69, 96);
+        } else {
+            p5.fill(77, 171, 247);
+        }
+        p5.ellipse(0, 0, this.radius * 2);
+
+        p5.fill(255);
+        p5.textAlign(p5.CENTER, p5.CENTER);
+        p5.textSize(10);
+        p5.text(this.index, 0, 0);
+
+        p5.pop();
+    }
+
+    isMouseOver(p5) {
+        const d = p5.dist(p5.mouseX, p5.mouseY, this.x, this.y);
+        return d < this.radius;
+    }
+}
+
+class Edge {
+    constructor(parent, child) {
+        this.parent = parent;
+        this.child = child;
+    }
+
+    render(p5) {
+        p5.stroke(100);
+        p5.strokeWeight(1.5);
+        p5.noFill();
+
+        const midY = this.parent.y + (this.child.y - this.parent.y) * 0.5;
+
+        p5.beginShape();
+        p5.vertex(this.parent.x, this.parent.y);
+        p5.vertex(this.parent.x, midY);
+        p5.vertex(this.child.x, midY);
+        p5.vertex(this.child.x, this.child.y);
+        p5.endShape();
+    }
+}
+
+function createSketch() {
+    return function(p5) {
+        p5.setup = function() {
+            const canvas = p5.createCanvas(
+                document.getElementById('canvas-container').offsetWidth,
+                window.innerHeight
+            );
+            canvas.parent('canvas-container');
+
+            for (let i = 0; i < memoryData.layout.length; i++) {
+                const [nx, ny] = memoryData.layout[i];
+                const node = new Node(
+                    nx * p5.width * 0.85 + p5.width * 0.075,
+                    ny * p5.height * 0.85 + p5.height * 0.075,
+                    i,
+                    memoryData.nodes[i]
+                );
+                nodes.push(node);
+            }
+
+            for (const [parentIdx, childIdx] of memoryData.edges) {
+                if (nodes[parentIdx] && nodes[childIdx]) {
+                    edges.push(new Edge(nodes[parentIdx], nodes[childIdx]));
+                }
+            }
+
+            if (nodes.length > 0) {
+                selectNode(0);
+            }
+        };
+
+        p5.draw = function() {
+            p5.background(22, 33, 62);
+
+            for (const edge of edges) {
+                edge.render(p5);
+            }
+
+            for (const node of nodes) {
+                node.render(p5);
+            }
+
+            p5.cursor(p5.ARROW);
+            for (const node of nodes) {
+                if (node.isMouseOver(p5)) {
+                    p5.cursor(p5.HAND);
+                    break;
+                }
+            }
+        };
+
+        p5.mousePressed = function() {
+            for (let i = 0; i < nodes.length; i++) {
+                if (nodes[i].isMouseOver(p5)) {
+                    selectNode(i);
+                    break;
+                }
+            }
+        };
+
+        p5.windowResized = function() {
+            p5.resizeCanvas(
+                document.getElementById('canvas-container').offsetWidth,
+                window.innerHeight
+            );
+        };
+    };
+}
+
+function selectNode(index) {
+    selectedNodeIndex = index;
+    selectedPhase = null;
+
+    for (let i = 0; i < nodes.length; i++) {
+        nodes[i].selected = (i === index);
+    }
+
+    const nodeData = memoryData.nodes[index];
+
+    document.getElementById('current-node-info').innerHTML =
+        `Node ${index} | Branch: ${nodeData.branch_id.substring(0, 8)}... | UID: ${nodeData.node_uid || 'root'}`;
+
+    const phaseContainer = document.getElementById('phase-buttons');
+    phaseContainer.innerHTML = '';
+
+    // Always add ALL button first
+    const allBtn = document.createElement('button');
+    allBtn.className = 'phase-btn';
+    allBtn.textContent = 'ALL';
+    allBtn.onclick = () => selectPhase('ALL');
+    phaseContainer.appendChild(allBtn);
+
+    if (nodeData.phases.length > 0) {
+        for (const phase of nodeData.phases) {
+            const btn = document.createElement('button');
+            btn.className = 'phase-btn';
+            btn.textContent = phase;
+            btn.onclick = () => selectPhase(phase);
+            phaseContainer.appendChild(btn);
+        }
+    }
+
+    // Default to ALL view
+    selectPhase('ALL');
+}
+
+function selectPhase(phase) {
+    selectedPhase = phase;
+
+    document.querySelectorAll('.phase-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.textContent === phase);
+    });
+
+    const nodeData = memoryData.nodes[selectedNodeIndex];
+
+    if (phase === 'ALL' || phase === 'summary') {
+        displayAllMemory(nodeData);
+    } else {
+        displayPhaseMemory(nodeData, phase);
+    }
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function createSection(title, content, count, defaultExpanded = true) {
+    const expandedClass = defaultExpanded ? '' : 'collapsed';
+    const iconClass = defaultExpanded ? '' : 'collapsed';
+
+    return `
+        <div class="memory-section">
+            <div class="section-header" onclick="toggleSection(this)">
+                <span>${title} <span class="count-badge">${count}</span></span>
+                <span class="expand-icon ${iconClass}">▼</span>
+            </div>
+            <div class="section-content ${expandedClass}">
+                ${content || '<div class="no-data">No data</div>'}
+            </div>
+        </div>
+    `;
+}
+
+function toggleSection(header) {
+    const content = header.nextElementSibling;
+    const icon = header.querySelector('.expand-icon');
+    content.classList.toggle('collapsed');
+    icon.classList.toggle('collapsed');
+}
+
+function renderCoreKV(items, isInherited = false) {
+    if (!items || items.length === 0) return '';
+    const inheritedClass = isInherited ? 'inherited' : '';
+
+    return items.map(item => `
+        <div class="kv-item ${inheritedClass}">
+            <div class="kv-key">${escapeHtml(item.key)}</div>
+            <div class="kv-value">${escapeHtml(item.value)}</div>
+        </div>
+    `).join('');
+}
+
+function renderEvents(items, isInherited = false) {
+    if (!items || items.length === 0) return '';
+    const inheritedClass = isInherited ? 'inherited' : '';
+
+    return items.map(item => `
+        <div class="event-item ${inheritedClass}">
+            <div class="event-kind">${escapeHtml(item.kind)}</div>
+            <div class="event-text">${escapeHtml(item.text)}</div>
+            <div class="event-meta">
+                Phase: ${item.phase || 'N/A'} |
+                Tags: ${(item.tags || []).join(', ')}
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderArchival(items, isInherited = false) {
+    if (!items || items.length === 0) return '';
+    const inheritedClass = isInherited ? 'inherited' : '';
+
+    return items.map(item => `
+        <div class="archival-item ${inheritedClass}">
+            <div class="archival-tags">
+                ${(item.tags || []).map(t => `<span class="archival-tag">${escapeHtml(t)}</span>`).join('')}
+            </div>
+            <div class="archival-text">${escapeHtml(item.text)}</div>
+        </div>
+    `).join('');
+}
+
+function renderAncestorChain(ancestors) {
+    if (!ancestors || ancestors.length === 0) return '';
+    const links = ancestors.map(a =>
+        `<a onclick="selectNode(${a.index})">${a.node_uid ? a.node_uid.substring(0, 8) + '...' : 'Node ' + a.index}</a>`
+    ).join(' → ');
+    return `<div class="ancestor-chain">継承元: ${links}</div>`;
+}
+
+function displayAllMemory(nodeData) {
+    const container = document.getElementById('memory-content');
+
+    // Use own_* fields if available, fall back to legacy fields
+    const ownCoreKV = nodeData.own_core_kv || nodeData.core_kv || [];
+    const ownEvents = nodeData.own_events || nodeData.events || [];
+    const ownArchival = nodeData.own_archival || nodeData.archival || [];
+    const inheritedCoreKV = nodeData.inherited_core_kv || [];
+    const inheritedEvents = nodeData.inherited_events || [];
+    const inheritedArchival = nodeData.inherited_archival || [];
+    const ancestors = nodeData.ancestors || [];
+
+    let html = '';
+
+    // Own data (this node's data)
+    html += '<div class="data-group"><div class="data-group-header">このノードのデータ</div>';
+
+    html += createSection(
+        'Working Context (Core KV)',
+        renderCoreKV(ownCoreKV),
+        ownCoreKV.length,
+        true
+    );
+
+    html += createSection(
+        'Recall Storage (Events)',
+        renderEvents(ownEvents),
+        ownEvents.length,
+        true
+    );
+
+    html += createSection(
+        'Archive Storage',
+        renderArchival(ownArchival),
+        ownArchival.length,
+        true
+    );
+
+    html += '</div>';
+
+    // Inherited data (from ancestors)
+    const hasInherited = inheritedCoreKV.length + inheritedEvents.length + inheritedArchival.length > 0;
+
+    if (hasInherited) {
+        html += '<div class="data-group"><div class="data-group-header inherited">継承されたデータ（祖先ノードから）</div>';
+        html += renderAncestorChain(ancestors);
+
+        html += createSection(
+            'Working Context (Core KV)',
+            renderCoreKV(inheritedCoreKV, true),
+            inheritedCoreKV.length,
+            false
+        );
+
+        html += createSection(
+            'Recall Storage (Events)',
+            renderEvents(inheritedEvents, true),
+            inheritedEvents.length,
+            false
+        );
+
+        html += createSection(
+            'Archive Storage',
+            renderArchival(inheritedArchival, true),
+            inheritedArchival.length,
+            false
+        );
+
+        html += '</div>';
+    }
+
+    container.innerHTML = html;
+}
+
+function displayPhaseMemory(nodeData, phase) {
+    const container = document.getElementById('memory-content');
+
+    // Use own_* fields if available, fall back to legacy fields
+    const ownCoreKV = nodeData.own_core_kv || nodeData.core_kv || [];
+    const ownEvents = nodeData.own_events || nodeData.events || [];
+    const ownArchival = nodeData.own_archival || nodeData.archival || [];
+    const inheritedCoreKV = nodeData.inherited_core_kv || [];
+    const inheritedEvents = nodeData.inherited_events || [];
+    const inheritedArchival = nodeData.inherited_archival || [];
+    const ancestors = nodeData.ancestors || [];
+
+    // Filter by phase
+    const ownPhaseEvents = ownEvents.filter(e => e.phase === phase);
+    const ownPhaseArchival = ownArchival.filter(a => a.phase === phase);
+    const inheritedPhaseEvents = inheritedEvents.filter(e => e.phase === phase);
+    const inheritedPhaseArchival = inheritedArchival.filter(a => a.phase === phase);
+
+    let html = '';
+
+    // Own data
+    html += '<div class="data-group"><div class="data-group-header">このノードのデータ</div>';
+
+    html += createSection(
+        'Working Context (Core KV)',
+        renderCoreKV(ownCoreKV),
+        ownCoreKV.length,
+        true
+    );
+
+    html += createSection(
+        `Recall Storage - ${phase}`,
+        renderEvents(ownPhaseEvents),
+        ownPhaseEvents.length,
+        true
+    );
+
+    html += createSection(
+        `Archive Storage - ${phase}`,
+        renderArchival(ownPhaseArchival),
+        ownPhaseArchival.length,
+        true
+    );
+
+    html += '</div>';
+
+    // Inherited data
+    const hasInherited = inheritedCoreKV.length + inheritedPhaseEvents.length + inheritedPhaseArchival.length > 0;
+
+    if (hasInherited) {
+        html += '<div class="data-group"><div class="data-group-header inherited">継承されたデータ（祖先ノードから）</div>';
+        html += renderAncestorChain(ancestors);
+
+        html += createSection(
+            'Working Context (Core KV)',
+            renderCoreKV(inheritedCoreKV, true),
+            inheritedCoreKV.length,
+            false
+        );
+
+        html += createSection(
+            `Recall Storage - ${phase}`,
+            renderEvents(inheritedPhaseEvents, true),
+            inheritedPhaseEvents.length,
+            false
+        );
+
+        html += createSection(
+            `Archive Storage - ${phase}`,
+            renderArchival(inheritedPhaseArchival, true),
+            inheritedPhaseArchival.length,
+            false
+        );
+
+        html += '</div>';
+    }
+
+    container.innerHTML = html;
+}
+
+new p5(createSketch());
+    </script>
+</body>
+</html>

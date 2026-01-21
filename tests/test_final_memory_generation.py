@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ai_scientist.memory import MemoryManager
+from ai_scientist.memory.memgpt_store import _summarize_phase0
 
 
 class TestFinalMemoryGeneration(unittest.TestCase):
@@ -88,3 +89,94 @@ class TestFinalMemoryGeneration(unittest.TestCase):
                 "provenance",
             ):
                 self.assertIn(key, writeup)
+
+
+class TestSummarizePhase0(unittest.TestCase):
+    """Tests for _summarize_phase0 function to ensure PC info extraction works."""
+
+    def test_extract_env_context_from_direct_payload(self) -> None:
+        """Test extracting environment_context directly from payload."""
+        payload = {
+            "environment_context": {
+                "cpu_info": "x86_64; 256 CPUs online; AMD EPYC 9534",
+                "os_release": 'PRETTY_NAME="Ubuntu 22.04.5 LTS"',
+                "available_compilers": [
+                    {"name": "gcc", "version": "11.4.0"},
+                    {"name": "g++", "version": "11.4.0"},
+                ],
+                "container_runtime": "singularity",
+            }
+        }
+        result = _summarize_phase0(payload, None)
+        self.assertIn("OS=Ubuntu 22.04.5 LTS", result)
+        self.assertIn("compilers=[gcc:11.4.0, g++:11.4.0]", result)
+        self.assertIn("container=singularity", result)
+
+    def test_extract_env_context_from_nested_artifacts(self) -> None:
+        """Test extracting environment_context from nested artifacts array."""
+        env_ctx = {
+            "cpu_info": "x86_64; 256 CPUs online; AMD EPYC 9534 64-Core Processor; 2 sockets",
+            "memory_info": "RAM total 1.5TiB",
+            "gpu_info": "4x NVIDIA H100 PCIe",
+            "os_release": 'PRETTY_NAME="Ubuntu 22.04.5 LTS (jammy)"',
+            "available_compilers": [
+                {"name": "gcc", "version": "11.4.0 (Ubuntu 22.04)"},
+                {"name": "g++", "version": "11.4.0 (Ubuntu 22.04)"},
+                {"name": "nvcc", "version": "NVIDIA CUDA compiler driver"},
+            ],
+            "container_runtime": "singularity",
+        }
+        artifact_content = json.dumps({"environment_context": env_ctx})
+        payload = {
+            "plan": {
+                "goal_summary": "Create a minimal prototype",
+            },
+            "artifacts": [
+                {"path": "/some/plan.json", "content": '{"foo": "bar"}'},
+                {"path": "/some/history.json", "content": artifact_content},
+            ],
+        }
+        result = _summarize_phase0(payload, None)
+        self.assertIn("OS=Ubuntu 22.04.5 LTS (jammy)", result)
+        self.assertIn("compilers=[gcc:11.4.0, g++:11.4.0, nvcc:NVIDIA]", result)
+        self.assertIn("container=singularity", result)
+
+    def test_no_env_context_fallback(self) -> None:
+        """Test fallback when no environment_context is found."""
+        payload = {
+            "plan": {"goal_summary": "Do something"},
+        }
+        result = _summarize_phase0(payload, None)
+        self.assertIn("No structured Phase 0 info captured", result)
+
+    def test_command_string_included(self) -> None:
+        """Test that command string is included in summary."""
+        payload = {}
+        result = _summarize_phase0(payload, "sbatch run.sh")
+        self.assertIn("command=sbatch run.sh", result)
+
+    def test_condensed_cpu_and_simple_os_format(self) -> None:
+        """Test parsing condensed CPU info and simple OS string format."""
+        env_ctx = {
+            "cpu_info": "x86_64; 256 CPUs online (0-255); AMD EPYC 9534 64-Core Processor; "
+                        "2 sockets, 64 cores/socket, 2 threads/core; "
+                        "NUMA nodes:2 (node0:0-63,128-191; node1:64-127,192-255)",
+            "os_release": "Ubuntu 22.04.5 LTS (jammy)",
+            "available_compilers": [
+                {"name": "gcc", "version": "11.4.0"},
+            ],
+            "container_runtime": "singularity",
+        }
+        artifact_content = json.dumps({"environment_context": env_ctx})
+        payload = {
+            "artifacts": [
+                {"path": "/some/history.json", "content": artifact_content},
+            ],
+        }
+        result = _summarize_phase0(payload, None)
+        self.assertIn("CPU:AMD EPYC 9534 64-Core Processor", result)
+        self.assertIn("socket", result.lower())
+        self.assertIn("numa", result.lower())
+        self.assertIn("OS=Ubuntu 22.04.5 LTS (jammy)", result)
+        self.assertIn("compilers=[gcc:11.4.0]", result)
+        self.assertIn("container=singularity", result)

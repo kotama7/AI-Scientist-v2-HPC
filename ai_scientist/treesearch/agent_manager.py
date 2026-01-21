@@ -16,30 +16,30 @@ from .utils.metric import WorstMetricValue
 from ai_scientist.prompt_loader import load_prompt
 
 STAGE_GOAL_PROMPTS = {
-    1: "treesearch/agent_manager/stage1_goals",
-    2: "treesearch/agent_manager/stage2_goals",
-    3: "treesearch/agent_manager/stage3_goals",
-    4: "treesearch/agent_manager/stage4_goals",
+    1: "agent/manager/stages/stage1_goals",
+    2: "agent/manager/stages/stage2_goals",
+    3: "agent/manager/stages/stage3_goals",
+    4: "agent/manager/stages/stage4_goals",
 }
 SUBSTAGE_COMPLETION_PROMPT_TEMPLATE = load_prompt(
-    "treesearch/agent_manager/substage_completion_eval"
+    "agent/manager/substage/completion_eval"
 )
 STAGE2_COMPLETION_PROMPT_TEMPLATE = load_prompt(
-    "treesearch/agent_manager/stage2_completion_eval"
+    "agent/manager/stages/stage2_completion_eval"
 )
 STAGE4_COMPLETION_PROMPT_TEMPLATE = load_prompt(
-    "treesearch/agent_manager/stage4_completion_eval"
+    "agent/manager/stages/stage4_completion_eval"
 )
 SUBSTAGE_GOAL_PROMPT_TEMPLATE = load_prompt(
-    "treesearch/agent_manager/substage_goal_prompt"
+    "agent/manager/substage/goal_prompt"
 )
 STAGE_PROGRESSION_PROMPT_TEMPLATE = load_prompt(
-    "treesearch/agent_manager/stage_progression_eval"
+    "agent/manager/stages/stage_progression_eval"
 )
 STAGE_ANALYSIS_INSTRUCTIONS = load_prompt(
-    "treesearch/agent_manager/stage_analysis_instructions"
+    "agent/manager/feedback/stage_analysis_instructions"
 )
-EXEC_TIME_FEEDBACK_TEMPLATE = load_prompt("treesearch/agent_manager/exec_time_feedback")
+EXEC_TIME_FEEDBACK_TEMPLATE = load_prompt("agent/manager/feedback/exec_time_feedback")
 
 _STAGE_DATASET_GOALS = {
     2: {
@@ -289,7 +289,7 @@ class AgentManager:
         )
 
     def _get_task_desc_str(self):
-        task_desc = load_prompt("treesearch/agent_manager/task_description")
+        task_desc = load_prompt("agent/manager/task_description")
         task_desc += (
             "Title:\n"
             + self.task_desc["Title"]
@@ -707,6 +707,8 @@ class AgentManager:
         if best_node:
             # Create a clean copy of the node for the next stage
             copied_node = copy.deepcopy(best_node)
+            # Store the original node ID for cross-stage lineage tracking
+            copied_node.inherited_from_node_id = best_node.id
             # Reset parent relationship and children
             copied_node.parent = None
             copied_node.children = set()

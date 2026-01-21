@@ -126,8 +126,8 @@ class MetricValue(DataClassJsonMixin):
             "lower_is_better": bool,
             "description": str,
             "data": [
-                {"dataset_name": str, "final_value": float, "best_value": float},
-                {"dataset_name": str, "final_value": float, "best_value": float},
+                {"dataset_name": str, "value": float},
+                {"dataset_name": str, "value": float},
                 ...
             ]
           },
@@ -149,14 +149,13 @@ class MetricValue(DataClassJsonMixin):
                     # New format - validate and convert values to float
                     for metric in self.value["metric_names"]:
                         for data_point in metric["data"]:
-                            if data_point["final_value"] is not None:
-                                data_point["final_value"] = float(
-                                    data_point["final_value"]
-                                )
-                            if data_point["best_value"] is not None:
-                                data_point["best_value"] = float(
-                                    data_point["best_value"]
-                                )
+                            if data_point.get("value") is not None:
+                                data_point["value"] = float(data_point["value"])
+                            # Handle legacy format with final_value/best_value
+                            elif data_point.get("final_value") is not None:
+                                data_point["value"] = float(data_point["final_value"])
+                                data_point.pop("final_value", None)
+                                data_point.pop("best_value", None)
                 else:
                     # Old format - convert to float
                     self.value = {
@@ -214,11 +213,15 @@ class MetricValue(DataClassJsonMixin):
                         if "lower_is_better" in metric and metric["lower_is_better"]
                         else "↑"
                     )
+                    def fmt_val(v):
+                        return f"{v:.4f}" if v is not None else None
                     try:
-                        values_str = ", ".join(
-                            f"{d['dataset_name']}:(final={d['final_value']:.4f}, best={d['best_value']:.4f})"
-                            for d in metric["data"]
-                        )
+                        def fmt_data(d):
+                            val = fmt_val(d.get('value'))
+                            if val is None:
+                                val = "N/A"
+                            return f"{d['dataset_name']}:[{val}]"
+                        values_str = ", ".join(fmt_data(d) for d in metric["data"])
                     except Exception as e:
                         print(f"error during metric value: {e}")
                         values_str = "None"
@@ -226,7 +229,10 @@ class MetricValue(DataClassJsonMixin):
                 return "Metrics(" + "; ".join(parts) + ")"
             # Old format
             opt_dir = "↓" if not self.maximize else "↑"
-            values_str = ", ".join(f"{k}:{v:.4f}" for k, v in self.value.items())
+            values_str = ", ".join(
+                f"{k}:{v:.4f}" if v is not None else f"{k}:N/A"
+                for k, v in self.value.items()
+            )
             mean_val = np.mean([v for v in self.value.values() if v is not None])
             return f"Metric{opt_dir}({self.name})[{values_str}](mean={mean_val:.4f})"
         # Single value case
@@ -275,14 +281,9 @@ class MetricValue(DataClassJsonMixin):
                             "data": [
                                 {
                                     **data_point,
-                                    "final_value": (
-                                        data_point["final_value"]
-                                        if data_point["final_value"] is not None
-                                        else float("nan")
-                                    ),
-                                    "best_value": (
-                                        data_point["best_value"]
-                                        if data_point["best_value"] is not None
+                                    "value": (
+                                        data_point["value"]
+                                        if data_point.get("value") is not None
                                         else float("nan")
                                     ),
                                 }
@@ -308,11 +309,11 @@ class MetricValue(DataClassJsonMixin):
             if "metric_names" in self.value:
                 all_values = []
                 for metric in self.value["metric_names"]:
-                    # Use final_value for comparison
+                    # Use value for comparison
                     values = [
-                        d["final_value"]
+                        d["value"]
                         for d in metric["data"]
-                        if d["final_value"] is not None
+                        if d.get("value") is not None
                     ]
                     if values:
                         all_values.extend(values)

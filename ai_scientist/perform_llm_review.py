@@ -11,20 +11,20 @@ from ai_scientist.llm import (
 )
 from ai_scientist.prompt_loader import load_prompt
 
-REVIEW_BASE_PROMPT = load_prompt("review/system_prompt_base").strip()
-REVIEW_NEG_SUFFIX = load_prompt("review/system_prompt_neg_suffix").strip()
-REVIEW_POS_SUFFIX = load_prompt("review/system_prompt_pos_suffix").strip()
-template_instructions = load_prompt("review/template_instructions")
-neurips_form = load_prompt("review/neurips_form") + "\n" + template_instructions
-reviewer_reflection_prompt = load_prompt("review/reviewer_reflection_prompt")
-meta_reviewer_system_prompt = load_prompt("review/meta_reviewer_system_prompt")
+REVIEW_BASE_PROMPT = load_prompt("review/llm/system_base").strip()
+REVIEW_NEG_SUFFIX = load_prompt("review/llm/system_neg_suffix").strip()
+REVIEW_POS_SUFFIX = load_prompt("review/llm/system_pos_suffix").strip()
+template_instructions = load_prompt("review/llm/template_instructions")
+neurips_form = load_prompt("review/llm/neurips_form") + "\n" + template_instructions
+reviewer_reflection_prompt = load_prompt("review/llm/reflection")
+meta_reviewer_system_prompt = load_prompt("review/llm/meta_reviewer_system")
 ENSEMBLE_AGGREGATION_THOUGHT_TEMPLATE = load_prompt(
-    "review/ensemble_aggregation_thought"
+    "review/llm/ensemble_aggregation"
 ).strip()
-REVIEW_PAPER_PROMPT_TEMPLATE = load_prompt("review/paper_review_prompt")
-FEWSHOT_INTRO_TEMPLATE = load_prompt("review/fewshot_intro")
-FEWSHOT_EXAMPLE_TEMPLATE = load_prompt("review/fewshot_example")
-META_REVIEW_ENTRY_TEMPLATE = load_prompt("review/meta_review_entry")
+REVIEW_PAPER_PROMPT_TEMPLATE = load_prompt("review/llm/paper_review")
+FEWSHOT_INTRO_TEMPLATE = load_prompt("review/llm/fewshot_intro")
+FEWSHOT_EXAMPLE_TEMPLATE = load_prompt("review/llm/fewshot_example")
+META_REVIEW_ENTRY_TEMPLATE = load_prompt("review/llm/meta_review_entry")
 
 reviewer_system_prompt_base = REVIEW_BASE_PROMPT
 reviewer_system_prompt_neg = f"{reviewer_system_prompt_base} {REVIEW_NEG_SUFFIX}"

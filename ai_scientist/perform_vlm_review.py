@@ -27,19 +27,19 @@ def encode_image_to_base64(image_data):
         raise TypeError(f"Unsupported image data type: {type(image_data)}")
 
 
-reviewer_system_prompt_base = load_prompt("review/system_prompt_base")
+reviewer_system_prompt_base = load_prompt("review/llm/system_base")
 IMG_CAP_REF_REVIEW_PROMPT_TEMPLATE = load_prompt(
-    "vlm_review/img_cap_ref_review_prompt"
+    "review/vlm/img_cap_ref_review"
 )
 IMG_CAP_SELECTION_PROMPT_TEMPLATE = load_prompt(
-    "vlm_review/img_cap_selection_prompt"
+    "review/vlm/img_cap_selection"
 )
-IMG_REVIEW_PROMPT_TEMPLATE = load_prompt("vlm_review/img_review_prompt")
+IMG_REVIEW_PROMPT_TEMPLATE = load_prompt("review/vlm/img_review")
 DUPLICATE_FIGURES_SYSTEM_PROMPT = load_prompt(
-    "vlm_review/detect_duplicate_figures_system"
+    "review/vlm/duplicate_figures_system"
 ).strip()
 DUPLICATE_FIGURES_USER_PROMPT = load_prompt(
-    "vlm_review/detect_duplicate_figures_user"
+    "review/vlm/duplicate_figures_user"
 ).strip()
 
 

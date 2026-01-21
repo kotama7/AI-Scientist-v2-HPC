@@ -17,24 +17,128 @@ from ai_scientist.llm import (
     AVAILABLE_LLMS,
 )
 
-from ai_scientist.perform_icbinb_writeup import (
-    load_idea_text,
-    load_exp_summaries,
-    filter_experiment_summaries,
-)
-
 from ai_scientist.tools.semantic_scholar import search_for_papers
 
 from ai_scientist.perform_vlm_review import generate_vlm_img_review
 from ai_scientist.vlm import create_client as create_vlm_client
 from ai_scientist.prompt_loader import load_prompt
 
-CITATION_SYSTEM_MSG_TEMPLATE = load_prompt("writeup/citation_system_message")
-CITATION_FIRST_PROMPT_TEMPLATE = load_prompt("writeup/citation_first_prompt")
-CITATION_SECOND_PROMPT_TEMPLATE = load_prompt("writeup/citation_second_prompt")
-WRITEUP_SYSTEM_MESSAGE_TEMPLATE = load_prompt("writeup/system_message")
-WRITEUP_PROMPT_TEMPLATE = load_prompt("writeup/writeup_prompt")
-WRITEUP_REFLECTION_PROMPT_TEMPLATE = load_prompt("writeup/reflection_prompt")
+def load_idea_text(base_folder):
+    """
+    Load the idea text from the base folder.
+    """
+    idea_text = ""
+    research_idea_path = osp.join(base_folder, "research_idea.md")
+    if osp.exists(research_idea_path):
+        with open(research_idea_path, "r") as f_idea:
+            idea_text = f_idea.read()
+    else:
+        idea_md_path = osp.join(base_folder, "idea.md")
+        if osp.exists(idea_md_path):
+            with open(idea_md_path, "r") as f_idea:
+                idea_text = f_idea.read()
+    return idea_text
+
+
+def load_exp_summaries(base_folder):
+    """
+    Load the experiment summaries from the base folder.
+    """
+    summary_files = [
+        ("logs/0-run/baseline_summary.json", "BASELINE_SUMMARY"),
+        ("logs/0-run/research_summary.json", "RESEARCH_SUMMARY"),
+        ("logs/0-run/ablation_summary.json", "ABLATION_SUMMARY"),
+    ]
+    loaded_summaries = {}
+    for fname, key in summary_files:
+        path = osp.join(base_folder, fname)
+        if osp.exists(path):
+            try:
+                with open(path, "r") as f:
+                    loaded_summaries[key] = json.load(f)
+            except json.JSONDecodeError:
+                print(
+                    f"Warning: {fname} is not valid JSON. Using empty data for {key}."
+                )
+                loaded_summaries[key] = {}
+        else:
+            loaded_summaries[key] = {}
+    return loaded_summaries
+
+
+def filter_experiment_summaries(exp_summaries, step_name):
+    """
+    Filter experiment summaries based on the step name.
+    """
+    if step_name == "citation_gathering":
+        node_keys_to_keep = {
+            "overall_plan",
+            "analysis",
+            "metric",
+            "vlm_feedback_summary",
+            "phase0_plan",
+            "phase1_steps_summary",
+            "phase3_compile_log_summary",
+            "phase4_run_log_summary",
+            "phase_artifacts_summary",
+        }
+    elif step_name == "writeup":
+        node_keys_to_keep = {
+            "overall_plan",
+            "analysis",
+            "metric",
+            "code",
+            "plot_analyses",
+            "vlm_feedback_summary",
+            "phase0_plan",
+            "phase1_steps_summary",
+            "phase3_compile_log_summary",
+            "phase4_run_log_summary",
+            "phase_artifacts_summary",
+        }
+    elif step_name == "plot_aggregation":
+        node_keys_to_keep = {
+            "overall_plan",
+            "analysis",
+            "plot_plan",
+            "plot_code",
+            "plot_analyses",
+            "vlm_feedback_summary",
+            "exp_results_npy_files",
+        }
+    else:
+        raise ValueError(f"Invalid step name: {step_name}")
+
+    filtered_summaries = {}
+    for stage_name in exp_summaries.keys():
+        if stage_name in {"BASELINE_SUMMARY", "RESEARCH_SUMMARY"}:
+            filtered_summaries[stage_name] = {}
+            for key in exp_summaries[stage_name].keys():
+                if key in {"best node"}:
+                    filtered_summaries[stage_name][key] = {}
+                    for node_key in exp_summaries[stage_name][key].keys():
+                        if node_key in node_keys_to_keep:
+                            filtered_summaries[stage_name][key][node_key] = (
+                                exp_summaries[stage_name][key][node_key]
+                            )
+        elif stage_name == "ABLATION_SUMMARY" and step_name == "plot_aggregation":
+            filtered_summaries[stage_name] = {}
+            for ablation_summary in exp_summaries[stage_name]:
+                filtered_summaries[stage_name][ablation_summary["ablation_name"]] = {}
+                for node_key in ablation_summary.keys():
+                    if node_key in node_keys_to_keep:
+                        filtered_summaries[stage_name][
+                            ablation_summary["ablation_name"]
+                        ][node_key] = ablation_summary[node_key]
+    return filtered_summaries
+
+
+CITATION_SYSTEM_MSG_TEMPLATE = load_prompt("output/writeup/citation/system_message")
+CITATION_FIRST_PROMPT_TEMPLATE = load_prompt("output/writeup/citation/first_prompt")
+CITATION_SECOND_PROMPT_TEMPLATE = load_prompt("output/writeup/citation/second_prompt")
+WRITEUP_SYSTEM_MESSAGE_TEMPLATE = load_prompt("output/writeup/system_message")
+WRITEUP_PROMPT_TEMPLATE = load_prompt("output/writeup/writeup_prompt")
+WRITEUP_REFLECTION_PROMPT_TEMPLATE = load_prompt("output/writeup/reflection_prompt")
 
 
 def remove_accents_and_clean(s):
@@ -332,7 +436,7 @@ def gather_citations(base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-0
     # Prepare a new fresh latex folder
     if not osp.exists(osp.join(latex_folder, "template.tex")):
         shutil.copytree(
-            "ai_scientist/blank_icml_latex", latex_folder, dirs_exist_ok=True
+            "ai_scientist/blank_latex", latex_folder, dirs_exist_ok=True
         )
 
     writeup_file = osp.join(latex_folder, "template.tex")
@@ -355,6 +459,7 @@ def gather_citations(base_folder, num_cite_rounds=20, small_model="gpt-4o-2024-0
         # Run small model for citation additions
         client, client_model = create_client(small_model)
         for round_idx in range(num_cite_rounds):
+            print(f"Citation gathering round {round_idx + 1}/{num_cite_rounds}")
             with open(writeup_file, "r") as f:
                 writeup_text = f.read()
             try:
@@ -439,7 +544,7 @@ def perform_writeup(
         # Prepare a new fresh latex folder
         if not osp.exists(osp.join(latex_folder, "template.tex")):
             shutil.copytree(
-                "ai_scientist/blank_icml_latex", latex_folder, dirs_exist_ok=True
+                "ai_scientist/blank_latex", latex_folder, dirs_exist_ok=True
             )
 
         writeup_file = osp.join(latex_folder, "template.tex")

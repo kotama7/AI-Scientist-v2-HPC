@@ -272,6 +272,7 @@
         align-items: center;
         justify-content: space-between;
         gap: 8px;
+        flex-wrap: wrap;
       }
 
       .memory-nav {
@@ -286,6 +287,11 @@
         border: none;
         padding: 4px 8px;
         cursor: pointer;
+        border-radius: 3px;
+      }
+
+      .memory-btn:hover {
+        background-color: #555;
       }
 
       .memory-btn:disabled {
@@ -295,13 +301,70 @@
 
       .memory-phase-label {
         font-size: 0.9em;
+        font-weight: bold;
+      }
+
+      .memory-summary {
+        margin: 10px 0;
+      }
+
+      .memory-summary-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85em;
+        margin-bottom: 8px;
+      }
+
+      .memory-summary-table th,
+      .memory-summary-table td {
+        padding: 4px 8px;
+        text-align: left;
+        border-bottom: 1px solid #3a4050;
+      }
+
+      .memory-summary-table tfoot tr {
+        background-color: #2a3040;
+        font-weight: bold;
+      }
+
+      .memory-count {
+        text-align: right;
+      }
+
+      .memory-filter-tabs {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        margin: 8px 0;
+      }
+
+      .memory-filter {
+        background-color: #3a4050;
+        color: #c5c9d3;
+        border: none;
+        padding: 4px 10px;
+        cursor: pointer;
+        border-radius: 3px;
+        font-size: 0.8em;
+        transition: all 0.2s;
+      }
+
+      .memory-filter:hover {
+        background-color: #4a5060;
+      }
+
+      .memory-filter.active {
+        background-color: #4c76af;
+        color: #f2f0e7;
       }
 
       .memory-content {
         margin-top: 8px;
         white-space: pre-wrap;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        font-size: 0.9em;
+        font-size: 0.85em;
+        max-height: 500px;
+        overflow-y: auto;
       }
 
       .memory-event {
@@ -309,20 +372,92 @@
         padding: 8px;
         background-color: #2a2f3a;
         border-radius: 4px;
+        border-left: 3px solid #444;
+      }
+
+      .memory-event[data-category="reads"] {
+        border-left-color: #4dabf7;
+      }
+      .memory-event[data-category="writes"] {
+        border-left-color: #69db7c;
+      }
+      .memory-event[data-category="deletes"] {
+        border-left-color: #ff6b6b;
+      }
+      .memory-event[data-category="forks"] {
+        border-left-color: #da77f2;
+      }
+      .memory-event[data-category="recalls"] {
+        border-left-color: #ffd43b;
+      }
+      .memory-event[data-category="resources"] {
+        border-left-color: #74c0fc;
       }
 
       .memory-event-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .memory-badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 0.8em;
+        color: #1a1a1a;
+        font-weight: 500;
+      }
+
+      .memory-op {
         font-weight: bold;
+        color: #f2f0e7;
+      }
+
+      .memory-type {
+        color: #868e96;
+      }
+
+      .memory-event-keyinfo {
+        margin-top: 4px;
+        font-size: 0.85em;
+      }
+
+      .memory-key {
+        background-color: #3a4050;
+        padding: 1px 4px;
+        border-radius: 2px;
+        color: #69db7c;
+      }
+
+      .memory-size {
+        color: #ffd43b;
+      }
+
+      .memory-id {
+        color: #74c0fc;
       }
 
       .memory-event-meta {
         margin-top: 4px;
-        font-size: 0.85em;
-        color: #c5c9d3;
+        font-size: 0.8em;
+        color: #868e96;
       }
 
       .memory-event-details {
         margin-top: 6px;
+        background-color: #252a35;
+        padding: 6px;
+        border-radius: 3px;
+        font-size: 0.85em;
+        max-height: 150px;
+        overflow: auto;
+      }
+
+      .memory-no-events {
+        color: #868e96;
+        font-style: italic;
       }
     </style>
   </head>
@@ -350,12 +485,22 @@
         <hr>
         <div id="memory-panel" class="memory-panel">
           <div class="memory-header">
-            <div class="memory-title">Memory Calls</div>
+            <div class="memory-title"><strong>🧠 Memory Operations</strong></div>
             <div class="memory-nav">
-              <button id="memory-prev" class="memory-btn" onclick="shiftMemoryPhase(-1)">Prev</button>
+              <button id="memory-prev" class="memory-btn" onclick="shiftMemoryPhase(-1)">◀ Prev</button>
               <span id="memory-phase-label" class="memory-phase-label"></span>
-              <button id="memory-next" class="memory-btn" onclick="shiftMemoryPhase(1)">Next</button>
+              <button id="memory-next" class="memory-btn" onclick="shiftMemoryPhase(1)">Next ▶</button>
             </div>
+          </div>
+          <div id="memory-summary" class="memory-summary"></div>
+          <div class="memory-filter-tabs">
+            <button class="memory-filter active" data-filter="all" onclick="setMemoryFilter('all')">All</button>
+            <button class="memory-filter" data-filter="reads" onclick="setMemoryFilter('reads')">📖 Reads</button>
+            <button class="memory-filter" data-filter="writes" onclick="setMemoryFilter('writes')">💾 Writes</button>
+            <button class="memory-filter" data-filter="deletes" onclick="setMemoryFilter('deletes')">🗑️ Deletes</button>
+            <button class="memory-filter" data-filter="forks" onclick="setMemoryFilter('forks')">🌿 Forks</button>
+            <button class="memory-filter" data-filter="recalls" onclick="setMemoryFilter('recalls')">🔄 Recalls</button>
+            <button class="memory-filter" data-filter="resources" onclick="setMemoryFilter('resources')">📦 Resources</button>
           </div>
           <div id="memory-content" class="memory-content"></div>
         </div>

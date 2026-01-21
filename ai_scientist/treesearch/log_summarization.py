@@ -14,22 +14,22 @@ from ai_scientist.prompt_loader import load_prompt
 
 
 REPORT_SUMMARIZER_SYS_MSG = load_prompt(
-    "treesearch/log_summarization/report_summarizer_system"
+    "journal/log_summarization/report_summarizer_system"
 ).strip()
 OUTPUT_FORMAT_CONTROL = load_prompt(
-    "treesearch/log_summarization/output_format_control"
+    "journal/log_summarization/output_format"
 ).strip()
 REPORT_SUMMARIZER_PROMPT_TEMPLATE = load_prompt(
-    "treesearch/log_summarization/report_summarizer_prompt"
+    "journal/log_summarization/report_summarizer"
 )
 STAGE_AGGREGATE_PROMPT_TEMPLATE = load_prompt(
-    "treesearch/log_summarization/stage_aggregate_prompt"
+    "journal/log_summarization/stage_aggregate"
 )
 OVERALL_PLAN_SUMMARIZER_TEMPLATE = load_prompt(
-    "treesearch/log_summarization/overall_plan_summarizer_prompt"
+    "journal/log_summarization/plan_summarizer"
 )
 EXPERT_SYSTEM_PROMPT = load_prompt(
-    "treesearch/log_summarization/expert_system_prompt"
+    "journal/log_summarization/expert_system"
 ).strip()
 
 

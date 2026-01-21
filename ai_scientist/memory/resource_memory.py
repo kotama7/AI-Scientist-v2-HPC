@@ -357,6 +357,52 @@ def _item_digest_payload(item: ResourceItemSnapshot) -> dict[str, Any]:
     }
 
 
+def _item_content_digest_payload(item: ResourceItemSnapshot) -> dict[str, Any]:
+    """Compute digest payload excluding process-specific paths.
+
+    This is used for duplicate detection in archival to avoid writing
+    the same resource content multiple times from different worker processes.
+    Excludes: staged_path, resolved_paths, staging_info (which contain process IDs).
+    """
+    return {
+        "id": item.id,
+        "name": item.name,
+        "class": item.class_,
+        "source": item.source,
+        "resource": item.resource,
+        "original_path": item.original_path,
+        "notes": item.notes,
+        "dest_path": item.dest_path,
+        "container_path": item.container_path,
+        "include_tree": item.include_tree,
+        "include_content": item.include_content,
+        "include_files": list(item.include_files or []),
+        "max_files": item.max_files,
+        "max_chars": item.max_chars,
+        "max_total_chars": item.max_total_chars,
+        "availability": item.availability,
+        "fetch_status": item.fetch_status,
+        "metadata_only": item.metadata_only,
+        "tree_summary": item.tree_summary,
+        "content_excerpt": item.content_excerpt,
+        "tree": list(item.tree or []),
+        "files": [
+            {
+                "path": f.path,
+                "size": f.size,
+                "mtime": f.mtime,
+                "content": f.content,
+            }
+            for f in item.files
+        ],
+    }
+
+
+def _compute_content_digest(item: ResourceItemSnapshot) -> str:
+    """Compute content-only digest for duplicate detection."""
+    return _compute_digest(_item_content_digest_payload(item))
+
+
 def _snapshot_digest_payload(snapshot: ResourceSnapshot) -> dict[str, Any]:
     return {
         "resource_file_sha": snapshot.resource_file_sha,
@@ -714,11 +760,11 @@ def persist_resource_snapshot_to_ltm(
     )
     run_id = getattr(ltm, "run_id", None)
     if hasattr(ltm, "mem_resources_index_update") and getattr(ltm, "root_branch_id", None):
-        ltm.mem_resources_index_update(str(run_id or ""), index_text)
+        ltm.mem_resources_index_update(str(run_id or ""), index_text, branch_id=use_branch)
     else:
         ltm.set_core(use_branch, RESOURCE_INDEX_KEY, index_text)
     if hasattr(ltm, "mem_core_set") and getattr(ltm, "root_branch_id", None):
-        ltm.mem_core_set(RESOURCE_DIGEST_KEY, snapshot.resource_digest, importance=5)
+        ltm.mem_core_set(RESOURCE_DIGEST_KEY, snapshot.resource_digest, importance=5, branch_id=use_branch)
     else:
         ltm.set_core(use_branch, RESOURCE_DIGEST_KEY, snapshot.resource_digest)
     index_json = {
@@ -736,6 +782,7 @@ def persist_resource_snapshot_to_ltm(
             RESOURCE_INDEX_JSON_KEY,
             json.dumps(index_json, sort_keys=True, ensure_ascii=True),
             importance=5,
+            branch_id=use_branch,
         )
     else:
         ltm.set_core(
@@ -749,6 +796,32 @@ def persist_resource_snapshot_to_ltm(
         is_pending = item.availability != "available"
         if not has_payload and not is_pending:
             continue
+
+        # Check if this resource item already exists in archival (by resource_id and content digest)
+        # Skip if already exists to avoid duplicate entries
+        # Use content-only digest to ignore process-specific paths (staged_path, resolved_paths, staging_info)
+        resource_id_tag = f"resource_id:{item.id}"
+        content_digest = _compute_content_digest(item)
+        content_digest_tag = f"content_digest:{content_digest}"
+        already_exists = False
+        if hasattr(ltm, "retrieve_archival"):
+            try:
+                existing = ltm.retrieve_archival(
+                    use_branch,
+                    query=item.name,
+                    k=1,
+                    include_ancestors=True,
+                    tags_filter=[RESOURCE_ITEM_TAG, resource_id_tag, content_digest_tag],
+                    log_event=False,
+                )
+                if existing:
+                    already_exists = True
+            except Exception:
+                pass
+
+        if already_exists:
+            continue
+
         header = {
             "id": item.id,
             "class": item.class_,
@@ -758,6 +831,7 @@ def persist_resource_snapshot_to_ltm(
             "original_path": item.original_path,
             "staged_path": item.staged_path or "",
             "digest": item.digest,
+            "content_digest": content_digest,
             "created_at": snapshot.created_at,
             "availability": item.availability,
         }
@@ -768,6 +842,7 @@ def persist_resource_snapshot_to_ltm(
         body = _render_item_body(item, snapshot_digest=snapshot.resource_digest)
         text = _truncate("\n".join(header_lines + [body]).strip(), RESOURCE_ITEM_MAX_CHARS)
         tags = _item_tags(item)
+        tags.append(f"content_digest:{content_digest}")
         if hasattr(ltm, "mem_resources_snapshot_upsert"):
             try:
                 ltm.mem_resources_snapshot_upsert(
@@ -785,7 +860,7 @@ def persist_resource_snapshot_to_ltm(
                 {
                     "ts": time.time(),
                     "run_id": getattr(ltm, "run_id", ""),
-                    "node_id": getattr(ltm, "root_branch_id", None) or use_branch,
+                    "node_id": use_branch,  # Use actual branch where operation occurred
                     "phase": "resource_index",
                     "kind": "resource_index_updated",
                     "summary": f"digest={snapshot.resource_digest}",

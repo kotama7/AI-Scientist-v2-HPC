@@ -1,105 +1,163 @@
-# path to the task data directory
+# タスクデータのディレクトリパス
 data_dir: "data"
-preprocess_data: False
 
-goal: null
-eval: null
-
+# ログファイルの出力先ディレクトリ
 log_dir: logs
+
+# ワークスペースディレクトリ（実験作業領域）
 workspace_dir: workspaces
 
-# whether to copy the data to the workspace directory (otherwise it will be symlinked)
-# copying is recommended to prevent the agent from accidentally modifying the original data
+# データをワークスペースにコピーするか（Falseの場合はシンボリックリンク）
+# エージェントが元データを誤って変更することを防ぐため、コピーを推奨
 copy_data: True
 
-exp_name: run # a random experiment name will be generated if not provided
+# 実験名（指定しない場合はランダムな名前が生成される）
+exp_name: run
 
-# settings for code execution
+# コード実行環境の設定
 exec:
+  # Singularityコンテナイメージのパス
   singularity_image: /home/users/takanori.kotama/workplace/docker/ai-scientist-worker-nv.sif
+  # GPU使用の有効化
   use_gpu: true
-  timeout: 3600
-  agent_file_name: runfile.py
-  format_tb_ipython: False
-  language: cpp
+  # コンテナ内のワークスペースマウントポイント
+  workspace_mount: /workspace
+  # Phase 1の最大ステップ数
+  phase1_max_steps: 12
+  # プロンプトのログ記録を有効化
+  log_prompts: true
 
+# メモリ・記憶管理の設定
 memory:
+  # メモリ機能の有効化（true: 有効, false: 無効）
   enabled: true
-  db_path: null
-  core_max_chars: 10000
+  # コアメモリの最大文字数
+  core_max_chars: 16000
+  # 想起する最大イベント数
   recall_max_events: 20
+  # 検索時に取得する上位k件
   retrieval_k: 8
+  # 全文検索（FTS）の使用（auto: 自動判定）
   use_fts: auto
+  # Phase 0の内部状態を永続化
   persist_phase0_internal: true
+  # Phase 0サマリーを常に注入
   always_inject_phase0_summary: true
+  # アイデアのMarkdownファイルを永続化
   persist_idea_md: true
+  # アイデアサマリーを常に注入
   always_inject_idea_summary: true
+  # 最終メモリ機能を有効化
   final_memory_enabled: true
+  # 最終メモリのMarkdownファイル名
   final_memory_filename_md: final_memory_for_paper.md
+  # 最終メモリのJSONファイル名
   final_memory_filename_json: final_memory_for_paper.json
+  # 機密情報を編集（マスク）
+  redact_secrets: true
+  # メモリ予算の文字数上限
+  memory_budget_chars: 24000
+  # メモリログを有効化
+  memory_log_enabled: true
+  # メモリログの最大文字数
+  memory_log_max_chars: 1600
+  # LLMベースの圧縮を使用
+  use_llm_compression: true
+  # 圧縮に使用するLLMモデル
+  compression_model: gpt-5.2
+  # セクション別の文字数予算（圧縮時の上限）
+  datasets_tested_budget_chars: 4000
+  metrics_extraction_budget_chars: 4000
+  plotting_code_budget_chars: 4000
+  plot_selection_budget_chars: 4000
+  vlm_analysis_budget_chars: 4000
+  node_summary_budget_chars: 4000
+  parse_metrics_budget_chars: 4000
 
+  section_budgets:
+    idea_summary: 9600
+    idea_section_limit: 4800  # Per-section limit for idea summary bullets.
+    phase0_summary: 5000
+    archival_snippet: 3000
+    results: 4000
+
+  # Writeup用メモリ制限（final_writeup_memory.json生成時）
+  # no_budget_limit=Falseの場合に適用される
+  writeup_recall_limit: 10           # recall_memoryの最大件数
+  writeup_archival_limit: 10         # archival_memoryの最大件数
+  writeup_core_value_max_chars: 5000  # core_memoryのvalue最大文字数
+  writeup_recall_text_max_chars: 3000 # recall_memoryのtext最大文字数
+  writeup_archival_text_max_chars: 4000 # archival_memoryのtext最大文字数
+
+# レポート生成を有効化
 generate_report: True
-# LLM settings for final report from journal
+
+# 最終レポート生成のLLM設定
 report:
+  # 使用するLLMモデル
   model: gpt-5.2
+  # 温度パラメータ（生成の多様性: 0.0-2.0）
   temp: 1.0
 
+# 実験の設定
 experiment:
+  # 合成データセットの数
   num_syn_datasets: 1
-  # dataset_source: local  # set to "local" or "huggingface"; omit to let the LLM decide
+  # データセットのソース（local, huggingface, auto）
+  # auto: LLMが自動判定
+  dataset_source: auto
 
-debug:
-  stage4: False
-
-# agent hyperparams
+# エージェントのハイパーパラメータ
 agent:
+  # エージェントのタイプ（並列処理）
   type: parallel
+  # 並列ワーカー数
   num_workers: 4
+  # 各ステージの最大反復回数
   stages:
     stage1_max_iters: 20
-    stage2_max_iters: 12
-    stage3_max_iters: 12
-    stage4_max_iters: 18
-  # how many improvement iterations to run
-  steps: 5 # if stage-specific max_iters are not provided, the agent will use this value for all stages
-  # whether to instruct the agent to use CV (set to 1 to disable)
-  k_fold_validation: 1
+    stage2_max_iters: 20
+    stage3_max_iters: 20
+    stage4_max_iters: 20
+  # 改善反復の実行回数（ステージ別max_itersが未指定の場合に使用）
+  steps: 5
+  # マルチシード評価の設定
   multi_seed_eval:
-    num_seeds: 3 # should be the same as num_workers if num_workers < 3. Otherwise, set it to be 3.
-  # whether to instruct the agent to generate a prediction function
-  expose_prediction: False
-  # whether to provide the agent with a preview of the data
-  data_preview: False
-  # persona that is injected into prompts (replaces {persona} tokens and legacy "AI researcher")
+    # 評価に使用するシード数（num_workers < 3の場合はnum_workersと同じ、それ以外は3）
+    num_seeds: 3
+  # プロンプトに注入される役割の説明
   role_description: "HPC Researcher"
 
-  # LLM settings for coding
+  # コーディング用LLM設定
   code:
     model: gpt-5.2
     temp: 1.0
 
-  # LLM settings for evaluating program output / tracebacks
+  # プログラム出力・トレースバック評価用LLM設定
   feedback:
     model: gpt-5.2
-    # gpt-4o
     temp: 0.5
 
+  # ビジョン言語モデルのフィードバック設定
   vlm_feedback:
     model: gpt-5.2
     temp: 0.5
 
+  # 探索の設定
   search:
+    # デバッグの最大深度
     max_debug_depth: 3
+    # デバッグを実行する確率
     debug_prob: 0.5
+    # ドラフト数
     num_drafts: 3
 
-  # Options for summarizing findings and selecting the best node
-  # If not specified, the default behavior will be used.
-
+  # 結果サマリー生成用LLM設定
   summary:
     model: gpt-5.2
     temp: 0.3
 
+  # 最適ノード選択用LLM設定
   select_node:
     model: gpt-5.2
     temp: 0.3

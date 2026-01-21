@@ -74,6 +74,7 @@ def edit_bfts_config_file(
     memory_core_max_chars: int | None = None,
     memory_recall_max_events: int | None = None,
     memory_retrieval_k: int | None = None,
+    memory_max_compression_iterations: int | None = None,
 ) -> str:
     """
     Edit the bfts_config.yaml file to point to the idea.md file
@@ -149,6 +150,8 @@ def edit_bfts_config_file(
         mem_cfg["recall_max_events"] = int(memory_recall_max_events)
     if memory_retrieval_k is not None:
         mem_cfg["retrieval_k"] = int(memory_retrieval_k)
+    if memory_max_compression_iterations is not None:
+        mem_cfg["max_compression_iterations"] = int(memory_max_compression_iterations)
 
     with open(run_config_path, "w") as f:
         yaml.dump(config, f)

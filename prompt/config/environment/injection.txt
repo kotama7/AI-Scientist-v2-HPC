@@ -1,0 +1,22 @@
+Environment context (from inside the worker container):
+- container_runtime: {container_runtime}
+- singularity_image: {singularity_image}
+- workspace_mount: {workspace_mount}
+- available_compiler_names: {available_compiler_names}
+- available_compilers (full): {available_compilers_json}
+- available_libs: {available_libs}
+- system_performance_tool_names: {system_performance_tool_names}
+- system_performance_tools (full): {system_performance_tools_json}
+- installed_system_package_names: {installed_system_package_names}
+- installed_system_packages (full): {installed_system_packages_json}
+- cpu_info: {cpu_info}
+- memory_info: {memory_info}
+- gpu_info: {gpu_info}
+- python_library_path: /workspace/.pydeps (PYTHONPATH is set to this inside the container)
+- python_alias: python=/usr/bin/python3, python3=/usr/bin/python3 (enforced in container)
+- python_env_note: shell commands are prefixed to export PATH and PYTHONPATH and set python/python3 aliases to /usr/bin/python3
+
+Select compiler_selected from available_compiler_names. If nothing fits, plan installs in download phase (sudo/apt-get with --writable-tmpfs/overlay or source build under /workspace).
+System performance tools listed in system_performance_tools (e.g., perf, numactl, taskset) have been verified and are confirmed available and functional inside this container. Trust these probe results—do NOT assume they might be unavailable or require special permissions. Use them directly for NUMA control, performance profiling (perf stat for hardware counters), and CPU affinity as needed by the experiment design.
+System packages listed in installed_system_packages are pre-installed in the container.
+All commands are executed inside the container; do not suggest host-only actions or wrap commands with singularity/apptainer.

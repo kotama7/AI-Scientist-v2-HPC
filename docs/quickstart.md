@@ -37,7 +37,7 @@ experiment launch.
 
 ```bash
 python launch_scientist_bfts.py \
-  --writeup-type icbinb \
+  --writeup-type normal \
   --load_ideas ai_scientist/ideas/himeno_benchmark_challenge.json \
   --idea_idx 0 \
   --singularity_image template/base.sif \
@@ -84,7 +84,7 @@ python launch_scientist_bfts.py \
 ```bash
 python generate_paper.py \
   --experiment-dir experiments/<timestamp>_<idea>_attempt_<id> \
-  --writeup-type icbinb \
+  --writeup-type normal \
   --model-agg-plots o3-mini-2025-01-31 \
   --model-writeup o1-preview-2024-09-12
 ```

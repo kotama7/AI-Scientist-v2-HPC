@@ -1,27 +1,39 @@
 <div align="center">
   <h1>
-    <b>Title Undecided</b><br>
+    <b>HPC-AutoResearch</b><br>
   </h1>
 </div>
 
-This fork targets HPC environments with a Singularity-based, split-phase execution path. It orchestrates: idea loading/generation → BFTS tree search experiments → plot aggregation → LaTeX writeup → optional PDF review.
+HPC-AutoResearch targets HPC environments with a Singularity-based, split-phase execution path. It orchestrates: idea loading/generation → BFTS tree search experiments → plot aggregation → LaTeX writeup → optional PDF review.
 
 ## At a glance
 
 - Split-phase execution with explicit install/coding/compile/run steps inside Singularity.
 - Per-run isolation: every experiment gets its own config, logs, workspace, and artifacts.
 - Tree-search agent manager with parallel workers (GPU-aware, CPU fallback).
-- Optional MemGPT-style memory across branches for longer context.
+- Optional MemGPT-style memory with LLM-based compression across branches for longer context.
 - Resource files to mount datasets and inject templates/docs into prompts.
+- Configurable persona system for role-specific prompt customization.
+- Token tracking for monitoring LLM usage and costs.
+- Multi-seed evaluation for robust result validation.
 
 ## Repository layout
 
 - `launch_scientist_bfts.py`: main launcher (ideas -> experiments -> plots/writeup/review).
 - `generate_paper.py`: plots/writeup/review for an existing run directory.
-- `ai_scientist/`: core agent logic, tree search, prompts, and memory.
+- `ai_scientist/`: core agent logic, tree search, prompts, memory, and utilities.
+  - `memory/`: MemGPT-style hierarchical memory implementation.
+  - `treesearch/`: BFTS agent manager and parallel workers.
+  - `utils/`: token tracking and model parameter utilities.
+  - `persona.py`: configurable persona system for prompt customization.
 - `prompt/`: split-phase and stage prompts, response schemas, and writeup templates.
+  - `common/`: base system prompts and domain-neutral instructions.
+  - `phases/`: Phase 0 planning and Phase 1 installer prompts.
+  - `memory/`: memory compression prompt templates.
+  - `schemas/`: structured response schemas for split execution.
 - `template/`: base Singularity image instructions (`template/README.md`).
 - `docs/`: expanded guides for requirements, configuration, resources, outputs, and troubleshooting.
+- `tests/`: unit tests for memory, resources, compression, and parallelism.
 - `experiments/`: run outputs (generated at runtime).
 
 ## Typical workflows
@@ -29,6 +41,9 @@ This fork targets HPC environments with a Singularity-based, split-phase executi
 1) **Run end-to-end**: generate ideas (optional) -> run `launch_scientist_bfts.py` -> review `experiments/<run>/`.
 2) **Reuse a run**: skip the experiment and run `generate_paper.py` for plots/writeups.
 3) **Iterate locally**: use `--phase_mode single` for quick iteration without Singularity.
+4) **Custom persona**: set `agent.role_description` in config to customize the agent's role (e.g., "HPC Researcher").
+5) **Enable memory**: use `--enable_memgpt` or set `memory.enabled=true` for hierarchical context management.
+6) **Parallel experiments**: adjust `--num_workers` to scale across available GPUs.
 
 ## Where to start
 
@@ -84,4 +99,4 @@ Detailed guides live in `docs/`. Start with
 
 ## Acknowledgement
 
-The tree search component is built on top of the [AIDE](https://github.com/WecoAI/aideml) project. This HPC fork extends the original [AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2) with split-phase execution and Singularity container support.
+The tree search component is built on top of the [AIDE](https://github.com/WecoAI/aideml) project. This project extends the original [AI-Scientist-v2](https://github.com/SakanaAI/AI-Scientist-v2) with split-phase execution, MemGPT-style context-engineering and Singularity container support.

@@ -10,7 +10,7 @@ from rich import print
 
 from ai_scientist.llm import create_client, get_response_from_llm
 from ai_scientist.utils.token_tracker import token_tracker
-from ai_scientist.perform_icbinb_writeup import (
+from ai_scientist.perform_writeup import (
     load_idea_text,
     load_exp_summaries,
     filter_experiment_summaries,
@@ -19,9 +19,9 @@ from ai_scientist.prompt_loader import load_prompt
 
 MAX_FIGURES = 12
 
-AGGREGATOR_SYSTEM_MSG_TEMPLATE = load_prompt("plotting/system_message")
-PLOT_AGGREGATOR_PROMPT_TEMPLATE = load_prompt("plotting/aggregator_prompt")
-PLOT_REFLECTION_PROMPT_TEMPLATE = load_prompt("plotting/reflection_prompt")
+AGGREGATOR_SYSTEM_MSG_TEMPLATE = load_prompt("output/plotting/system_message")
+PLOT_AGGREGATOR_PROMPT_TEMPLATE = load_prompt("output/plotting/aggregator_prompt")
+PLOT_REFLECTION_PROMPT_TEMPLATE = load_prompt("output/plotting/reflection_prompt")
 
 
 

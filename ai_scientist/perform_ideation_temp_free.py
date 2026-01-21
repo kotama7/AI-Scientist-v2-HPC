@@ -19,10 +19,10 @@ from ai_scientist.tools.base_tool import BaseTool
 from ai_scientist.prompt_loader import load_prompt
 
 IDEATION_SYSTEM_PROMPT_TEMPLATE = load_prompt("ideation/system_prompt")
-IDEA_GENERATION_PROMPT_TEMPLATE = load_prompt("ideation/idea_generation_prompt")
-IDEA_REFLECTION_PROMPT_TEMPLATE = load_prompt("ideation/idea_reflection_prompt")
+IDEA_GENERATION_PROMPT_TEMPLATE = load_prompt("ideation/generation_prompt")
+IDEA_REFLECTION_PROMPT_TEMPLATE = load_prompt("ideation/reflection_prompt")
 FINALIZE_IDEA_TOOL_DESCRIPTION = load_prompt(
-    "ideation/finalize_idea_tool_description"
+    "ideation/finalize_tool_description"
 )
 
 # Create tool instances
