@@ -27,6 +27,10 @@ TIME BUDGET CONSTRAINT (CRITICAL):
 
 - Hard evidence gate for risks:
   * The environment probe is authoritative. If a tool appears in system_performance_tools, it is AVAILABLE. Do not list availability risks for it.
+  * If system_performance_tools lists a tool (e.g., perf), you MUST NOT mention availability, permissions, kernel restrictions, or missing-package risks for that tool (including perf_event_paranoid or linux-tools availability).
+  * If any risk would mention such a tool's availability or permissions, omit that risk entirely.
+  * Evidence means a real command executed in this run that failed. Speculation or "might be unavailable" is not evidence.
+  * If you suspect a tool is unavailable or restricted, you MUST plan a concrete verification command (to be executed in Phase 1) and you MUST NOT list a risk unless that command actually fails in the run logs.
   * risks_and_mitigations must be evidence-based. Each risk MUST cite explicit evidence from the prompt (e.g., tool missing in environment list, command failure log, or given kernel setting). If no evidence exists, OMIT the risk.
   * If no evidence-backed risks exist, return an empty list for risks_and_mitigations.
 

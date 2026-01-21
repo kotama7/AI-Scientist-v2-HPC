@@ -1083,6 +1083,7 @@ class MinimalAgent:
                 "container_runtime": self.environment_context.get("container_runtime") or "host",
                 "singularity_image": self.environment_context.get("singularity_image") or "none",
                 "workspace_mount": self.environment_context.get("workspace_mount", "/workspace"),
+                "timeout_seconds": self.environment_context.get("timeout_seconds", self.cfg.exec.timeout),
                 "cpu_info": self.environment_context.get("cpu_info", "unknown"),
                 "memory_info": self.environment_context.get("memory_info", "unknown"),
                 "gpu_info": self.environment_context.get("gpu_info", "unknown"),
@@ -2266,31 +2267,39 @@ class MinimalAgent:
         )
 
 
+def _parse_cuda_visible_devices(value: str | None) -> list[str]:
+    if not value:
+        return []
+    tokens = [token.strip() for token in value.split(",")]
+    return [token for token in tokens if token and token != "-1"]
+
+
 class GPUManager:
     """Manages GPU allocation across processes"""
 
-    def __init__(self, num_gpus: int):
+    def __init__(self, num_gpus: int, gpu_ids: list[str] | None = None):
         self.num_gpus = num_gpus
-        self.available_gpus: Set[int] = set(range(num_gpus))
-        self.gpu_assignments: Dict[str, int] = {}  # process_id -> gpu_id
+        if gpu_ids:
+            self.available_gpus = [str(gpu_id) for gpu_id in gpu_ids]
+        else:
+            self.available_gpus = [str(i) for i in range(num_gpus)]
+        self.available_gpu_set: Set[str] = set(self.available_gpus)
+        self.gpu_assignments: Dict[str, str] = {}  # process_id -> gpu_id
 
-    def acquire_gpu(self, process_id: str) -> int:
+    def acquire_gpu(self, process_id: str) -> str:
         """Assigns a GPU to a process"""
         if not self.available_gpus:
             raise RuntimeError("No GPUs available")
         print(f"Available GPUs: {self.available_gpus}")
         print(f"Process ID: {process_id}")
-        preferred_id = None
-        try:
-            preferred_id = int(str(process_id).split("_")[-1])
-        except Exception:
-            preferred_id = None
-        if preferred_id is not None and preferred_id in self.available_gpus:
+        preferred_id = str(process_id).split("_")[-1]
+        if preferred_id in self.available_gpu_set:
             gpu_id = preferred_id
         else:
-            gpu_id = min(self.available_gpus)
+            gpu_id = self.available_gpus[0]
         print(f"Acquiring GPU {gpu_id} for process {process_id}")
         self.available_gpus.remove(gpu_id)
+        self.available_gpu_set.remove(gpu_id)
         self.gpu_assignments[process_id] = gpu_id
         print(f"GPU assignments: {self.gpu_assignments}")
         return gpu_id
@@ -2299,7 +2308,9 @@ class GPUManager:
         """Releases GPU assigned to a process"""
         if process_id in self.gpu_assignments:
             gpu_id = self.gpu_assignments[process_id]
-            self.available_gpus.add(gpu_id)
+            if gpu_id not in self.available_gpu_set:
+                self.available_gpus.append(gpu_id)
+                self.available_gpu_set.add(gpu_id)
             del self.gpu_assignments[process_id]
 
 
@@ -2353,7 +2364,10 @@ class ParallelAgent:
         else:
             logger.info("Detected %s GPUs", self.num_gpus)
 
-        self.gpu_manager = GPUManager(self.num_gpus) if self.num_gpus > 0 else None
+        visible_gpus = _parse_cuda_visible_devices(plan.cuda_visible_devices)
+        self.gpu_manager = (
+            GPUManager(self.num_gpus, gpu_ids=visible_gpus) if self.num_gpus > 0 else None
+        )
 
         if getattr(self.cfg.exec, "phase_mode", "single") == "split":
             run_root = _resolve_run_root(self.cfg)
@@ -2520,12 +2534,30 @@ class ParallelAgent:
         """Run multiple seeds of the same node to get statistical metrics.
         Returns a list of nodes with different random seeds."""
 
+        # IMPORTANT: Reset executor to ensure all previous tasks are complete
+        # This prevents issues where workers from previous stage are still running
+        logger.info("Resetting executor before multi-seed evaluation to ensure clean state...")
+        print("[yellow]Resetting executor before multi-seed evaluation...[/yellow]")
+        try:
+            # Shutdown existing executor and wait for all tasks to complete
+            self.executor.shutdown(wait=True, cancel_futures=False)
+            logger.info("Previous executor shutdown complete")
+        except Exception as e:
+            logger.warning(f"Error during executor shutdown: {e}")
+
+        # Create fresh executor for multi-seed evaluation
+        self.executor = ProcessPoolExecutor(max_workers=self.num_workers)
+        logger.info(f"Created new executor with {self.num_workers} workers for multi-seed evaluation")
+        print(f"[green]Created new executor with {self.num_workers} workers[/green]")
+
         # Convert node to dict for parallel processing
         node_data = node.to_dict()
 
         # Submit parallel jobs for different seeds
         seed_nodes = []
         futures = []
+        future_to_seed: Dict[Any, int] = {}  # Map future to seed for tracking
+
         for seed in range(self.cfg.agent.multi_seed_eval.num_seeds):
             gpu_id = None
             if self.gpu_manager is not None:
@@ -2546,46 +2578,68 @@ class ParallelAgent:
             seed_eval = True
             memory_summary = ""
             print("[yellow]Starting multi-seed eval...[/yellow]")
-            futures.append(
-                self.executor.submit(
-                    self._process_node_wrapper,
-                    node_data,
-                    self.task_desc,
-                    self.cfg,
-                    gpu_id,
-                    memory_summary,
-                    self.evaluation_metrics,
-                    self.stage_name,
-                    new_ablation_idea,
-                    new_hyperparam_idea,
-                    best_stage1_plot_code,
-                    best_stage2_plot_code,
-                    best_stage3_plot_code,
-                    seed_eval,
-                    seed,
-                    seed,
-                )
+            future = self.executor.submit(
+                self._process_node_wrapper,
+                node_data,
+                self.task_desc,
+                self.cfg,
+                gpu_id,
+                memory_summary,
+                self.evaluation_metrics,
+                self.stage_name,
+                new_ablation_idea,
+                new_hyperparam_idea,
+                best_stage1_plot_code,
+                best_stage2_plot_code,
+                best_stage3_plot_code,
+                seed_eval,
+                seed,
+                seed,
             )
+            futures.append(future)
+            future_to_seed[future] = seed
 
-        for seed, future in enumerate(futures):
-            try:
-                result_data = future.result(timeout=self.timeout)
-                result_node = Node.from_dict(result_data, self.journal)
-                print(f"Parent node id: {result_node.parent.id}")
-                print(f"Sanity check: actual parent node id: {node.id}")
-                # Add node to journal's list and assign its step number
-                self.journal.append(result_node)
-                seed_nodes.append(self.journal.get_node_by_id(result_node.id))
-                print("Added result node to journal")
-            except Exception as e:
-                logger.error(f"Error in multi-seed evaluation: {str(e)}")
-            finally:
+        # Track completed futures to release GPUs
+        completed_seeds: Set[int] = set()
+
+        # Use as_completed to process results as they finish (not in order)
+        try:
+            for future in as_completed(futures, timeout=self.timeout):
+                seed = future_to_seed[future]
                 process_id = f"worker_{seed}"
-                if (
-                    self.gpu_manager is not None
-                    and process_id in self.gpu_manager.gpu_assignments
-                ):
-                    self.gpu_manager.release_gpu(process_id)
+                try:
+                    result_data = future.result()  # No timeout here, already completed
+                    result_node = Node.from_dict(result_data, self.journal)
+                    print(f"[seed={seed}] Parent node id: {result_node.parent.id}")
+                    print(f"[seed={seed}] Sanity check: actual parent node id: {node.id}")
+                    # Add node to journal's list and assign its step number
+                    self.journal.append(result_node)
+                    seed_nodes.append(self.journal.get_node_by_id(result_node.id))
+                    print(f"[seed={seed}] Added result node to journal")
+                except Exception as e:
+                    logger.exception(f"Error in multi-seed evaluation for seed {seed}")
+                finally:
+                    completed_seeds.add(seed)
+                    if (
+                        self.gpu_manager is not None
+                        and process_id in self.gpu_manager.gpu_assignments
+                    ):
+                        self.gpu_manager.release_gpu(process_id)
+        except FuturesTimeoutError:
+            logger.error(f"Timeout waiting for multi-seed evaluation (timeout={self.timeout}s)")
+            # Release GPUs for incomplete futures
+            for future in futures:
+                seed = future_to_seed[future]
+                if seed not in completed_seeds:
+                    process_id = f"worker_{seed}"
+                    logger.warning(f"Seed {seed} did not complete within timeout")
+                    if (
+                        self.gpu_manager is not None
+                        and process_id in self.gpu_manager.gpu_assignments
+                    ):
+                        self.gpu_manager.release_gpu(process_id)
+                    # Cancel the future (may not stop already-running process)
+                    future.cancel()
 
         return seed_nodes
 
@@ -3008,6 +3062,9 @@ class ParallelAgent:
                 except Exception as exc:
                     logger.warning("Failed to probe network access: %s", exc)
                     environment_context["network_access"] = "unknown"
+            environment_context["timeout_seconds"] = cfg.exec.timeout
+        else:
+            environment_context["timeout_seconds"] = cfg.exec.timeout
 
         run_root: Path | None = None
         phase0_plan: dict | None = None
@@ -3062,6 +3119,7 @@ class ParallelAgent:
                         "container_runtime": environment_context.get("container_runtime"),
                         "singularity_image": environment_context.get("singularity_image"),
                         "workspace_mount": environment_context.get("workspace_mount"),
+                        "timeout_seconds": environment_context.get("timeout_seconds", cfg.exec.timeout),
                     },
                     indent=2,
                 ),
@@ -3073,6 +3131,12 @@ class ParallelAgent:
                     phase0_plan = json.loads(phase0_plan_path.read_text(encoding="utf-8"))
                 except Exception as exc:
                     logger.warning("Failed to load existing Phase 0 plan: %s", exc)
+                    phase0_plan = None
+            if phase0_plan is not None:
+                plan_payload = phase0_plan.get("plan") if isinstance(phase0_plan, dict) else None
+                time_budget = plan_payload.get("time_budget_estimate") if isinstance(plan_payload, dict) else None
+                if not isinstance(time_budget, dict) or "timeout_seconds" not in time_budget:
+                    logger.info("Phase 0 plan missing time_budget_estimate; regenerating.")
                     phase0_plan = None
             if phase0_plan is None:
                 # Build verified system perf tools note
@@ -3097,7 +3161,7 @@ class ParallelAgent:
                         "container_runtime": environment_context.get("container_runtime"),
                         "singularity_image": environment_context.get("singularity_image"),
                         "workspace_mount": environment_context.get("workspace_mount", "/workspace"),
-                        "timeout_seconds": cfg.exec.timeout,
+                        "timeout_seconds": environment_context.get("timeout_seconds", cfg.exec.timeout),
                     },
                 }
                 if memory_manager and root_branch_id:
