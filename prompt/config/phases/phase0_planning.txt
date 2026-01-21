@@ -12,6 +12,19 @@ Constraints:
 - Phase 1 is iterative (one command at a time until done=true).
 - Prompt files are stored in prompt/*.txt; do not embed code blocks in this plan.
 - Avoid bias toward Python or AI; list dependencies only if required by the design.
+
+TIME BUDGET CONSTRAINT (CRITICAL):
+- Check Environment.timeout_seconds for the total wall-clock time available.
+- Your experiment MUST complete within this time budget. If it times out, the run fails.
+- Estimate total execution time BEFORE designing the experiment:
+    estimated_time = num_configurations × num_repetitions × time_per_single_run
+- Keep estimated_time below 80% of timeout_seconds (safety margin for compilation, I/O, overhead).
+- If the sweep is too large, REDUCE:
+    * num_repetitions (e.g., 5-10 instead of 30-50)
+    * num_configurations (fewer parameter combinations)
+    * problem_sizes (start with SMALL only)
+- Add time_budget_estimate to the plan schema with your calculation.
+
 - Hard evidence gate for risks:
   * The environment probe is authoritative. If a tool appears in system_performance_tools, it is AVAILABLE. Do not list availability risks for it.
   * risks_and_mitigations must be evidence-based. Each risk MUST cite explicit evidence from the prompt (e.g., tool missing in environment list, command failure log, or given kernel setting). If no evidence exists, OMIT the risk.
@@ -58,6 +71,16 @@ Schema:
     },
     "risks_and_mitigations": [
       {"risk": "apt-get fails", "mitigation": "retry or build from source"}
-    ]
+    ],
+    "time_budget_estimate": {
+      "timeout_seconds": "<from Environment.timeout_seconds>",
+      "num_configurations": "<int: your planned parameter combinations>",
+      "num_repetitions": "<int: runs per configuration>",
+      "estimated_time_per_run_seconds": "<int: estimated single run time>",
+      "total_estimated_seconds": "<int: num_configurations * num_repetitions * time_per_run>",
+      "utilization_percent": "<int: (total_estimated / timeout) * 100>",
+      "is_within_budget": "<bool: true if utilization_percent < 80>",
+      "notes": "<string: explanation if budget is tight or how you reduced scope>"
+    }
   }
 }

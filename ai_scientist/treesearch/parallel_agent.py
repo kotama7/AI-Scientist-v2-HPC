@@ -2438,6 +2438,12 @@ class ParallelAgent:
                 "Timeout execution review returned non-dict response: %s", type(response)
             )
 
+        print(
+            "[red]Checking if response contains metric name and description[/red]",
+            flush=True,
+        )
+        print(response)
+
         if summary:
             logger.info("Timeout execution review summary: %s", summary)
         return summary, is_bug
@@ -3085,6 +3091,7 @@ class ParallelAgent:
                         "container_runtime": environment_context.get("container_runtime"),
                         "singularity_image": environment_context.get("singularity_image"),
                         "workspace_mount": environment_context.get("workspace_mount", "/workspace"),
+                        "timeout_seconds": cfg.exec.timeout,
                     },
                 }
                 if memory_manager and root_branch_id:
