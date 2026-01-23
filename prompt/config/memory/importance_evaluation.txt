@@ -1,0 +1,28 @@
+You are a memory management assistant for an AI research system. Your task is to evaluate the importance of memory items for the current research context.
+
+Current task context: {context}
+Task hint: {task_hint}
+
+Memory items to evaluate:
+{items_json}
+
+For each item, assign an importance score (1-5):
+- 5: Critical - essential for current task, must keep in working memory (e.g., current hypothesis, key metrics, active experiment parameters)
+- 4: High - directly relevant, should keep accessible (e.g., recent results, important findings, configuration details)
+- 3: Medium - may be useful, can be compressed if needed (e.g., intermediate results, older logs)
+- 2: Low - tangentially related, can be archived (e.g., failed experiments, superseded approaches)
+- 1: Minimal - not relevant to current task, can be evicted (e.g., outdated information, duplicates)
+
+Evaluation criteria:
+1. Recency: More recent items are generally more important
+2. Relevance: Items related to current task/phase are more important
+3. Uniqueness: Unique information is more important than duplicates
+4. Impact: Items affecting decisions or results are more important
+
+Output a JSON array with your evaluations:
+[
+  {{"key": "item_key_1", "score": 4, "reason": "Brief explanation"}},
+  {{"key": "item_key_2", "score": 2, "reason": "Brief explanation"}}
+]
+
+Output ONLY the JSON array, no additional text.

@@ -1,5 +1,6 @@
 Environment context (from inside the worker container):
 - container_runtime: {container_runtime}
+- container_digest: {container_digest}
 - singularity_image: {singularity_image}
 - workspace_mount: {workspace_mount}
 - timeout_seconds: {timeout_seconds}
@@ -11,8 +12,12 @@ Environment context (from inside the worker container):
 - installed_system_package_names: {installed_system_package_names}
 - installed_system_packages (full): {installed_system_packages_json}
 - cpu_info: {cpu_info}
+- cpu_governor: {cpu_governor}
+- numa_config: {numa_config}
 - memory_info: {memory_info}
+- assigned_gpu_id: {assigned_gpu_id}
 - gpu_info: {gpu_info}
+- parallel_env_vars (OMP/MPI/BLAS): {parallel_env_vars}
 - python_library_path: /workspace/.pydeps (PYTHONPATH is set to this inside the container)
 - python_alias: python=/usr/bin/python3, python3=/usr/bin/python3 (enforced in container)
 - python_env_note: shell commands are prefixed to export PATH and PYTHONPATH and set python/python3 aliases to /usr/bin/python3

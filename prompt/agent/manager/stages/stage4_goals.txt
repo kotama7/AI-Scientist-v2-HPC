@@ -1,2 +1,2 @@
 - Conduct systematic component analysis that reveals the contribution of each part
-- Use the same datasets you used from the previous stage
+- Use the same data sources you used from the previous stage

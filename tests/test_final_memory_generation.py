@@ -180,3 +180,43 @@ class TestSummarizePhase0(unittest.TestCase):
         self.assertIn("OS=Ubuntu 22.04.5 LTS (jammy)", result)
         self.assertIn("compilers=[gcc:11.4.0]", result)
         self.assertIn("container=singularity", result)
+
+    def test_low_level_system_info_extraction(self) -> None:
+        """Test extraction of low-level system info: cpu_governor, numa_config, parallel_env_vars, container_digest."""
+        env_ctx = {
+            "cpu_info": "x86_64; 256 CPUs online; AMD EPYC 9534",
+            "cpu_governor": "performance",
+            "numa_config": "available: 2 nodes (0-1)\nnode 0 cpus: 0 1 2 3\nnode 1 cpus: 4 5 6 7",
+            "os_release": 'PRETTY_NAME="Ubuntu 22.04.5 LTS"',
+            "available_compilers": [
+                {"name": "gcc", "version": "11.4.0"},
+            ],
+            "container_runtime": "singularity",
+            "container_digest": "sha256:abc123def456789012345678901234567890123456789012345678901234",
+            "parallel_env_vars": "=== OpenMP ===\nOMP_NUM_THREADS=64\nOMP_PROC_BIND=close\n=== MPI ===\nnone\n=== BLAS/LAPACK ===\nOPENBLAS_NUM_THREADS=1",
+        }
+        payload = {"environment_context": env_ctx}
+        result = _summarize_phase0(payload, None)
+        self.assertIn("cpu_governor=performance", result)
+        self.assertIn("numa=", result)
+        self.assertIn("container_digest=sha256:abc123def4567...", result)
+        self.assertIn("OMP_NUM_THREADS=64", result)
+        self.assertIn("OPENBLAS_NUM_THREADS=1", result)
+
+    def test_low_level_system_info_na_fallback(self) -> None:
+        """Test that NA values are not included in summary."""
+        env_ctx = {
+            "cpu_info": "x86_64; 256 CPUs online; AMD EPYC 9534",
+            "cpu_governor": "NA",
+            "numa_config": "NA",
+            "os_release": 'PRETTY_NAME="Ubuntu 22.04.5 LTS"',
+            "available_compilers": [],
+            "container_runtime": "singularity",
+            "container_digest": "NA",
+            "parallel_env_vars": "NA",
+        }
+        payload = {"environment_context": env_ctx}
+        result = _summarize_phase0(payload, None)
+        self.assertNotIn("cpu_governor=NA", result)
+        self.assertNotIn("container_digest=NA", result)
+        self.assertIn("container=singularity", result)

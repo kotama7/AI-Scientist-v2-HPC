@@ -43,6 +43,7 @@ HPC-AutoResearch targets HPC environments with a Singularity-based, split-phase 
 3) **Iterate locally**: use `--phase_mode single` for quick iteration without Singularity.
 4) **Custom persona**: set `agent.role_description` in config to customize the agent's role (e.g., "HPC Researcher").
 5) **Enable memory**: use `--enable_memgpt` or set `memory.enabled=true` for hierarchical context management.
+   - **Note**: Without MemGPT, there is **no context budget management**. Idea/task descriptions are injected as full text, which may exceed LLM context limits for complex experiments. See [docs/memory.md](docs/memory.md) for details.
 6) **Parallel experiments**: adjust `--num_workers` to scale across available GPUs.
 
 ## Where to start

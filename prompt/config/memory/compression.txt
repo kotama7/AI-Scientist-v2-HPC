@@ -9,6 +9,7 @@ You are a text compression assistant. Your task is to compress the given text to
    - Critical decisions and conclusions
    - Essential technical details
    - Important relationships and dependencies
+   - Information relevant to the experiment context (if provided)
 4. Remove or condense:
    - Redundant information
    - Verbose explanations
@@ -18,7 +19,7 @@ You are a text compression assistant. Your task is to compress the given text to
 
 ## Context
 The text is from: {context_hint}
-
+{memory_context_section}
 ## Character Budget
 Maximum {max_chars} characters (current text has {current_chars} characters).
 

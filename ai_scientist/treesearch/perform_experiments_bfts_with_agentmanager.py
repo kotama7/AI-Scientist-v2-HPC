@@ -23,7 +23,8 @@ from rich.progress import (
 from rich.text import Text
 from rich.status import Status
 from rich.tree import Tree
-from .utils.config import load_task_desc, prep_agent_workspace, save_run, load_cfg
+from .utils.config import load_task_desc, prep_agent_workspace, load_cfg
+from .utils.run_io import save_run
 from .agent_manager import AgentManager
 from ai_scientist.memory import MemoryManager
 from ai_scientist.memory.resource_memory import (
@@ -106,23 +107,8 @@ def perform_experiments_bfts(config_path: str):
             memory_cfg.root_branch_id = root_branch_id
         else:
             memory_manager.set_root_branch_id(root_branch_id)
-        if getattr(memory_cfg, "persist_idea_md", True) and cfg.desc_file:
-            memory_manager.ingest_idea_md(
-                root_branch_id, node_uid="root", idea_path=cfg.desc_file, is_root=True
-            )
-        resources_path = getattr(cfg.exec, "resources", None)
-        if resources_path:
-            try:
-                snapshot = build_resource_snapshot(
-                    resources_path,
-                    workspace_root=Path(cfg.workspace_dir),
-                    ai_scientist_root=os.environ.get("AI_SCIENTIST_ROOT"),
-                    phase_mode=getattr(cfg.exec, "phase_mode", "single"),
-                    log=logger,
-                )
-                update_resource_snapshot_if_changed(snapshot, memory_manager)
-            except Exception as exc:
-                logger.warning("Failed to persist resource snapshot: %s", exc)
+        # NOTE: idea_md and resource snapshot are written to child branches only,
+        # not to the virtual root branch (to keep root branch memory-free)
 
     def cleanup():
         if global_step == 0:
@@ -211,6 +197,41 @@ def perform_experiments_bfts(config_path: str):
                 ),
                 "current_findings": current_findings,
             }
+
+            # Write stage summary to memory
+            if memory_manager and branch_id:
+                try:
+                    import time as _time
+                    summary_text = (
+                        f"Stage {stage.name} progress: "
+                        f"nodes={len(journal.nodes)}, good={len(journal.good_nodes)}, buggy={len(journal.buggy_nodes)}, "
+                        f"best_metric={stage_summary['best_metric']}"
+                    )
+                    memory_manager.mem_recall_append({
+                        "ts": _time.time(),
+                        "run_id": getattr(memory_manager, "run_id", ""),
+                        "node_id": branch_id,
+                        "phase": stage.name,
+                        "kind": "stage_summary",
+                        "summary": summary_text,
+                        "refs": [],
+                    })
+                    # Write detailed findings to archival if significant
+                    if current_findings and len(current_findings) > 100:
+                        memory_manager.mem_archival_write(
+                            f"Stage {stage.name} Summary\n\n"
+                            f"Progress: {len(journal.good_nodes)}/{len(journal.nodes)} successful nodes\n"
+                            f"Best metric: {stage_summary['best_metric']}\n\n"
+                            f"Findings:\n{current_findings[:2000]}",
+                            tags=["SUMMARY", f"stage:{stage.name}", "FINDINGS"],
+                            meta={
+                                "branch_id": branch_id,
+                                "run_id": getattr(memory_manager, "run_id", ""),
+                                "phase": stage.name,
+                            },
+                        )
+                except Exception as mem_exc:
+                    print(f"Warning: Failed to write summary to memory: {mem_exc}")
 
             with open(notes_dir / "stage_progress.json", "w") as f:
                 json.dump(stage_summary, f, indent=2)

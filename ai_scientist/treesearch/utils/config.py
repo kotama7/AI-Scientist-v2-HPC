@@ -12,8 +12,7 @@ import shutup
 from rich.logging import RichHandler
 import logging
 
-from . import tree_export
-from . import copytree, preproc_data, serialize
+from .file_ops import copytree, preproc_data
 from .resource import load_resources, resolve_resources_path, stage_resource_items
 from ai_scientist.persona import set_persona_role
 
@@ -137,6 +136,11 @@ class MemoryConfig:
     writeup_core_value_max_chars: int = 500
     writeup_recall_text_max_chars: int = 300
     writeup_archival_text_max_chars: int = 400
+    # Memory Pressure Management (MemGPT-style)
+    auto_consolidate: bool = True
+    consolidation_trigger: str = "high"
+    recall_consolidation_threshold: float = 1.5
+    pressure_thresholds: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -386,49 +390,3 @@ def prep_agent_workspace(cfg: Config):
     copytree(cfg.data_dir, cfg.workspace_dir / "input", use_symlinks=not cfg.copy_data)
     if cfg.preprocess_data:
         preproc_data(cfg.workspace_dir / "input")
-
-
-def save_run(cfg: Config, journal, stage_name: str = None):
-    if stage_name is None:
-        stage_name = "NoStageRun"
-    save_dir = cfg.log_dir / stage_name
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    # save journal
-    try:
-        serialize.dump_json(journal, save_dir / "journal.json")
-    except Exception as e:
-        print(f"Error saving journal: {e}")
-        raise
-    # save config
-    try:
-        OmegaConf.save(config=cfg, f=save_dir / "config.yaml")
-    except Exception as e:
-        print(f"Error saving config: {e}")
-        raise
-    # create the tree + code visualization
-    try:
-        tree_export.generate(cfg, journal, save_dir / "tree_plot.html")
-    except Exception as e:
-        print(f"Error generating tree: {e}")
-        raise
-    # save the best found solution
-    try:
-        best_node = journal.get_best_node(only_good=False, cfg=cfg)
-        if best_node is not None:
-            suffix = Path(cfg.exec.agent_file_name).suffix or ".py"
-            if getattr(cfg.exec, "phase_mode", "single") == "split":
-                suffix = ".txt"
-            for existing_file in save_dir.glob(f"best_solution_*.{suffix.lstrip('.')}"):
-                existing_file.unlink()
-            # Create new best solution file
-            filename = f"best_solution_{best_node.id}{suffix}"
-            with open(save_dir / filename, "w") as f:
-                f.write(best_node.code)
-            # save best_node.id to a text file
-            with open(save_dir / "best_node_id.txt", "w") as f:
-                f.write(str(best_node.id))
-        else:
-            print("No best node found yet")
-    except Exception as e:
-        print(f"Error saving best solution: {e}")

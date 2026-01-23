@@ -271,7 +271,30 @@ class AgentManager:
         branch_id = self._select_branch_id(journal)
         if not branch_id:
             return ""
-        budget = getattr(getattr(self.cfg, "memory", None), "memory_budget_chars", 4000)
+
+        # Check memory pressure and auto-consolidate if needed
+        memory_cfg = getattr(self.cfg, "memory", None)
+        auto_consolidate = getattr(memory_cfg, "auto_consolidate", True) if memory_cfg else True
+        consolidation_trigger = getattr(memory_cfg, "consolidation_trigger", "high") if memory_cfg else "high"
+
+        if auto_consolidate and hasattr(self.memory_manager, "check_memory_pressure"):
+            try:
+                pressure = self.memory_manager.check_memory_pressure(branch_id)
+                trigger_levels = {"medium": ["medium", "high", "critical"], "high": ["high", "critical"], "critical": ["critical"]}
+                should_consolidate = pressure["pressure_level"] in trigger_levels.get(consolidation_trigger, ["high", "critical"])
+
+                if should_consolidate and hasattr(self.memory_manager, "auto_consolidate_memory"):
+                    self.memory_manager.auto_consolidate_memory(
+                        branch_id,
+                        pressure["pressure_level"],
+                        task_hint,
+                    )
+            except Exception as exc:
+                # Log but don't fail - memory pressure is an optimization
+                import logging
+                logging.getLogger(__name__).debug("Memory pressure check failed: %s", exc)
+
+        budget = getattr(memory_cfg, "memory_budget_chars", 4000) if memory_cfg else 4000
         return self.memory_manager.render_for_prompt(branch_id, task_hint, budget_chars=budget)
 
     def _inject_memory_into_text(self, prompt: str, journal: Journal | None, task_hint: str) -> str:
@@ -279,6 +302,65 @@ class AgentManager:
         if not memory_context:
             return prompt
         return f"Memory:\n{memory_context}\n\n{prompt}"
+
+    def _write_memory_event(
+        self,
+        kind: str,
+        summary: str,
+        phase: str,
+        journal: Journal | None = None,
+        *,
+        refs: list[str] | None = None,
+        write_archival: bool = False,
+        archival_tags: list[str] | None = None,
+    ) -> None:
+        """Write a memory event to recall (and optionally archival) memory.
+
+        Args:
+            kind: Event kind (e.g., "stage_complete", "goal_generated", "decision")
+            summary: Event summary text
+            phase: Current phase/stage name
+            journal: Optional journal for branch selection
+            refs: Optional reference IDs
+            write_archival: If True, also write to archival memory
+            archival_tags: Tags for archival entry
+        """
+        if not self.memory_manager:
+            return
+
+        branch_id = self._select_branch_id(journal)
+        if not branch_id:
+            branch_id = self.root_branch_id
+        if not branch_id:
+            return
+
+        try:
+            import time
+
+            # Write to recall memory
+            if hasattr(self.memory_manager, "mem_recall_append"):
+                self.memory_manager.mem_recall_append({
+                    "ts": time.time(),
+                    "run_id": getattr(self.memory_manager, "run_id", ""),
+                    "node_id": branch_id,
+                    "phase": phase,
+                    "kind": kind,
+                    "summary": summary[:2000],  # Truncate if too long
+                    "refs": refs or [],
+                })
+
+            # Optionally write to archival for important events
+            if write_archival and hasattr(self.memory_manager, "mem_archival_write"):
+                tags = archival_tags or []
+                tags.extend([f"phase:{phase}", f"kind:{kind}"])
+                self.memory_manager.mem_archival_write(
+                    summary,
+                    tags=tags,
+                    meta={"phase": phase, "branch_id": branch_id},
+                )
+
+        except Exception as exc:
+            logger.debug("Failed to write memory event: %s", exc)
 
     def _get_max_iterations(self, stage_number: int) -> int:
         """Get max iterations for a stage from config or default"""
@@ -504,6 +586,15 @@ class AgentManager:
                 print(
                     f"[green]Stage {current_substage.name} completed: {evaluation['reasoning']}[/green]"
                 )
+                # Write memory event for stage completion
+                self._write_memory_event(
+                    kind="substage_complete",
+                    summary=f"Substage {current_substage.name} completed. Reasoning: {evaluation['reasoning']}",
+                    phase=current_substage.name,
+                    journal=journal,
+                    write_archival=True,
+                    archival_tags=["STAGE_COMPLETE", f"stage:{current_substage.name}"],
+                )
                 return True, "Found working implementation"
             else:
                 missing = ", ".join(evaluation["missing_criteria"])
@@ -512,6 +603,13 @@ class AgentManager:
                 )
                 print(
                     f"[yellow]Stage {current_substage.name} not complete. Missing: {missing}[/yellow]"
+                )
+                # Write memory event for incomplete stage
+                self._write_memory_event(
+                    kind="substage_incomplete",
+                    summary=f"Substage {current_substage.name} not complete. Missing: {missing}",
+                    phase=current_substage.name,
+                    journal=journal,
                 )
                 return False, "Missing criteria: " + missing
         except Exception as e:
@@ -608,12 +706,28 @@ class AgentManager:
                     print(
                         f"[green]Stage {stage.name} completed: {evaluation['reasoning']}[/green]"
                     )
+                    # Write memory event for stage 2 completion
+                    self._write_memory_event(
+                        kind="stage2_complete",
+                        summary=f"Stage 2 completed. Datasets tested: {best_node.datasets_successfully_tested}. Reasoning: {evaluation['reasoning']}",
+                        phase="stage2",
+                        journal=journal,
+                        write_archival=True,
+                        archival_tags=["STAGE_COMPLETE", "stage:2", "DATASETS_TESTED"],
+                    )
                     return True, "Found working implementation"
                 else:
                     missing = ", ".join(evaluation["missing_criteria"])
                     logger.info(f"Stage {stage.name} not complete. Missing: {missing}")
                     print(
                         f"[yellow]Stage {stage.name} not complete. Missing: {missing}[/yellow]"
+                    )
+                    # Write memory event for incomplete stage 2
+                    self._write_memory_event(
+                        kind="stage2_incomplete",
+                        summary=f"Stage 2 not complete. Missing: {missing}. Datasets tested so far: {best_node.datasets_successfully_tested}",
+                        phase="stage2",
+                        journal=journal,
                     )
                     return False, "Missing criteria: " + missing
             except Exception as e:
@@ -641,6 +755,7 @@ class AgentManager:
                 if exec_time_minutes < self.cfg.exec.timeout / 60 / 2:
                     exec_time_feedback = EXEC_TIME_FEEDBACK_TEMPLATE.format(
                         exec_time_minutes=exec_time_minutes,
+                        max_time_minutes=self.cfg.exec.timeout / 60,
                     )
                     print(f"[cyan]exec_time_feedback: {exec_time_feedback}[/cyan]")
                     self.journals[stage.name].nodes[
@@ -681,12 +796,28 @@ class AgentManager:
                     print(
                         f"[green]Stage {stage.name} completed: {evaluation['reasoning']}[/green]"
                     )
+                    # Write memory event for stage 4 completion
+                    self._write_memory_event(
+                        kind="stage4_complete",
+                        summary=f"Stage 4 completed. Ablations: {ablation_names}. Reasoning: {evaluation['reasoning']}",
+                        phase="stage4",
+                        journal=journal,
+                        write_archival=True,
+                        archival_tags=["STAGE_COMPLETE", "stage:4", "ABLATIONS"],
+                    )
                     return True, "Found working ablations"
                 else:
                     missing = ", ".join(evaluation["missing_criteria"])
                     logger.info(f"Stage {stage.name} not complete. Missing: {missing}")
                     print(
                         f"[yellow]Stage {stage.name} not complete. Missing: {missing}[/yellow]"
+                    )
+                    # Write memory event for incomplete stage 4
+                    self._write_memory_event(
+                        kind="stage4_incomplete",
+                        summary=f"Stage 4 not complete. Missing: {missing}. Current ablations: {ablation_names}",
+                        phase="stage4",
+                        journal=journal,
                     )
                     return False, "Missing criteria: " + missing
             except Exception as e:
@@ -779,6 +910,16 @@ class AgentManager:
             goal_str = f"""
             {response['goals']}
             """
+
+            # Write memory event for goal generation
+            self._write_memory_event(
+                kind="goal_generated",
+                summary=f"Generated substage goals for {response['sub_stage_name']}: {response['goals'][:500]}",
+                phase=response["sub_stage_name"],
+                journal=journal,
+                write_archival=True,
+                archival_tags=["GOAL", f"substage:{response['sub_stage_name']}"],
+            )
 
             return goal_str.strip(), response["sub_stage_name"]
 
@@ -1327,6 +1468,18 @@ class AgentManager:
             # Log the evaluation for transparency
             logger.info(
                 f"Stage progression evaluation:\n{json.dumps(evaluation, indent=2)}"
+            )
+
+            # Write memory event for stage progression decision
+            ready = evaluation.get("ready_for_next_stage", False)
+            self._write_memory_event(
+                kind="stage_progression",
+                summary=f"Stage {current_stage.name} progression: {'ready' if ready else 'not ready'}. "
+                        f"Reasoning: {evaluation.get('reasoning', 'N/A')}. "
+                        f"Focus: {evaluation.get('suggested_focus', 'N/A')}",
+                phase=current_stage.name,
+                write_archival=ready,  # Only write to archival when progressing
+                archival_tags=["STAGE_PROGRESSION", f"stage:{current_stage.name}"],
             )
 
             return evaluation

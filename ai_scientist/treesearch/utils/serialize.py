@@ -5,6 +5,7 @@ from typing import Type, TypeVar
 import re
 
 import dataclasses_json
+
 from ..journal import Journal, Node
 
 

@@ -1,5 +1,5 @@
 Propose a single evaluation metric that would be useful for analyzing the performance of solutions for this research task.
-Note: Validation loss will be tracked separately so you don't need to include it in your response.
+Note: Primary error/loss metrics will be tracked separately so you don't need to include them in your response.
 Format your response as a list containing:
 - name: The name of the metric
 - maximize: Whether higher values are better (true/false)

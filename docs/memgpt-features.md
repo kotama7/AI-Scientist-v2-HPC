@@ -310,3 +310,72 @@ memory:
 # Compression settings
 --memory_max_compression_iterations 3
 ```
+
+## Disabled Mode (MemGPT無効時の挙動)
+
+When MemGPT is disabled (`memory.enabled=false` or `--enable_memgpt` not passed),
+the following features are **completely unavailable**:
+
+### Features lost without MemGPT
+
+| Feature | Impact |
+|---------|--------|
+| Hierarchical Memory | No Core/Recall/Archival layers |
+| Branch Isolation | No memory inheritance between nodes |
+| LLM Compression | No intelligent content compression |
+| FTS5 Search | No full-text search of archived content |
+| Resource Tracking | No resource usage persistence |
+| Final Memory Export | No `final_memory_for_paper.*` files |
+| SQLite Persistence | No `memory/memory.sqlite` |
+
+### Context management without MemGPT
+
+**Critical**: Without MemGPT, there is **no context budget management**.
+
+- Idea descriptions, task descriptions, and phase summaries are injected
+  **as full text** into every prompt.
+- No truncation or compression is applied to the main context.
+- If the total prompt exceeds the LLM's context window, the API may:
+  - Return a `context_length_exceeded` error
+  - Silently truncate input (losing important information)
+
+### Truncation that still exists (independent of MemGPT)
+
+Some fixed truncation mechanisms operate regardless of MemGPT status:
+
+```python
+# treesearch/utils/response.py - Terminal output truncation
+def trim_long_string(string, threshold=50000, k=5000):
+    # Truncates to first k + last k chars when exceeding threshold
+
+# treesearch/utils/phase_execution.py - Execution log truncation
+# Limits log lines (default 500) and characters (default 100000)
+```
+
+These are **safety limits for execution results only**, not general context
+management. The main prompt content (idea, experiments, history) has no such
+protection without MemGPT.
+
+### When to enable MemGPT
+
+| Scenario | MemGPT Recommended? |
+|----------|---------------------|
+| Quick testing / debugging | Optional |
+| Short, simple experiments | Optional |
+| Complex multi-stage experiments | **Yes** |
+| Long-running research | **Yes** |
+| Paper generation | **Strongly recommended** |
+| LLM with limited context (e.g., <32K tokens) | **Required** |
+
+### Diagnostic: Checking context size
+
+Without MemGPT, you can monitor prompt sizes in the logs. If you see prompts
+approaching your LLM's context limit, enable MemGPT to prevent failures:
+
+```bash
+python launch_scientist_bfts.py \
+  --enable_memgpt \
+  --memory_core_max_chars 16000 \
+  --memory_retrieval_k 8 \
+  ...
+```

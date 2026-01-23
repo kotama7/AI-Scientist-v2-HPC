@@ -4,7 +4,7 @@ Keep edits minimal and localized. Do not change algorithms, I/O, or performance 
 If multiple files are provided, update only the entrypoint or the file that performs randomness.
 
 Language guidance:
-- Python: seed random, numpy, and torch (and torch.cuda if available) before any stochastic work.
+- Python: seed random and numpy before any stochastic work. If torch is used, also seed torch (and torch.cuda if available). If other frameworks (e.g., cupy, tensorflow) are used, seed them accordingly.
 - C/C++: seed std::mt19937 and std::srand before any stochastic work; use std::getenv and std::strtoul for parsing.
 
 Response format: return a JSON object with key "files" (list). Each entry must be {"path": "...", "content": "..."}.

@@ -12,13 +12,13 @@
    If nothing is found, raise FileNotFoundError listing the attempted paths and patterns.
 2. Extract metrics for each dataset. If multiple .npy files are found, iterate over all and use the filename stem as the dataset name. Make sure to refer to the original code to understand the structure of the data.
 3. Always print the name of the dataset before printing the metrics
-4. Always print the name of the metric before printing the value by specifying the metric name clearly. Avoid vague terms like 'train,' 'val,' or 'test.' Instead, use precise labels such as 'train accuracy,' 'validation loss,' or 'test F1 score,' etc.
+4. Always print the name of the metric before printing the value by specifying the metric name clearly. Avoid vague terms like 'run1,' 'result,' or 'output.' Instead, use precise labels such as 'execution time (s),' 'throughput (GFLOPS),' 'convergence error,' 'final accuracy,' etc.
 5. You only need to print the best or final value for each metric for each dataset
 6. DO NOT CREATE ANY PLOTS
 
 CRITICAL - Handling missing or empty metrics:
   - NEVER output fallback/placeholder metrics like "parsed_records_count", "record_count", "num_records", or similar metadata when no real performance metrics are found.
-  - If no meaningful performance metrics (e.g., MFLOPS, accuracy, loss, latency, throughput, F1 score, etc.) can be extracted from the data, raise a ValueError with a descriptive message explaining what was expected vs. what was found.
+  - If no meaningful performance metrics (e.g., MFLOPS, GFLOPS, execution time, latency, throughput, convergence error, accuracy, etc.) can be extracted from the data, raise a ValueError with a descriptive message explaining what was expected vs. what was found.
   - Do NOT print "metric: ... value: 0" as a fallback when data is empty or unparseable. This causes the system to incorrectly believe metrics were successfully extracted.
   - Examples of INVALID fallback outputs (DO NOT DO THIS):
       print("metric: parsed_records_count value: 0")  # WRONG

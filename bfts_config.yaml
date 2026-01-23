@@ -26,6 +26,9 @@ exec:
   phase1_max_steps: 12
   # プロンプトのログ記録を有効化
   log_prompts: true
+  # 各コード実行のタイムアウト時間（秒）
+  timeout: 1800
+
 
 # メモリ・記憶管理の設定
 memory:
@@ -78,7 +81,7 @@ memory:
     idea_summary: 9600
     idea_section_limit: 4800  # Per-section limit for idea summary bullets.
     phase0_summary: 5000
-    archival_snippet: 3000
+    archival_snippet: 6000
     results: 4000
 
   # Writeup用メモリ制限（final_writeup_memory.json生成時）
@@ -88,6 +91,18 @@ memory:
   writeup_core_value_max_chars: 5000  # core_memoryのvalue最大文字数
   writeup_recall_text_max_chars: 3000 # recall_memoryのtext最大文字数
   writeup_archival_text_max_chars: 4000 # archival_memoryのtext最大文字数
+
+  # Memory Pressure Management (MemGPT-style)
+  # メモリ圧力管理（MemGPTスタイル）
+  auto_consolidate: true                 # 自動メモリ統合を有効化
+  consolidation_trigger: high            # 統合をトリガーする圧力レベル (medium/high/critical)
+  recall_consolidation_threshold: 1.5    # recall_max_events * threshold を超えると統合
+
+  # メモリ圧力の閾値設定
+  pressure_thresholds:
+    medium: 0.7    # 70%使用で中程度の圧力
+    high: 0.85     # 85%使用で高い圧力
+    critical: 0.95 # 95%使用で危機的な圧力
 
 # レポート生成を有効化
 generate_report: True

@@ -89,6 +89,137 @@
             background-color: #e94560;
             border-color: #e94560;
         }
+        /* Split-phase navigation */
+        .split-phase-nav {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #16213e;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+        .split-phase-nav.hidden {
+            display: none;
+        }
+        .split-phase-label {
+            font-size: 0.85rem;
+            color: #888;
+            margin-right: 10px;
+        }
+        .split-phase-arrow {
+            width: 36px;
+            height: 36px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1.2rem;
+            background-color: #1a1a2e;
+            color: #eee;
+            border: 1px solid #333;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .split-phase-arrow:hover:not(:disabled) {
+            background-color: #e94560;
+            border-color: #e94560;
+        }
+        .split-phase-arrow:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        .split-phase-current {
+            flex: 1;
+            text-align: center;
+            padding: 8px 16px;
+            background-color: #0f0f23;
+            border-radius: 4px;
+            min-width: 200px;
+        }
+        .split-phase-name {
+            font-weight: bold;
+            color: #4dabf7;
+            font-size: 1rem;
+        }
+        .split-phase-status {
+            font-size: 0.75rem;
+            margin-top: 4px;
+        }
+        .split-phase-status.success {
+            color: #69db7c;
+        }
+        .split-phase-status.failed {
+            color: #ff6b6b;
+        }
+        .split-phase-status.pending {
+            color: #888;
+        }
+        .split-phase-timeline {
+            display: flex;
+            gap: 4px;
+            margin-left: 15px;
+        }
+        .timeline-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #333;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .timeline-dot.active {
+            background-color: #4dabf7;
+            transform: scale(1.3);
+        }
+        .timeline-dot.success {
+            background-color: #69db7c;
+        }
+        .timeline-dot.failed {
+            background-color: #ff6b6b;
+        }
+        .timeline-dot.memory {
+            background-color: #b197fc;
+        }
+        .timeline-dot:hover {
+            transform: scale(1.3);
+        }
+        /* Memory injection display */
+        .memory-injection-card {
+            background-color: #1a1a2e;
+            border-left: 3px solid #b197fc;
+            border-radius: 4px;
+            padding: 12px 15px;
+            margin-bottom: 10px;
+        }
+        .memory-injection-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .memory-injection-task {
+            color: #b197fc;
+            font-weight: bold;
+        }
+        .memory-injection-size {
+            color: #888;
+            font-size: 0.85rem;
+        }
+        .memory-injection-content {
+            background-color: #0f0f23;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            color: #ccc;
+        }
         .memory-section {
             margin-bottom: 25px;
             background-color: #16213e;
@@ -141,6 +272,10 @@
             background-color: #0f0f23;
             border-radius: 4px;
             border-left: 3px solid #69db7c;
+        }
+        .event-item.memory-injection {
+            border-left-color: #b197fc;
+            background-color: #1a1525;
         }
         .event-kind {
             color: #69db7c;
@@ -262,6 +397,16 @@
             <div class="node-info" id="current-node-info">Click a node to view memory state</div>
         </div>
         <div class="phase-buttons" id="phase-buttons"></div>
+        <div class="split-phase-nav hidden" id="split-phase-nav">
+            <span class="split-phase-label">実行フェーズ:</span>
+            <button class="split-phase-arrow" id="prev-phase" onclick="navigateSplitPhase(-1)">◀</button>
+            <div class="split-phase-current">
+                <div class="split-phase-name" id="current-phase-name">-</div>
+                <div class="split-phase-status" id="current-phase-status">-</div>
+            </div>
+            <button class="split-phase-arrow" id="next-phase" onclick="navigateSplitPhase(1)">▶</button>
+            <div class="split-phase-timeline" id="phase-timeline"></div>
+        </div>
         <div id="memory-content"></div>
     </div>
 
@@ -272,6 +417,47 @@ let nodes = [];
 let edges = [];
 let selectedNodeIndex = null;
 let selectedPhase = null;
+let currentSplitPhaseIndex = -1;
+let nodeSplitPhases = [];
+
+// Split-phase execution order (matches the order in parallel_agent.py)
+const SPLIT_PHASE_ORDER = [
+    { kind: 'node_created', label: 'Node Created', description: 'ノード初期化' },
+    { kind: 'memory_injected', label: 'Memory Inject', description: 'メモリ注入', isMemory: true },
+    { kind: 'phase1_complete', label: 'Phase 1', description: 'ダウンロード/インストール完了' },
+    { kind: 'phase1_failed', label: 'Phase 1', description: 'ダウンロード/インストール失敗', isError: true },
+    { kind: 'coding_complete', label: 'Coding', description: 'ファイル生成完了' },
+    { kind: 'coding_failed', label: 'Coding', description: 'ファイル生成失敗', isError: true },
+    { kind: 'compile_complete', label: 'Compile', description: 'コンパイル完了' },
+    { kind: 'compile_failed', label: 'Compile', description: 'コンパイル失敗', isError: true },
+    { kind: 'run_complete', label: 'Run', description: '実行完了' },
+    { kind: 'run_failed', label: 'Run', description: '実行失敗', isError: true },
+    { kind: 'node_result', label: 'Node Result', description: 'ノード結果' },
+    { kind: 'metrics_extracted', label: 'Metrics', description: 'メトリクス抽出完了' },
+    { kind: 'metrics_failed', label: 'Metrics', description: 'メトリクス抽出失敗', isError: true },
+    { kind: 'node_summary', label: 'Summary', description: 'ノードサマリー生成' },
+];
+
+// Memory injection task hints to phase mapping
+const MEMORY_TASK_HINTS = {
+    'draft': 'Phase 2 Draft',
+    'debug': 'Phase 2 Debug',
+    'improve': 'Phase 2 Improve',
+    'phase1_iterative': 'Phase 1 Iterative',
+    'phase2_draft': 'Phase 2 Draft (Split)',
+    'phase2_debug': 'Phase 2 Debug (Split)',
+    'phase2_improve': 'Phase 2 Improve (Split)',
+    'phase2_coding': 'Phase 2 Coding',
+    'phase2_hyperparam': 'Phase 2 Hyperparam',
+    'phase2_ablation': 'Phase 2 Ablation',
+    'parse_metrics': 'Metrics Parsing',
+    'metrics_extraction': 'Metrics Extraction',
+    'execution_review': 'Execution Review',
+    'hyperparam_node': 'Hyperparam Tuning',
+    'ablation_node': 'Ablation Study',
+    'best_node_selection': 'Best Node Selection',
+    'journal_summary': 'Journal Summary',
+};
 
 class Node {
     constructor(x, y, index, data) {
@@ -282,6 +468,7 @@ class Node {
         this.visible = true;
         this.selected = false;
         this.radius = 18;
+        this.isVirtual = data.is_virtual || data.node_uid === 'root' || data.node_uid === 'none_root';
     }
 
     render(p5) {
@@ -296,6 +483,9 @@ class Node {
 
         if (this.selected) {
             p5.fill(233, 69, 96);
+        } else if (this.isVirtual) {
+            // Virtual node: gray color
+            p5.fill(100, 100, 100);
         } else {
             p5.fill(77, 171, 247);
         }
@@ -304,7 +494,8 @@ class Node {
         p5.fill(255);
         p5.textAlign(p5.CENTER, p5.CENTER);
         p5.textSize(10);
-        p5.text(this.index, 0, 0);
+        // Show "V" for virtual nodes instead of index
+        p5.text(this.isVirtual ? 'V' : this.index, 0, 0);
 
         p5.pop();
     }
@@ -409,18 +600,41 @@ function createSketch() {
 function selectNode(index) {
     selectedNodeIndex = index;
     selectedPhase = null;
+    currentSplitPhaseIndex = -1;
+    nodeSplitPhases = [];
 
     for (let i = 0; i < nodes.length; i++) {
         nodes[i].selected = (i === index);
     }
 
     const nodeData = memoryData.nodes[index];
+    const isVirtual = nodeData.is_virtual || nodeData.node_uid === 'root' || nodeData.node_uid === 'none_root';
 
-    document.getElementById('current-node-info').innerHTML =
-        `Node ${index} | Branch: ${nodeData.branch_id.substring(0, 8)}... | UID: ${nodeData.node_uid || 'root'}`;
+    // Display node info with virtual node indicator
+    if (isVirtual) {
+        document.getElementById('current-node-info').innerHTML =
+            `<span style="color: #888;">Virtual Node (ツリールート) | Branch: ${nodeData.branch_id.substring(0, 8)}...</span>`;
+    } else {
+        document.getElementById('current-node-info').innerHTML =
+            `Node ${index} | Branch: ${nodeData.branch_id.substring(0, 8)}... | UID: ${nodeData.node_uid || 'unknown'}`;
+    }
 
     const phaseContainer = document.getElementById('phase-buttons');
     phaseContainer.innerHTML = '';
+
+    // For virtual nodes, show message and hide phase buttons
+    if (isVirtual) {
+        document.getElementById('split-phase-nav').classList.add('hidden');
+        document.getElementById('memory-content').innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #888;">
+                <div style="font-size: 2rem; margin-bottom: 15px;">🌳</div>
+                <div style="font-size: 1.1rem; margin-bottom: 10px;">Virtual Node</div>
+                <div>このノードはツリー構造のルートノードです。</div>
+                <div>実験データを持つ子ノードを選択してください。</div>
+            </div>
+        `;
+        return;
+    }
 
     // Always add ALL button first
     const allBtn = document.createElement('button');
@@ -439,8 +653,229 @@ function selectNode(index) {
         }
     }
 
+    // Setup split-phase navigation
+    setupSplitPhaseNav(nodeData);
+
     // Default to ALL view
     selectPhase('ALL');
+}
+
+function setupSplitPhaseNav(nodeData) {
+    const ownEvents = nodeData.own_events || nodeData.events || [];
+
+    // Detect split-phase events present in this node
+    // For memory_injected events, collect all of them (there can be multiple)
+    nodeSplitPhases = [];
+    const memoryInjections = ownEvents.filter(e => e.kind === 'memory_injected');
+
+    for (const phaseInfo of SPLIT_PHASE_ORDER) {
+        if (phaseInfo.kind === 'memory_injected') {
+            // Add all memory injection events
+            for (const memEvent of memoryInjections) {
+                const taskHint = memEvent.task_hint || 'unknown';
+                const phaseName = MEMORY_TASK_HINTS[taskHint] || taskHint;
+                nodeSplitPhases.push({
+                    ...phaseInfo,
+                    event: memEvent,
+                    label: `💾 ${phaseName}`,
+                    description: `メモリ注入: ${phaseName}`,
+                    status: 'memory',
+                    taskHint: taskHint,
+                });
+            }
+        } else {
+            const matchingEvent = ownEvents.find(e => e.kind === phaseInfo.kind);
+            if (matchingEvent) {
+                nodeSplitPhases.push({
+                    ...phaseInfo,
+                    event: matchingEvent,
+                    status: phaseInfo.isError ? 'failed' : 'success'
+                });
+            }
+        }
+    }
+
+    const navContainer = document.getElementById('split-phase-nav');
+    const timeline = document.getElementById('phase-timeline');
+
+    // Show if there are any events (including memory injections)
+    const hasSplitPhaseEvents = nodeSplitPhases.some(p =>
+        p.kind.includes('phase1') || p.kind.includes('coding') ||
+        p.kind.includes('compile') || p.kind.includes('run_') ||
+        p.kind === 'memory_injected'
+    );
+
+    if (hasSplitPhaseEvents && nodeSplitPhases.length > 1) {
+        navContainer.classList.remove('hidden');
+
+        // Build timeline dots
+        timeline.innerHTML = nodeSplitPhases.map((phase, idx) => {
+            const statusClass = phase.status || 'pending';
+            return `<div class="timeline-dot ${statusClass}"
+                        onclick="selectSplitPhase(${idx})"
+                        title="${phase.label}: ${phase.description}"></div>`;
+        }).join('');
+
+        // Start at first phase
+        currentSplitPhaseIndex = 0;
+        updateSplitPhaseDisplay();
+    } else {
+        navContainer.classList.add('hidden');
+    }
+}
+
+function navigateSplitPhase(direction) {
+    const newIndex = currentSplitPhaseIndex + direction;
+    if (newIndex >= 0 && newIndex < nodeSplitPhases.length) {
+        selectSplitPhase(newIndex);
+    }
+}
+
+function selectSplitPhase(index) {
+    currentSplitPhaseIndex = index;
+    updateSplitPhaseDisplay();
+    displaySplitPhaseMemory();
+}
+
+function updateSplitPhaseDisplay() {
+    if (currentSplitPhaseIndex < 0 || currentSplitPhaseIndex >= nodeSplitPhases.length) return;
+
+    const phase = nodeSplitPhases[currentSplitPhaseIndex];
+
+    document.getElementById('current-phase-name').textContent = phase.label;
+    const statusEl = document.getElementById('current-phase-status');
+    statusEl.textContent = phase.description;
+    statusEl.className = 'split-phase-status ' + (phase.status || 'pending');
+
+    // Update arrow buttons
+    document.getElementById('prev-phase').disabled = currentSplitPhaseIndex === 0;
+    document.getElementById('next-phase').disabled = currentSplitPhaseIndex === nodeSplitPhases.length - 1;
+
+    // Update timeline dots
+    const dots = document.querySelectorAll('.timeline-dot');
+    dots.forEach((dot, idx) => {
+        dot.classList.toggle('active', idx === currentSplitPhaseIndex);
+    });
+}
+
+function displaySplitPhaseMemory() {
+    if (currentSplitPhaseIndex < 0) return;
+
+    const nodeData = memoryData.nodes[selectedNodeIndex];
+    const currentPhase = nodeSplitPhases[currentSplitPhaseIndex];
+
+    // Get all events up to and including current phase
+    const ownEvents = nodeData.own_events || nodeData.events || [];
+    const currentPhaseIdx = SPLIT_PHASE_ORDER.findIndex(p => p.kind === currentPhase.kind);
+
+    // Filter events: show only events that occurred up to this phase
+    const phaseKindsUpToCurrent = SPLIT_PHASE_ORDER
+        .slice(0, currentPhaseIdx + 1)
+        .map(p => p.kind);
+
+    const visibleEvents = ownEvents.filter(e => phaseKindsUpToCurrent.includes(e.kind));
+
+    // Render memory state at this phase
+    const container = document.getElementById('memory-content');
+
+    const ownCoreKV = nodeData.own_core_kv || nodeData.core_kv || [];
+    const ownArchival = nodeData.own_archival || nodeData.archival || [];
+    const inheritedCoreKV = nodeData.inherited_core_kv || [];
+    const inheritedEvents = nodeData.inherited_events || [];
+    const inheritedArchival = nodeData.inherited_archival || [];
+    const ancestors = nodeData.ancestors || [];
+
+    let html = '';
+
+    // Phase indicator with different style for memory injection
+    const phaseColor = currentPhase.kind === 'memory_injected' ? '#b197fc' : '#4dabf7';
+    html += `<div style="background: #1a1a2e; padding: 10px 15px; border-radius: 8px; margin-bottom: 15px; border-left: 3px solid ${phaseColor};">
+        <strong style="color: ${phaseColor};">📍 ${currentPhase.label}</strong>
+        <span style="color: #888; margin-left: 10px;">${currentPhase.description}</span>
+        <span style="color: #666; margin-left: 10px;">
+            (${currentSplitPhaseIndex + 1}/${nodeSplitPhases.length} フェーズ)
+        </span>
+    </div>`;
+
+    // If this is a memory injection event, show the injected memory details
+    if (currentPhase.kind === 'memory_injected' && currentPhase.event) {
+        const memEvent = currentPhase.event;
+        const taskHint = memEvent.task_hint || currentPhase.taskHint || 'unknown';
+        const memorySize = memEvent.memory_size || 0;
+        const summary = memEvent.summary || '';
+
+        // Extract memory content from summary (after the "---" line)
+        const contentMatch = summary.split('---\n');
+        const memoryContent = contentMatch.length > 1 ? contentMatch[1] : summary;
+
+        html += `<div class="memory-injection-card">
+            <div class="memory-injection-header">
+                <span class="memory-injection-task">💾 注入されたメモリ: ${MEMORY_TASK_HINTS[taskHint] || taskHint}</span>
+                <span class="memory-injection-size">${memorySize.toLocaleString()} 文字</span>
+            </div>
+            <div class="memory-injection-content">${escapeHtml(memoryContent)}</div>
+        </div>`;
+    }
+
+    // Own data at this phase
+    html += '<div class="data-group"><div class="data-group-header">このフェーズまでのデータ</div>';
+
+    html += createSection(
+        'Working Context (Core KV)',
+        renderCoreKV(ownCoreKV),
+        ownCoreKV.length,
+        true
+    );
+
+    html += createSection(
+        'Recall Storage (Events)',
+        renderEvents(visibleEvents),
+        visibleEvents.length,
+        true
+    );
+
+    // Filter archival by events up to this phase (approximate by tags)
+    html += createSection(
+        'Archive Storage',
+        renderArchival(ownArchival),
+        ownArchival.length,
+        true
+    );
+
+    html += '</div>';
+
+    // Inherited data
+    const hasInherited = inheritedCoreKV.length + inheritedEvents.length + inheritedArchival.length > 0;
+
+    if (hasInherited) {
+        html += '<div class="data-group"><div class="data-group-header inherited">継承されたデータ（祖先ノードから）</div>';
+        html += renderAncestorChain(ancestors);
+
+        html += createSection(
+            'Working Context (Core KV)',
+            renderCoreKV(inheritedCoreKV, true),
+            inheritedCoreKV.length,
+            false
+        );
+
+        html += createSection(
+            'Recall Storage (Events)',
+            renderEvents(inheritedEvents, true),
+            inheritedEvents.length,
+            false
+        );
+
+        html += createSection(
+            'Archive Storage',
+            renderArchival(inheritedArchival, true),
+            inheritedArchival.length,
+            false
+        );
+
+        html += '</div>';
+    }
+
+    container.innerHTML = html;
 }
 
 function selectPhase(phase) {
@@ -509,16 +944,22 @@ function renderEvents(items, isInherited = false) {
     if (!items || items.length === 0) return '';
     const inheritedClass = isInherited ? 'inherited' : '';
 
-    return items.map(item => `
-        <div class="event-item ${inheritedClass}">
-            <div class="event-kind">${escapeHtml(item.kind)}</div>
+    return items.map(item => {
+        const isMemoryInjection = item.kind === 'memory_injected';
+        const kindClass = isMemoryInjection ? 'memory-injection' : '';
+        const taskHint = item.task_hint ? ` (${MEMORY_TASK_HINTS[item.task_hint] || item.task_hint})` : '';
+        const memorySize = item.memory_size ? ` [${item.memory_size.toLocaleString()} chars]` : '';
+
+        return `
+        <div class="event-item ${inheritedClass} ${kindClass}">
+            <div class="event-kind" ${isMemoryInjection ? 'style="color: #b197fc;"' : ''}>${escapeHtml(item.kind)}${taskHint}${memorySize}</div>
             <div class="event-text">${escapeHtml(item.text)}</div>
             <div class="event-meta">
                 Phase: ${item.phase || 'N/A'} |
                 Tags: ${(item.tags || []).join(', ')}
             </div>
         </div>
-    `).join('');
+    `}).join('');
 }
 
 function renderArchival(items, isInherited = false) {

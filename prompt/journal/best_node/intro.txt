@@ -1,2 +1,1 @@
-You are an experienced {persona} evaluating different implementations of an experiment to select the best one. You should consider all aspects including performance metrics, training dynamics, generated plots quality.
-
+You are an experienced {persona} evaluating different experimental variants to select the best one. Consider overall performance, measurement trends over time, and the clarity/quality of generated plots.

@@ -7,6 +7,10 @@ PromptType = str | int | float | bool | dict | list
 FunctionCallType = dict
 OutputType = str | FunctionCallType
 
+# Known multi-modal message types for LLM APIs (e.g., OpenAI, Anthropic)
+# Used to distinguish actual multi-modal content from arbitrary dicts with "type" keys
+MULTIMODAL_TYPES = {"text", "image", "image_url", "tool_use", "tool_result"}
+
 
 import backoff
 import logging
@@ -63,8 +67,8 @@ def compile_prompt_to_md(prompt: PromptType, _header_depth: int = 1) -> str:
             # Handle empty list case
             if not prompt:
                 return ""
-            # Special handling for multi-modal messages
-            if all(isinstance(item, dict) and "type" in item for item in prompt):
+            # Special handling for multi-modal messages (e.g., [{"type": "text", ...}, {"type": "image", ...}])
+            if all(isinstance(item, dict) and item.get("type") in MULTIMODAL_TYPES for item in prompt):
                 # For multi-modal messages, just pass through without modification
                 return prompt
 
@@ -79,8 +83,9 @@ def compile_prompt_to_md(prompt: PromptType, _header_depth: int = 1) -> str:
                 raise
 
         if isinstance(prompt, dict):
-            # Check if this is a single multi-modal message
-            if "type" in prompt:
+            # Check if this is a single multi-modal message (e.g., {"type": "text", "text": "..."})
+            # Only pass through known multi-modal types to avoid false positives with arbitrary dicts
+            if prompt.get("type") in MULTIMODAL_TYPES:
                 return prompt
 
             # Regular dict processing

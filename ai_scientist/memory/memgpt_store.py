@@ -129,21 +129,23 @@ def _compress_with_llm(
     prompt_template: str | None = None,
     use_cache: bool = True,
     max_iterations: int = 1,
+    memory_context: str = "",
 ) -> str:
     """
     Compress text using LLM to fit within max_chars while preserving key information.
     Falls back to simple truncation on errors or if LLM is not available.
-    
+
     Args:
         text: Original text to compress
         max_chars: Target maximum character count
         context_hint: Description of what the text represents (e.g., "idea summary", "phase0 config")
         client: LLM client (optional, will be created if not provided)
         model: LLM model name (optional, defaults to gpt-4o-mini)
-        prompt_template: Prompt template string with {text}, {max_chars}, {current_chars}, {context_hint} placeholders
+        prompt_template: Prompt template string with {text}, {max_chars}, {current_chars}, {context_hint}, {memory_context} placeholders
         use_cache: Whether to cache compression results
         max_iterations: Maximum number of compression attempts
-    
+        memory_context: Optional experiment context from memory (research goals, config)
+
     Returns:
         Compressed text fitting within max_chars
     """
@@ -151,14 +153,14 @@ def _compress_with_llm(
         return ""
     if len(text) <= max_chars:
         return text
-    
-    # Check cache
-    cache_key = (sha256(text.encode()).hexdigest()[:16], max_chars, context_hint)
+
+    # Check cache (include memory_context in cache key for context-aware caching)
+    cache_key = (sha256(text.encode()).hexdigest()[:16], max_chars, context_hint, memory_context[:100] if memory_context else "")
     if use_cache and cache_key in _compression_cache:
         cached = _compression_cache[cache_key]
         if len(cached) <= max_chars:
             return cached
-    
+
     # Fallback if no client/model provided
     if client is None or model is None:
         return _truncate(text, max_chars)
@@ -170,24 +172,32 @@ def _compress_with_llm(
             prompt_template = (
                 "Compress the following {context_hint} text to fit within {max_chars} characters. "
                 "Preserve key information, facts, and metrics. Output only the compressed text.\n\n"
+                "{memory_context_section}"
                 "Text:\n{text}"
             )
-    
+
     try:
         # Import here to avoid circular dependency
         from ai_scientist.llm import get_response_from_llm
-        
+
         current_text = text
         for i in range(max_iterations):
             # If it already fits, break
             if len(current_text) <= max_chars:
                 break
-                
+
+            # Build memory context section for prompt
+            memory_context_section = ""
+            if memory_context:
+                memory_context_section = f"Experiment Context:\n{memory_context}\n\n"
+
             prompt = prompt_template.format(
                 text=current_text,
                 max_chars=max_chars,
                 current_chars=len(current_text),
                 context_hint=context_hint,
+                memory_context=memory_context,
+                memory_context_section=memory_context_section,
             )
             
             system_message = "You are a text compression assistant. Output only the compressed text, no explanations."
@@ -565,6 +575,21 @@ def _summarize_phase0(
             cpu_info_items = _extract_cpu_info(env_ctx.get("cpu_info", ""))
             items.extend(cpu_info_items)
 
+            # Extract CPU governor
+            cpu_governor = env_ctx.get("cpu_governor", "")
+            if cpu_governor and cpu_governor != "NA":
+                items.append(f"cpu_governor={cpu_governor}")
+
+            # Extract NUMA config (summarized)
+            numa_config = env_ctx.get("numa_config", "")
+            if numa_config and numa_config != "NA" and isinstance(numa_config, str):
+                # Just extract key NUMA info
+                numa_lines = numa_config.split("\n")
+                for line in numa_lines[:5]:
+                    if "node" in line.lower() or "cpu" in line.lower():
+                        items.append(f"numa={line.strip()}")
+                        break
+
             # Extract OS info
             os_info = _extract_os_info(env_ctx.get("os_release", ""))
             if os_info:
@@ -579,6 +604,26 @@ def _summarize_phase0(
             container = env_ctx.get("container_runtime", "")
             if container:
                 items.append(f"container={container}")
+
+            # Container digest
+            container_digest = env_ctx.get("container_digest", "")
+            if container_digest and container_digest != "NA":
+                items.append(f"container_digest={container_digest[:20]}...")
+
+            # Parallel env vars (summarized)
+            parallel_env_vars = env_ctx.get("parallel_env_vars", "")
+            if parallel_env_vars and parallel_env_vars != "NA" and parallel_env_vars != "none":
+                # Extract key variables
+                for line in parallel_env_vars.split("\n"):
+                    line = line.strip()
+                    if line.startswith("OMP_NUM_THREADS="):
+                        items.append(line)
+                    elif line.startswith("OMP_PROC_BIND="):
+                        items.append(line)
+                    elif line.startswith("MKL_NUM_THREADS="):
+                        items.append(line)
+                    elif line.startswith("OPENBLAS_NUM_THREADS="):
+                        items.append(line)
     if command_str:
         items.append(f"command={command_str}")
     if not items:
@@ -661,6 +706,19 @@ class MemoryManager:
         self.writeup_recall_text_max_chars = int(_cfg_get(self.config, "writeup_recall_text_max_chars", 300))
         self.writeup_archival_text_max_chars = int(_cfg_get(self.config, "writeup_archival_text_max_chars", 400))
 
+        # Memory pressure management settings
+        pressure_thresholds_cfg = _cfg_get(self.config, "pressure_thresholds", {}) or {}
+        self.pressure_thresholds = {
+            "medium": float(_cfg_get(pressure_thresholds_cfg, "medium", 0.7)),
+            "high": float(_cfg_get(pressure_thresholds_cfg, "high", 0.85)),
+            "critical": float(_cfg_get(pressure_thresholds_cfg, "critical", 0.95)),
+        }
+        self.auto_consolidate = bool(_cfg_get(self.config, "auto_consolidate", True))
+        self.consolidation_trigger = str(_cfg_get(self.config, "consolidation_trigger", "high"))
+        self.recall_consolidation_threshold = float(
+            _cfg_get(self.config, "recall_consolidation_threshold", 1.5)
+        )  # Consolidate when recall_count > recall_max_events * threshold
+
         self._compression_client: Any = None
         self._compression_model_name: str | None = None
         
@@ -684,20 +742,79 @@ class MemoryManager:
         self._init_schema()
         self._fts_enabled = self._init_fts()
 
-    def _compress(self, text: str, max_chars: int, context_hint: str) -> str:
+    def _build_memory_context(self, branch_id: str | None, max_context_chars: int = 800) -> str:
+        """
+        Build memory context from core memory for enhanced compression.
+
+        Fetches idea_md_summary and phase0_summary from core memory to provide
+        experiment context during compression, helping the LLM preserve
+        information relevant to the research goals.
+
+        Args:
+            branch_id: Branch ID to fetch memory from
+            max_context_chars: Maximum characters for the context string
+
+        Returns:
+            Memory context string (may be empty if no relevant memory found)
+        """
+        if not branch_id:
+            return ""
+
+        context_parts = []
+
+        # Fetch idea summary (research goals)
+        try:
+            idea_summary = self.get_core(branch_id, "idea_md_summary", log_event=False)
+            if idea_summary:
+                # Truncate to reasonable size for context
+                truncated_idea = _truncate(idea_summary, max_context_chars // 2)
+                context_parts.append(f"Research Goal: {truncated_idea}")
+        except Exception as exc:
+            logger.debug("Failed to fetch idea_md_summary for compression context: %s", exc)
+
+        # Fetch phase0 summary (experiment configuration)
+        try:
+            phase0_summary = self.get_core(branch_id, "phase0_summary", log_event=False)
+            if phase0_summary:
+                truncated_phase0 = _truncate(phase0_summary, max_context_chars // 2)
+                context_parts.append(f"Experiment Config: {truncated_phase0}")
+        except Exception as exc:
+            logger.debug("Failed to fetch phase0_summary for compression context: %s", exc)
+
+        return "\n".join(context_parts)
+
+    def _compress(
+        self,
+        text: str,
+        max_chars: int,
+        context_hint: str,
+        *,
+        branch_id: str | None = None,
+    ) -> str:
         """
         Compress text using LLM if enabled, otherwise fall back to simple truncation.
-        
+
+        When branch_id is provided and LLM compression is enabled, fetches memory
+        context (idea_md_summary, phase0_summary) to help the LLM preserve
+        information relevant to the research goals.
+
         Args:
             text: Original text to compress
             max_chars: Target maximum character count
             context_hint: Description of what the text represents
-        
+            branch_id: Optional branch ID to fetch memory context from
+
         Returns:
             Compressed or truncated text fitting within max_chars
         """
         if not self.use_llm_compression or self._compression_client is None:
             return _truncate(text, max_chars)
+
+        # Build enhanced context with memory information
+        memory_context = ""
+        if branch_id:
+            memory_context = self._build_memory_context(branch_id)
+
         return _compress_with_llm(
             text=text,
             max_chars=max_chars,
@@ -707,6 +824,7 @@ class MemoryManager:
             prompt_template=self._compression_prompt_template,
             use_cache=True,
             max_iterations=self.max_compression_iterations,
+            memory_context=memory_context,
         )
 
     def _sanitize_detail_value(self, value: Any) -> Any:
@@ -792,10 +910,21 @@ class MemoryManager:
                 kind TEXT,
                 text TEXT,
                 tags TEXT,
-                created_at REAL
+                created_at REAL,
+                task_hint TEXT,
+                memory_size INTEGER
             )
             """
         )
+        # Migration: add task_hint and memory_size columns if they don't exist (for existing DBs)
+        try:
+            cur.execute("ALTER TABLE events ADD COLUMN task_hint TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        try:
+            cur.execute("ALTER TABLE events ADD COLUMN memory_size INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS archival (
@@ -1034,6 +1163,641 @@ class MemoryManager:
             self._set_core_meta(branch_id, "CoreDigest", importance=5, ttl=None)
         self._conn.commit()
 
+    # ==========================================================================
+    # Memory Pressure Management (MemGPT-style)
+    # ==========================================================================
+
+    def _count_events(self, branch_id: str, include_ancestors: bool = True) -> int:
+        """Count the number of recall events for a branch."""
+        if include_ancestors:
+            branch_ids = self._branch_chain(branch_id)
+        else:
+            branch_ids = [branch_id]
+        if not branch_ids:
+            return 0
+        placeholders = ",".join(["?"] * len(branch_ids))
+        row = self._conn.execute(
+            f"SELECT COUNT(*) as cnt FROM events WHERE branch_id IN ({placeholders})",
+            branch_ids,
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def _count_archival(self, branch_id: str, include_ancestors: bool = True) -> int:
+        """Count the number of archival entries for a branch."""
+        if include_ancestors:
+            branch_ids = self._branch_chain(branch_id)
+        else:
+            branch_ids = [branch_id]
+        if not branch_ids:
+            return 0
+        placeholders = ",".join(["?"] * len(branch_ids))
+        row = self._conn.execute(
+            f"SELECT COUNT(*) as cnt FROM archival WHERE branch_id IN ({placeholders})",
+            branch_ids,
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def _estimate_archival_chars(self, branch_id: str, include_ancestors: bool = True) -> int:
+        """Estimate total characters in archival memory for a branch."""
+        if include_ancestors:
+            branch_ids = self._branch_chain(branch_id)
+        else:
+            branch_ids = [branch_id]
+        if not branch_ids:
+            return 0
+        placeholders = ",".join(["?"] * len(branch_ids))
+        row = self._conn.execute(
+            f"SELECT SUM(LENGTH(text)) as total FROM archival WHERE branch_id IN ({placeholders})",
+            branch_ids,
+        ).fetchone()
+        return int(row["total"]) if row and row["total"] else 0
+
+    def _get_core_usage(self, branch_id: str) -> dict:
+        """Get core memory usage statistics."""
+        rows = self._conn.execute(
+            "SELECT key, value FROM core_kv WHERE branch_id=?",
+            (branch_id,),
+        ).fetchall()
+        entries = {row["key"]: row["value"] for row in rows}
+        used = _core_size(entries)
+        max_chars = self.core_max_chars
+        ratio = used / max_chars if max_chars > 0 else 0.0
+        return {
+            "used": used,
+            "max": max_chars,
+            "ratio": min(ratio, 1.0),
+            "entry_count": len(entries),
+        }
+
+    def check_memory_pressure(self, branch_id: str) -> dict:
+        """
+        Check memory pressure and return status with recommendations.
+
+        Memory pressure is calculated based on:
+        - Core memory usage vs core_max_chars
+        - Recall event count vs recall_max_events
+        - Archival memory size (informational)
+
+        Returns:
+            {
+                "pressure_level": "low" | "medium" | "high" | "critical",
+                "core_usage": {"used": int, "max": int, "ratio": float, "entry_count": int},
+                "recall_usage": {"count": int, "max": int, "ratio": float},
+                "archival_usage": {"count": int, "estimated_chars": int},
+                "recommendations": ["consolidate_recall", "evict_core", ...],
+                "overall_ratio": float,
+            }
+        """
+        if not branch_id:
+            return {
+                "pressure_level": "low",
+                "core_usage": {"used": 0, "max": self.core_max_chars, "ratio": 0.0, "entry_count": 0},
+                "recall_usage": {"count": 0, "max": self.recall_max_events, "ratio": 0.0},
+                "archival_usage": {"count": 0, "estimated_chars": 0},
+                "recommendations": [],
+                "overall_ratio": 0.0,
+            }
+
+        # Core memory usage
+        core_usage = self._get_core_usage(branch_id)
+
+        # Recall memory usage
+        recall_count = self._count_events(branch_id)
+        recall_max = self.recall_max_events
+        recall_ratio = recall_count / recall_max if recall_max > 0 else 0.0
+        recall_usage = {
+            "count": recall_count,
+            "max": recall_max,
+            "ratio": min(recall_ratio, 2.0),  # Can exceed 1.0
+        }
+
+        # Archival memory usage (informational)
+        archival_count = self._count_archival(branch_id)
+        archival_chars = self._estimate_archival_chars(branch_id)
+        archival_usage = {
+            "count": archival_count,
+            "estimated_chars": archival_chars,
+        }
+
+        # Calculate overall pressure (weighted average)
+        # Core memory is more critical, so weight it higher
+        core_weight = 0.6
+        recall_weight = 0.4
+        overall_ratio = (
+            core_usage["ratio"] * core_weight +
+            min(recall_usage["ratio"], 1.0) * recall_weight
+        )
+
+        # Determine pressure level
+        if overall_ratio >= self.pressure_thresholds["critical"]:
+            pressure_level = "critical"
+        elif overall_ratio >= self.pressure_thresholds["high"]:
+            pressure_level = "high"
+        elif overall_ratio >= self.pressure_thresholds["medium"]:
+            pressure_level = "medium"
+        else:
+            pressure_level = "low"
+
+        # Generate recommendations
+        recommendations = []
+        if recall_usage["ratio"] > 1.0:
+            recommendations.append("consolidate_recall")
+        if core_usage["ratio"] > self.pressure_thresholds["high"]:
+            recommendations.append("evict_core")
+        if core_usage["ratio"] > self.pressure_thresholds["medium"]:
+            recommendations.append("compress_core")
+        if recall_usage["ratio"] > self.pressure_thresholds["medium"]:
+            recommendations.append("summarize_recall")
+        if archival_count > 100:
+            recommendations.append("prune_archival")
+
+        result = {
+            "pressure_level": pressure_level,
+            "core_usage": core_usage,
+            "recall_usage": recall_usage,
+            "archival_usage": archival_usage,
+            "recommendations": recommendations,
+            "overall_ratio": round(overall_ratio, 3),
+        }
+
+        # Log the pressure check
+        self._log_memory_event(
+            "check_memory_pressure",
+            "pressure",
+            branch_id=branch_id,
+            details={
+                "pressure_level": pressure_level,
+                "overall_ratio": result["overall_ratio"],
+                "core_ratio": core_usage["ratio"],
+                "recall_ratio": recall_usage["ratio"],
+                "recommendations": recommendations,
+            },
+        )
+
+        return result
+
+    def _load_importance_prompt(self) -> str | None:
+        """Load importance evaluation prompt template from file."""
+        prompt_file = Path(__file__).parent.parent.parent / "prompt/config/memory/importance_evaluation.txt"
+        if not prompt_file.exists():
+            logger.warning("Importance evaluation prompt file not found: %s", prompt_file)
+            return None
+        try:
+            return prompt_file.read_text(encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to read importance evaluation prompt: %s", exc)
+            return None
+
+    def evaluate_importance_with_llm(
+        self,
+        items: list[dict],
+        context: str,
+        task_hint: str,
+    ) -> list[tuple[str, int, str]]:
+        """
+        Use LLM to evaluate importance of memory items for the current context.
+
+        Args:
+            items: List of memory items to evaluate, each with {"key": str, "value": str, "type": str}
+            context: Current task context description
+            task_hint: Hint about the current task/phase
+
+        Returns:
+            List of (item_key, importance_score, reason) tuples
+        """
+        if not items:
+            return []
+
+        # If LLM compression is not enabled, return default importance
+        if not self.use_llm_compression or self._compression_client is None:
+            return [(item.get("key", ""), 3, "default") for item in items]
+
+        prompt_template = self._load_importance_prompt()
+        if not prompt_template:
+            return [(item.get("key", ""), 3, "no_template") for item in items]
+
+        # Prepare items for evaluation (truncate values to reduce token usage)
+        eval_items = []
+        for item in items:
+            eval_items.append({
+                "key": item.get("key", ""),
+                "type": item.get("type", "unknown"),
+                "value_preview": _truncate(str(item.get("value", "")), 200),
+            })
+
+        items_json = json.dumps(eval_items, ensure_ascii=False, indent=2)
+        prompt = prompt_template.format(
+            context=context,
+            task_hint=task_hint,
+            items_json=items_json,
+        )
+
+        try:
+            from ai_scientist.llm import get_response_from_llm
+
+            response, _ = get_response_from_llm(
+                prompt=prompt,
+                client=self._compression_client,
+                model=self._compression_model_name,
+                system_message="You are a memory management assistant. Output only valid JSON.",
+                temperature=0.2,
+            )
+
+            if not response:
+                logger.warning("LLM returned empty response for importance evaluation")
+                return [(item.get("key", ""), 3, "empty_response") for item in items]
+
+            # Parse JSON response
+            response = response.strip()
+            # Handle markdown code blocks
+            if response.startswith("```"):
+                response = response.split("```")[1]
+                if response.startswith("json"):
+                    response = response[4:]
+                response = response.strip()
+
+            evaluations = json.loads(response)
+            results = []
+            key_to_eval = {e.get("key"): e for e in evaluations}
+
+            for item in items:
+                key = item.get("key", "")
+                eval_data = key_to_eval.get(key, {})
+                score = _coerce_importance(eval_data.get("score", 3))
+                reason = str(eval_data.get("reason", ""))[:100]
+                results.append((key, score, reason))
+
+            self._log_memory_event(
+                "evaluate_importance_with_llm",
+                "importance",
+                details={
+                    "item_count": len(items),
+                    "context_preview": _truncate(context, 100),
+                    "task_hint": task_hint,
+                    "results_count": len(results),
+                },
+            )
+
+            return results
+
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse LLM importance response: %s", exc)
+            return [(item.get("key", ""), 3, "parse_error") for item in items]
+        except Exception as exc:
+            logger.warning("LLM importance evaluation failed: %s", exc)
+            return [(item.get("key", ""), 3, "error") for item in items]
+
+    def _load_consolidation_prompt(self) -> str | None:
+        """Load consolidation prompt template from file."""
+        prompt_file = Path(__file__).parent.parent.parent / "prompt/config/memory/consolidation.txt"
+        if not prompt_file.exists():
+            logger.warning("Consolidation prompt file not found: %s", prompt_file)
+            return None
+        try:
+            return prompt_file.read_text(encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to read consolidation prompt: %s", exc)
+            return None
+
+    def _consolidate_with_llm(
+        self,
+        entries: list[dict],
+        context: str,
+        max_chars: int,
+    ) -> str:
+        """
+        Use LLM to consolidate multiple memory entries into a summary.
+
+        Args:
+            entries: List of memory entries to consolidate
+            context: Current task context
+            max_chars: Maximum characters for the consolidated summary
+
+        Returns:
+            Consolidated summary text
+        """
+        if not entries:
+            return ""
+
+        # Fallback to simple concatenation and truncation if LLM not available
+        if not self.use_llm_compression or self._compression_client is None:
+            combined = "\n".join(str(e.get("text", e.get("value", ""))) for e in entries)
+            return _truncate(combined, max_chars)
+
+        prompt_template = self._load_consolidation_prompt()
+        if not prompt_template:
+            combined = "\n".join(str(e.get("text", e.get("value", ""))) for e in entries)
+            return _truncate(combined, max_chars)
+
+        entries_json = json.dumps(entries, ensure_ascii=False, indent=2)
+        prompt = prompt_template.format(
+            context=context,
+            max_chars=max_chars,
+            entries_json=entries_json,
+        )
+
+        try:
+            from ai_scientist.llm import get_response_from_llm
+
+            response, _ = get_response_from_llm(
+                prompt=prompt,
+                client=self._compression_client,
+                model=self._compression_model_name,
+                system_message="You are a memory consolidation assistant. Output only the consolidated text.",
+                temperature=0.3,
+            )
+
+            if not response:
+                combined = "\n".join(str(e.get("text", e.get("value", ""))) for e in entries)
+                return _truncate(combined, max_chars)
+
+            return _truncate(response.strip(), max_chars)
+
+        except Exception as exc:
+            logger.warning("LLM consolidation failed: %s", exc)
+            combined = "\n".join(str(e.get("text", e.get("value", ""))) for e in entries)
+            return _truncate(combined, max_chars)
+
+    def consolidate_recall_events(
+        self,
+        branch_id: str,
+        max_age_hours: float | None = None,
+    ) -> int:
+        """
+        Consolidate older recall events by summarizing and moving to archival.
+
+        This method:
+        1. Finds recall events exceeding the recall_max_events limit
+        2. Groups related events by kind/phase
+        3. Creates consolidated summaries using LLM
+        4. Writes summaries to archival memory
+        5. Deletes the original events
+
+        Args:
+            branch_id: Branch ID to consolidate events for
+            max_age_hours: Optional age threshold (hours) for events to consolidate
+
+        Returns:
+            Number of events consolidated
+        """
+        if not branch_id:
+            return 0
+
+        branch_ids = self._branch_chain(branch_id)
+        if not branch_ids:
+            return 0
+
+        # Get all events for the branch chain
+        placeholders = ",".join(["?"] * len(branch_ids))
+        all_events = self._conn.execute(
+            f"""
+            SELECT id, branch_id, kind, text, tags, created_at
+            FROM events
+            WHERE branch_id IN ({placeholders})
+            ORDER BY created_at DESC
+            """,
+            branch_ids,
+        ).fetchall()
+
+        if not all_events:
+            return 0
+
+        # Keep the most recent events, consolidate the rest
+        threshold = int(self.recall_max_events * self.recall_consolidation_threshold)
+        if len(all_events) <= threshold:
+            return 0
+
+        # Events to keep (most recent)
+        events_to_keep = all_events[:self.recall_max_events]
+        # Events to consolidate (older ones)
+        events_to_consolidate = all_events[self.recall_max_events:]
+
+        if not events_to_consolidate:
+            return 0
+
+        # Group events by kind for better consolidation
+        event_groups: dict[str, list[dict]] = {}
+        for event in events_to_consolidate:
+            kind = event["kind"] or "general"
+            if kind not in event_groups:
+                event_groups[kind] = []
+            event_groups[kind].append({
+                "id": event["id"],
+                "kind": kind,
+                "text": event["text"],
+                "created_at": event["created_at"],
+            })
+
+        consolidated_count = 0
+        event_ids_to_delete = []
+
+        for kind, group_events in event_groups.items():
+            if not group_events:
+                continue
+
+            # Prepare entries for consolidation
+            entries = [
+                {
+                    "kind": e["kind"],
+                    "text": e["text"],
+                    "timestamp": e["created_at"],
+                }
+                for e in group_events
+            ]
+
+            # Create consolidated summary
+            context = f"recall events of type '{kind}'"
+            summary = self._consolidate_with_llm(
+                entries,
+                context,
+                max_chars=self.archival_max_chars,
+            )
+
+            if summary:
+                # Write consolidated summary to archival
+                time_range = ""
+                if group_events:
+                    oldest = min(e["created_at"] for e in group_events)
+                    newest = max(e["created_at"] for e in group_events)
+                    time_range = f" (from {oldest:.0f} to {newest:.0f})"
+
+                archival_text = (
+                    f"Consolidated recall events [{kind}]{time_range}:\n"
+                    f"Event count: {len(group_events)}\n\n"
+                    f"{summary}"
+                )
+
+                self._insert_archival(
+                    branch_id,
+                    archival_text,
+                    tags=[
+                        "RECALL_CONSOLIDATED",
+                        "AUTO_CONSOLIDATE",
+                        f"kind:{kind}",
+                        f"event_count:{len(group_events)}",
+                    ],
+                )
+
+            # Mark events for deletion
+            event_ids_to_delete.extend(e["id"] for e in group_events)
+            consolidated_count += len(group_events)
+
+        # Delete consolidated events
+        if event_ids_to_delete:
+            id_placeholders = ",".join(["?"] * len(event_ids_to_delete))
+            self._conn.execute(
+                f"DELETE FROM events WHERE id IN ({id_placeholders})",
+                event_ids_to_delete,
+            )
+            self._conn.commit()
+
+        self._log_memory_event(
+            "consolidate_recall_events",
+            "consolidation",
+            branch_id=branch_id,
+            details={
+                "total_events": len(all_events),
+                "events_kept": len(events_to_keep),
+                "events_consolidated": consolidated_count,
+                "groups_processed": len(event_groups),
+            },
+        )
+
+        return consolidated_count
+
+    def auto_consolidate_memory(
+        self,
+        branch_id: str,
+        pressure_level: str,
+        task_hint: str | None = None,
+    ) -> dict:
+        """
+        Automatically consolidate memory based on pressure level.
+
+        Actions based on pressure_level:
+        - medium: Evaluate core importance, compress low-priority items
+        - high: Consolidate recall events, evict low-importance core items
+        - critical: Aggressive consolidation, create digest summaries
+
+        Args:
+            branch_id: Branch ID to consolidate memory for
+            pressure_level: Current pressure level ("medium", "high", "critical")
+            task_hint: Optional hint about current task for context
+
+        Returns:
+            {
+                "actions_taken": list of actions performed,
+                "freed_chars": estimated characters freed,
+                "core_items_evicted": number of core items evicted,
+                "recall_events_consolidated": number of recall events consolidated,
+                "new_pressure_level": pressure level after consolidation,
+            }
+        """
+        if not branch_id:
+            return {
+                "actions_taken": [],
+                "freed_chars": 0,
+                "core_items_evicted": 0,
+                "recall_events_consolidated": 0,
+                "new_pressure_level": "low",
+            }
+
+        actions_taken = []
+        freed_chars = 0
+        core_items_evicted = 0
+        recall_events_consolidated = 0
+
+        context = task_hint or "research experiment"
+
+        # Step 1: Evaluate core memory importance (medium+ pressure)
+        if pressure_level in ("medium", "high", "critical"):
+            core_rows = self._conn.execute(
+                "SELECT key, value FROM core_kv WHERE branch_id=?",
+                (branch_id,),
+            ).fetchall()
+
+            if core_rows:
+                # Prepare items for importance evaluation
+                protected_keys = {
+                    RESOURCE_INDEX_KEY,
+                    RESOURCE_DIGEST_KEY,
+                    RESOURCE_INDEX_JSON_KEY,
+                    RESOURCE_USED_KEY,
+                    "idea_md_summary",
+                    "phase0_summary",
+                    "CoreDigest",
+                }
+                eval_items = [
+                    {"key": row["key"], "value": row["value"], "type": "core"}
+                    for row in core_rows
+                    if row["key"] not in protected_keys
+                ]
+
+                if eval_items:
+                    evaluations = self.evaluate_importance_with_llm(
+                        eval_items, context, task_hint or "memory_consolidation"
+                    )
+
+                    # Update importance values based on LLM evaluation
+                    for key, score, reason in evaluations:
+                        self._set_core_meta(branch_id, key, importance=score, ttl=None)
+                        if score <= 2 and pressure_level in ("high", "critical"):
+                            # Evict low-importance items
+                            value = next(
+                                (row["value"] for row in core_rows if row["key"] == key), ""
+                            )
+                            if value:
+                                freed_chars += len(value)
+                                self._insert_archival(
+                                    branch_id,
+                                    f"Core evicted (auto): {key}\n{value}\nReason: {reason}",
+                                    tags=["CORE_EVICT", "AUTO_CONSOLIDATE", f"core_key:{key}"],
+                                )
+                            self._delete_core_key(
+                                branch_id, key, reason="auto_consolidate", op_name="auto_evict"
+                            )
+                            core_items_evicted += 1
+
+                    actions_taken.append(f"evaluated_core_importance:{len(eval_items)}")
+                    if core_items_evicted > 0:
+                        actions_taken.append(f"evicted_core_items:{core_items_evicted}")
+
+        # Step 2: Consolidate recall events (high+ pressure)
+        if pressure_level in ("high", "critical"):
+            recall_consolidated = self.consolidate_recall_events(branch_id)
+            if recall_consolidated > 0:
+                recall_events_consolidated = recall_consolidated
+                actions_taken.append(f"consolidated_recall:{recall_consolidated}")
+
+        # Step 3: Aggressive consolidation for critical pressure
+        if pressure_level == "critical":
+            # Force core budget enforcement
+            self._enforce_core_budget(branch_id)
+            actions_taken.append("enforced_core_budget")
+
+        self._conn.commit()
+
+        # Check new pressure level
+        new_pressure = self.check_memory_pressure(branch_id)
+
+        result = {
+            "actions_taken": actions_taken,
+            "freed_chars": freed_chars,
+            "core_items_evicted": core_items_evicted,
+            "recall_events_consolidated": recall_events_consolidated,
+            "new_pressure_level": new_pressure["pressure_level"],
+        }
+
+        self._log_memory_event(
+            "auto_consolidate_memory",
+            "consolidation",
+            branch_id=branch_id,
+            phase=task_hint,
+            details=result,
+        )
+
+        return result
+
     def set_core(
         self,
         branch_id: str,
@@ -1171,6 +1935,8 @@ class MemoryManager:
         node_id: str | None = None,
         phase: str | None = None,
         skip_duplicate: bool = True,
+        task_hint: str | None = None,
+        memory_size: int | None = None,
     ) -> None:
         payload = _redact(str(text), self.redact_secrets)
         tag_list = _normalize_tags(tags)
@@ -1187,8 +1953,8 @@ class MemoryManager:
                 return
 
         self._conn.execute(
-            "INSERT INTO events (branch_id, kind, text, tags, created_at) VALUES (?, ?, ?, ?, ?)",
-            (branch_id, kind, payload, tags_json, _now_ts()),
+            "INSERT INTO events (branch_id, kind, text, tags, created_at, task_hint, memory_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (branch_id, kind, payload, tags_json, _now_ts(), task_hint, memory_size),
         )
         self._conn.commit()
         if log_event:
@@ -1210,6 +1976,16 @@ class MemoryManager:
                     "tags": tag_list,
                 },
             )
+
+        # Auto-consolidate recall events if overflow detected
+        if self.auto_consolidate:
+            recall_count = self._count_events(branch_id, include_ancestors=True)
+            overflow_threshold = int(self.recall_max_events * self.recall_consolidation_threshold)
+            if recall_count > overflow_threshold:
+                try:
+                    self.consolidate_recall_events(branch_id)
+                except Exception as exc:
+                    logger.warning("Auto-consolidation of recall events failed: %s", exc)
 
     def _insert_archival(
         self,
@@ -1402,6 +2178,8 @@ class MemoryManager:
         summary = str(payload.get("summary") or "")
         refs = payload.get("refs") or []
         phase = str(payload.get("phase") or "")
+        task_hint = payload.get("task_hint")
+        memory_size = payload.get("memory_size")
         tags = [
             "RECALL_EVENT",
             f"run_id:{payload.get('run_id')}" if payload.get("run_id") else None,
@@ -1418,6 +2196,8 @@ class MemoryManager:
             summary,
             tags=tag_list,
             log_event=False,
+            task_hint=task_hint,
+            memory_size=memory_size,
         )
         self._log_memory_event(
             "mem_recall_append",
@@ -2263,7 +3043,7 @@ class MemoryManager:
             core_snapshot = "No experimental results recorded."
 
         if not no_budget_limit:
-            core_snapshot = self._compress(core_snapshot, self.section_budgets["results"], "experimental results")
+            core_snapshot = self._compress(core_snapshot, self.section_budgets["results"], "experimental results", branch_id=best_branch)
 
         return core_snapshot
 
@@ -2847,12 +3627,12 @@ Return ONLY a valid JSON object, no additional text or formatting."""
                 if no_budget_limit:
                     method_changes.append(row["text"] or "")
                 else:
-                    method_changes.append(self._compress(row["text"] or "", 800, "method change note"))
+                    method_changes.append(self._compress(row["text"] or "", 800, "method change note", branch_id=best_branch))
             if kind == "node_result":
                 if no_budget_limit:
                     results_notes.append(row["text"] or "")
                 else:
-                    results_notes.append(self._compress(row["text"] or "", 800, "results note"))
+                    results_notes.append(self._compress(row["text"] or "", 800, "results note", branch_id=best_branch))
 
         # === Collect 3-tier memory from best branch (with limits and compression) ===
         # Core Memory (short-term / always-injected context) - all keys, compressed values
@@ -2873,7 +3653,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
                     value = row["value"] or ""
                     # Compress value if over limit (unless no_budget_limit)
                     if not no_budget_limit and len(value) > self.writeup_core_value_max_chars:
-                        value = self._compress(value, self.writeup_core_value_max_chars, f"core memory: {key}")
+                        value = self._compress(value, self.writeup_core_value_max_chars, f"core memory: {key}", branch_id=best_branch)
                     core_memory_data[key] = {
                         "value": value,
                         "importance": importance_map.get(key, 3),
@@ -2885,7 +3665,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         for row in recall_subset:
             text = row["text"] or ""
             if not no_budget_limit and len(text) > self.writeup_recall_text_max_chars:
-                text = self._compress(text, self.writeup_recall_text_max_chars, "recall event")
+                text = self._compress(text, self.writeup_recall_text_max_chars, "recall event", branch_id=best_branch)
             recall_memory_data.append({
                 "ts": row["created_at"],
                 "kind": row["kind"],
@@ -2905,7 +3685,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         for row in archival_memory_data:
             text = row.get("text", "") or ""
             if not no_budget_limit and len(text) > self.writeup_archival_text_max_chars:
-                text = self._compress(text, self.writeup_archival_text_max_chars, "archival entry")
+                text = self._compress(text, self.writeup_archival_text_max_chars, "archival entry", branch_id=best_branch)
             archival_memory_list.append({
                 "id": row.get("id"),
                 "text": text,
@@ -2917,7 +3697,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             "idea": {
                 "summary": idea_summary,
                 "path": str(idea_path) if idea_path and idea_path.exists() else "",
-                "content": idea_text if no_budget_limit else self._compress(idea_text or "", 4000, "idea content"),
+                "content": idea_text if no_budget_limit else self._compress(idea_text or "", 4000, "idea content", branch_id=best_branch),
             },
             "phase0_env": {
                 "summary": phase0_summary,

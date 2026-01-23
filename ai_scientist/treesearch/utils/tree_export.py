@@ -9,9 +9,10 @@ from pathlib import Path
 
 import numpy as np
 from igraph import Graph
-from ..journal import Journal
 
 from rich import print
+
+from ..journal import Journal
 
 
 def get_edges(journal: Journal, include_none_root: bool = False):
@@ -897,7 +898,7 @@ def _load_memory_database(db_path: Path) -> dict:
         })
 
     # Load events (Recall Storage)
-    cursor.execute("SELECT id, branch_id, kind, text, tags, created_at FROM events ORDER BY created_at")
+    cursor.execute("SELECT id, branch_id, kind, text, tags, created_at, task_hint, memory_size FROM events ORDER BY created_at")
     events = defaultdict(list)
     for row in cursor.fetchall():
         tags = parse_tags(row["tags"])
@@ -910,6 +911,8 @@ def _load_memory_database(db_path: Path) -> dict:
             "tags": tags,
             "phase": phase,
             "created_at": row["created_at"],
+            "task_hint": row["task_hint"],
+            "memory_size": row["memory_size"],
         }
         events[row["branch_id"]].append(event_data)
 
@@ -1139,8 +1142,18 @@ def _collect_inherited_data(
     events: dict,
     archival: dict,
     branch_to_index: dict,
+    exclude_virtual_root: bool = False,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     """Collect inherited data from ancestors.
+
+    Args:
+        branch_id: The branch to collect ancestors for.
+        branches: List of all branches.
+        core_kv: Core key-value data by branch_id.
+        events: Events data by branch_id.
+        archival: Archival data by branch_id.
+        branch_to_index: Mapping of branch_id to index.
+        exclude_virtual_root: If True, exclude data from virtual root nodes (node_uid == "root").
 
     Returns:
         Tuple of (inherited_core_kv, inherited_events, inherited_archival, ancestors_info)
@@ -1158,13 +1171,22 @@ def _collect_inherited_data(
     # Collect data from each ancestor (root to parent order)
     for ancestor in ancestors:
         ancestor_id = ancestor["id"]
+        ancestor_node_uid = ancestor.get("node_uid")
         ancestor_index = branch_to_index.get(ancestor_id, -1)
+
+        # Skip virtual root's data if requested
+        is_virtual = ancestor_node_uid == "root" or ancestor_node_uid == "none_root"
 
         ancestors_info.append({
             "index": ancestor_index,
             "branch_id": ancestor_id,
-            "node_uid": ancestor.get("node_uid") or ancestor_id,
+            "node_uid": ancestor_node_uid or ancestor_id,
+            "is_virtual": is_virtual,
         })
+
+        # Skip collecting data from virtual root
+        if exclude_virtual_root and is_virtual:
+            continue
 
         # Collect core_kv (key-value pairs)
         for kv in core_kv.get(ancestor_id, []):
@@ -1196,13 +1218,39 @@ def _generate_memory_database_html(memory_data: dict, output_path: Path, experim
     nodes_data = []
     for i, branch in enumerate(branches):
         branch_id = branch["id"]
+        node_uid = branch.get("node_uid")
+        is_virtual_node = node_uid == "root" or node_uid == "none_root"
+
+        if is_virtual_node:
+            # Virtual node (root) should have no memory data
+            nodes_data.append({
+                "index": i,
+                "branch_id": branch_id,
+                "node_uid": node_uid,
+                "parent_id": branch["parent_id"],
+                "phases": [],
+                "is_virtual": True,
+                # Empty data for virtual node
+                "own_core_kv": [],
+                "own_events": [],
+                "own_archival": [],
+                "inherited_core_kv": [],
+                "inherited_events": [],
+                "inherited_archival": [],
+                "ancestors": [],
+                # Legacy fields
+                "core_kv": [],
+                "events": [],
+                "archival": [],
+            })
+            continue
 
         # Get own data (this branch only)
         own_core_kv = memory_data["core_kv"].get(branch_id, [])
         own_events = memory_data["events"].get(branch_id, [])
         own_archival = memory_data["archival"].get(branch_id, [])
 
-        # Get inherited data from ancestors
+        # Get inherited data from ancestors (excluding virtual root's data)
         inherited_core_kv, inherited_events, inherited_archival, ancestors_info = _collect_inherited_data(
             branch_id,
             branches,
@@ -1210,6 +1258,7 @@ def _generate_memory_database_html(memory_data: dict, output_path: Path, experim
             memory_data["events"],
             memory_data["archival"],
             branch_to_index,
+            exclude_virtual_root=True,
         )
 
         # Combine own and inherited for phase detection
@@ -1220,9 +1269,10 @@ def _generate_memory_database_html(memory_data: dict, output_path: Path, experim
         nodes_data.append({
             "index": i,
             "branch_id": branch_id,
-            "node_uid": branch["node_uid"],
+            "node_uid": node_uid,
             "parent_id": branch["parent_id"],
             "phases": phases,
+            "is_virtual": False,
             # Own data (this node only)
             "own_core_kv": own_core_kv,
             "own_events": own_events,

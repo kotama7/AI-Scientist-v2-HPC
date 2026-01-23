@@ -1,5 +1,5 @@
 Evaluate if the current sub-stage is complete based on the following evidence:
-1. Figure Analysis:
+1. Figure/Artifact Analysis:
 {vlm_feedback}
 
 Requirements for completion:

@@ -1,32 +1,86 @@
-from concurrent.futures import ProcessPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
-from typing import List, Optional, Set, Any, Callable, cast, Dict, Tuple
-import json
-import random
-import os
-import shutil
-import re
-import uuid
+"""Parallel agent for experiment execution.
+
+This module provides the ParallelAgent and MinimalAgent classes for orchestrating
+parallel experiment execution using tree search.
+"""
+
+import ast
+import base64
 import copy
-from queue import Queue
-import logging
+import filelock
 import humanize
+import json
+import logging
+import multiprocessing as mp
+from multiprocessing import Process, Queue as MPQueue
+import numpy as np
+import os
+import pickle
+import random
+import re
+import shutil
+import signal
+import sys
 import time
+import uuid
+from dataclasses import asdict
+from pathlib import Path
+from queue import Queue, Empty
+from typing import Any, Callable, cast, Dict, List, Optional, Set, Tuple
+
+from rich import print
+from rich.markup import escape
+
+from ai_scientist.memory import MemoryManager
+from ai_scientist.memory.resource_memory import (
+    build_resource_snapshot,
+    update_resource_snapshot_if_changed,
+)
+from ai_scientist.prompt_loader import format_prompt, load_prompt, load_prompt_lines
+
+# Import from refactored modules
 from .backend import FunctionSpec, compile_prompt_to_md, query
 from .interpreter import ExecutionResult
 from .journal import Journal, Node
+from .worker import WorkerManager, WorkerResult, WorkerTask
+from .gpu import GPUManager, parse_cuda_visible_devices as _parse_cuda_visible_devices
+from .ablation import AblationConfig, AblationIdea, HyperparamTuningIdea
 from .utils.config import Config
 from .utils.metric import MetricValue, WorstMetricValue
 from .utils.response import extract_code, extract_text_up_to_code, wrap_code
+from .utils.parsing import (
+    normalize_language as _normalize_language,
+    strip_json_wrappers as _strip_json_wrappers,
+    parse_json_object as _parse_json_object,
+    normalize_phase0_plan as _normalize_phase0_plan,
+)
+from .utils.file_utils import (
+    read_text as _read_text,
+    summarize_file as _summarize_file,
+    find_previous_run_dir as _find_previous_run_dir,
+    summarize_phase1_steps as _summarize_phase1_steps,
+    extract_error_lines as _extract_error_lines,
+    summarize_phase_logs as _summarize_phase_logs,
+    summarize_journal_outputs as _summarize_journal_outputs,
+)
+from .utils.artifacts import (
+    resolve_run_root as _resolve_run_root,
+    copy_artifact as _copy_artifact,
+    format_prompt_log_name as _format_prompt_log_name,
+    render_prompt_for_log as _render_prompt_for_log,
+    write_prompt_log as _write_prompt_log,
+    save_phase_execution_artifacts as _save_phase_execution_artifacts,
+)
 from .utils.phase_execution import (
     ExecutionEnvironment,
     SingularityWorkerContainer,
     collect_available_compilers,
     collect_available_libs,
-    collect_system_performance_tools,
     collect_installed_system_packages,
-    summarize_text,
-    summarize_command_output,
+    collect_system_performance_tools,
     run_in_container,
+    summarize_command_output,
+    summarize_text,
 )
 from .utils.phase_plan import (
     PhasePlanError,
@@ -37,32 +91,25 @@ from .utils.phase_plan import (
 )
 from .utils.resource import (
     ResourceConfig,
-    load_resources,
     build_local_binds,
     build_resources_context,
+    load_resources,
     resolve_resources_path,
 )
 from .worker_plan import resolve_worker_plan
-import pickle
-import ast
-import numpy as np
-from dataclasses import asdict
-from ai_scientist.prompt_loader import load_prompt, load_prompt_lines, format_prompt
-from ai_scientist.memory import MemoryManager
-from ai_scientist.memory.resource_memory import (
-    build_resource_snapshot,
-    update_resource_snapshot_if_changed,
-)
-
-from rich import print
-from rich.markup import escape
-from pathlib import Path
-import base64
-import sys
-import filelock
-
 
 logger = logging.getLogger("ai-scientist")
+
+
+# ============================================================================
+# NOTE: The following classes have been moved to separate modules:
+# - WorkerTask, WorkerResult, WorkerManager -> ai_scientist.treesearch.worker
+# - AblationConfig, AblationIdea, HyperparamTuningIdea -> ai_scientist.treesearch.ablation
+# - GPUManager -> ai_scientist.treesearch.gpu
+# The utility functions (_normalize_language, _read_text, etc.) have been
+# moved to ai_scientist.treesearch.utils submodules.
+# ============================================================================
+
 
 ExecCallbackType = Callable[[str, bool], ExecutionResult]
 
@@ -1017,6 +1064,7 @@ class MinimalAgent:
         budget_chars: int | None = None,
         allow_summary_fallback: bool = False,
         allow_empty: bool = False,
+        node_id: str | None = None,
     ) -> None:
         memory_context = self._memory_context(
             task_hint,
@@ -1026,6 +1074,28 @@ class MinimalAgent:
         )
         if memory_context or allow_empty:
             prompt["Memory"] = memory_context
+
+        # Record memory injection event for tracking what memory was used at each phase
+        if self.memory_manager and memory_context:
+            use_branch = branch_id or self.branch_id
+            use_node_id = node_id or getattr(self, "_current_node_id", None)
+            if use_branch:
+                try:
+                    # Create a summary of injected memory (first 500 chars)
+                    memory_summary = memory_context[:500] + ("..." if len(memory_context) > 500 else "")
+                    self.memory_manager.mem_recall_append({
+                        "ts": time.time(),
+                        "run_id": self.memory_manager.run_id,
+                        "node_id": use_node_id,
+                        "phase": self.stage_name or "unknown",
+                        "kind": "memory_injected",
+                        "summary": f"Memory injected for {task_hint}\nSize: {len(memory_context)} chars\n---\n{memory_summary}",
+                        "refs": [],
+                        "task_hint": task_hint,
+                        "memory_size": len(memory_context),
+                    })
+                except Exception as exc:
+                    logger.warning("Failed to write memory_injected event: %s", exc)
 
     @property
     def code_language(self) -> str:
@@ -1081,12 +1151,17 @@ class MinimalAgent:
                 "installed_system_packages_json": json.dumps(installed_packages, indent=2),
                 "installed_system_package_names": ", ".join([p.get("name", "") for p in installed_packages if isinstance(p, dict)]) or "none",
                 "container_runtime": self.environment_context.get("container_runtime") or "host",
+                "container_digest": self.environment_context.get("container_digest", "NA"),
                 "singularity_image": self.environment_context.get("singularity_image") or "none",
                 "workspace_mount": self.environment_context.get("workspace_mount", "/workspace"),
                 "timeout_seconds": self.environment_context.get("timeout_seconds", self.cfg.exec.timeout),
                 "cpu_info": self.environment_context.get("cpu_info", "unknown"),
+                "cpu_governor": self.environment_context.get("cpu_governor", "NA"),
+                "numa_config": self.environment_context.get("numa_config", "NA"),
                 "memory_info": self.environment_context.get("memory_info", "unknown"),
+                "assigned_gpu_id": self.environment_context.get("assigned_gpu_id", "unknown"),
                 "gpu_info": self.environment_context.get("gpu_info", "unknown"),
+                "parallel_env_vars": self.environment_context.get("parallel_env_vars", "NA"),
             }
             rendered_message = format_prompt("config/environment/injection", **payload)
             return {"Environment injection": rendered_message}
@@ -2233,9 +2308,9 @@ class MinimalAgent:
             budget_chars=getattr(self.cfg.memory, "node_summary_budget_chars", 2000),
         )
 
-        return cast(
+        # LLM context (node summary): Introduction + Research idea + Implementation + Plan + Execution output + Analysis + Metric + Plot analyses + VLM feedback + Memory.
+        result = cast(
             dict,
-            # LLM context (node summary): Introduction + Research idea + Implementation + Plan + Execution output + Analysis + Metric + Plot analyses + VLM feedback + Memory.
             query(
                 system_message=summary_prompt,
                 user_message=None,
@@ -2265,6 +2340,45 @@ class MinimalAgent:
                 temperature=self.cfg.agent.feedback.temp,
             ),
         )
+
+        # Write node summary to memory
+        if self.memory_manager:
+            branch_id = getattr(node, "branch_id", None)
+            if branch_id:
+                try:
+                    findings = result.get("findings", "")
+                    significance = result.get("significance", "")
+                    next_steps = result.get("next_steps", "")
+                    summary_text = f"Node {node.id} summary: {findings[:200]}"
+                    self.memory_manager.mem_recall_append({
+                        "ts": time.time(),
+                        "run_id": getattr(self.memory_manager, "run_id", ""),
+                        "node_id": node.id,
+                        "phase": self.stage_name or "unknown",
+                        "kind": "node_summary",
+                        "summary": summary_text,
+                        "refs": [],
+                    })
+                    # Write detailed summary to archival for important findings
+                    if findings and significance:
+                        self.memory_manager.mem_archival_write(
+                            f"Node {node.id} Summary\n\n"
+                            f"Metric: {node.metric}\n\n"
+                            f"Findings: {findings}\n\n"
+                            f"Significance: {significance}\n\n"
+                            f"Next steps: {next_steps or 'N/A'}",
+                            tags=["NODE_SUMMARY", f"node_uid:{node.id}", f"stage:{self.stage_name or 'unknown'}"],
+                            meta={
+                                "node_id": node.id,
+                                "branch_id": branch_id,
+                                "run_id": getattr(self.memory_manager, "run_id", ""),
+                                "phase": self.stage_name,
+                            },
+                        )
+                except Exception as mem_exc:
+                    logger.warning("Failed to write node summary to memory: %s", mem_exc)
+
+        return result
 
 
 def _parse_cuda_visible_devices(value: str | None) -> list[str]:
@@ -2391,10 +2505,10 @@ class ParallelAgent:
                     break
 
         self.timeout = self.cfg.exec.timeout
-        self.executor = ProcessPoolExecutor(max_workers=self.num_workers)
+        self.worker_manager = WorkerManager(max_workers=self.num_workers)
         logger.info(
-            "Process pool initialized max_workers=%s requested=%s",
-            getattr(self.executor, "_max_workers", self.num_workers),
+            "WorkerManager initialized max_workers=%s requested=%s",
+            self.num_workers,
             self.worker_plan.requested_workers if hasattr(self, "worker_plan") else self.num_workers,
         )
         self._is_shutdown = False
@@ -2534,29 +2648,19 @@ class ParallelAgent:
         """Run multiple seeds of the same node to get statistical metrics.
         Returns a list of nodes with different random seeds."""
 
-        # IMPORTANT: Reset executor to ensure all previous tasks are complete
+        # IMPORTANT: Reset workers to ensure all previous tasks are complete
         # This prevents issues where workers from previous stage are still running
-        logger.info("Resetting executor before multi-seed evaluation to ensure clean state...")
-        print("[yellow]Resetting executor before multi-seed evaluation...[/yellow]")
-        try:
-            # Shutdown existing executor and wait for all tasks to complete
-            self.executor.shutdown(wait=True, cancel_futures=False)
-            logger.info("Previous executor shutdown complete")
-        except Exception as e:
-            logger.warning(f"Error during executor shutdown: {e}")
-
-        # Create fresh executor for multi-seed evaluation
-        self.executor = ProcessPoolExecutor(max_workers=self.num_workers)
-        logger.info(f"Created new executor with {self.num_workers} workers for multi-seed evaluation")
-        print(f"[green]Created new executor with {self.num_workers} workers[/green]")
+        logger.info("Resetting workers before multi-seed evaluation to ensure clean state...")
+        print("[yellow]Resetting workers before multi-seed evaluation...[/yellow]")
+        self.worker_manager.terminate_and_restart()
 
         # Convert node to dict for parallel processing
         node_data = node.to_dict()
 
         # Submit parallel jobs for different seeds
         seed_nodes = []
-        futures = []
-        future_to_seed: Dict[Any, int] = {}  # Map future to seed for tracking
+        task_ids = []
+        task_id_to_seed: Dict[int, int] = {}  # Map task_id to seed for tracking
 
         for seed in range(self.cfg.agent.multi_seed_eval.num_seeds):
             gpu_id = None
@@ -2578,7 +2682,7 @@ class ParallelAgent:
             seed_eval = True
             memory_summary = ""
             print("[yellow]Starting multi-seed eval...[/yellow]")
-            future = self.executor.submit(
+            task_id = self.worker_manager.submit(
                 self._process_node_wrapper,
                 node_data,
                 self.task_desc,
@@ -2596,50 +2700,54 @@ class ParallelAgent:
                 seed,
                 seed,
             )
-            futures.append(future)
-            future_to_seed[future] = seed
+            task_ids.append(task_id)
+            task_id_to_seed[task_id] = seed
 
-        # Track completed futures to release GPUs
+        # Wait for results with timeout
+        results = self.worker_manager.wait_for_results(task_ids, timeout=self.timeout)
         completed_seeds: Set[int] = set()
 
-        # Use as_completed to process results as they finish (not in order)
-        try:
-            for future in as_completed(futures, timeout=self.timeout):
-                seed = future_to_seed[future]
-                process_id = f"worker_{seed}"
-                try:
-                    result_data = future.result()  # No timeout here, already completed
-                    result_node = Node.from_dict(result_data, self.journal)
-                    print(f"[seed={seed}] Parent node id: {result_node.parent.id}")
-                    print(f"[seed={seed}] Sanity check: actual parent node id: {node.id}")
-                    # Add node to journal's list and assign its step number
-                    self.journal.append(result_node)
-                    seed_nodes.append(self.journal.get_node_by_id(result_node.id))
-                    print(f"[seed={seed}] Added result node to journal")
-                except Exception as e:
-                    logger.exception(f"Error in multi-seed evaluation for seed {seed}")
-                finally:
-                    completed_seeds.add(seed)
-                    if (
-                        self.gpu_manager is not None
-                        and process_id in self.gpu_manager.gpu_assignments
-                    ):
-                        self.gpu_manager.release_gpu(process_id)
-        except FuturesTimeoutError:
+        # Process completed results
+        for task_id, worker_result in results.items():
+            seed = task_id_to_seed[task_id]
+            process_id = f"worker_{seed}"
+            try:
+                if worker_result.error:
+                    raise worker_result.error
+                result_data = worker_result.result
+                result_node = Node.from_dict(result_data, self.journal)
+                print(f"[seed={seed}] Parent node id: {result_node.parent.id}")
+                print(f"[seed={seed}] Sanity check: actual parent node id: {node.id}")
+                # Add node to journal's list and assign its step number
+                self.journal.append(result_node)
+                seed_nodes.append(self.journal.get_node_by_id(result_node.id))
+                print(f"[seed={seed}] Added result node to journal")
+            except Exception as e:
+                logger.exception(f"Error in multi-seed evaluation for seed {seed}")
+            finally:
+                completed_seeds.add(seed)
+                if (
+                    self.gpu_manager is not None
+                    and process_id in self.gpu_manager.gpu_assignments
+                ):
+                    self.gpu_manager.release_gpu(process_id)
+
+        # Handle timed out tasks
+        timed_out_task_ids = set(task_ids) - set(results.keys())
+        if timed_out_task_ids:
             logger.error(f"Timeout waiting for multi-seed evaluation (timeout={self.timeout}s)")
-            # Release GPUs for incomplete futures
-            for future in futures:
-                seed = future_to_seed[future]
-                if seed not in completed_seeds:
-                    process_id = f"worker_{seed}"
-                    logger.warning(f"Seed {seed} did not complete within timeout")
-                    if (
-                        self.gpu_manager is not None
-                        and process_id in self.gpu_manager.gpu_assignments
-                    ):
-                        self.gpu_manager.release_gpu(process_id)
-                    # Cancel the future (may not stop already-running process)
-                    future.cancel()
+            for task_id in timed_out_task_ids:
+                seed = task_id_to_seed[task_id]
+                process_id = f"worker_{seed}"
+                logger.warning(f"Seed {seed} did not complete within timeout")
+                if (
+                    self.gpu_manager is not None
+                    and process_id in self.gpu_manager.gpu_assignments
+                ):
+                    self.gpu_manager.release_gpu(process_id)
+
+            # Terminate and restart workers to clean up timed out processes
+            self.worker_manager.terminate_and_restart()
 
         return seed_nodes
 
@@ -2998,6 +3106,7 @@ class ParallelAgent:
                 "container_runtime": "singularity" if image_path else None,
                 "singularity_image": str(Path(image_path).resolve()) if image_path else None,
                 "workspace_mount": getattr(cfg.exec, "workspace_mount", "/workspace"),
+                "assigned_gpu_id": gpu_id if use_gpu else None,
             }
             if image_path:
                 info_env = ExecutionEnvironment(
@@ -3044,11 +3153,16 @@ class ParallelAgent:
                     logger.warning("Failed to read memory info: %s", exc)
                 if use_gpu:
                     try:
+                        # Show assigned GPU for this worker (respects CUDA_VISIBLE_DEVICES)
+                        # Also show all available GPUs for reference
+                        assigned_gpu_str = f"assigned_gpu_id={gpu_id}" if gpu_id is not None else "assigned_gpu_id=all"
+                        cuda_visible = f"CUDA_VISIBLE_DEVICES={gpu_id}" if gpu_id is not None else "CUDA_VISIBLE_DEVICES=all"
                         gpu_res = info_env.run(
                             ["bash", "-lc", "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L || echo 'nvidia-smi not available'"],
                             cwd=workspace_path,
                         )
-                        environment_context["gpu_info"] = summarize_text(gpu_res.stdout, max_lines=20, max_chars=1200)
+                        all_gpus = summarize_text(gpu_res.stdout, max_lines=20, max_chars=1000)
+                        environment_context["gpu_info"] = f"{assigned_gpu_str}\n{cuda_visible}\nAll GPUs on node:\n{all_gpus}"
                     except Exception as exc:
                         logger.warning("Failed to read GPU info: %s", exc)
                 else:
@@ -3062,6 +3176,56 @@ class ParallelAgent:
                 except Exception as exc:
                     logger.warning("Failed to probe network access: %s", exc)
                     environment_context["network_access"] = "unknown"
+                # CPU governor
+                try:
+                    governor_res = info_env.run(
+                        ["bash", "-lc", "cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo 'NA'"],
+                        cwd=workspace_path,
+                    )
+                    environment_context["cpu_governor"] = (governor_res.stdout or "NA").strip()
+                except Exception as exc:
+                    logger.warning("Failed to read CPU governor: %s", exc)
+                    environment_context["cpu_governor"] = "NA"
+                # NUMA configuration (NA if numactl not available)
+                try:
+                    numa_res = info_env.run(
+                        ["bash", "-lc", "command -v numactl >/dev/null 2>&1 && numactl --hardware 2>/dev/null || echo 'NA'"],
+                        cwd=workspace_path,
+                    )
+                    environment_context["numa_config"] = summarize_text(numa_res.stdout or "NA", max_lines=30, max_chars=2000)
+                except Exception as exc:
+                    logger.warning("Failed to read NUMA config: %s", exc)
+                    environment_context["numa_config"] = "NA"
+                # MPI/OpenMP environment variables
+                try:
+                    env_vars_cmd = (
+                        "echo '=== OpenMP ===' && "
+                        "env | grep -E '^(OMP_|GOMP_|KMP_)' 2>/dev/null | sort || echo 'none' && "
+                        "echo '=== MPI ===' && "
+                        "env | grep -E '^(MPI|OMPI_|PMI|SLURM_|I_MPI_)' 2>/dev/null | sort || echo 'none' && "
+                        "echo '=== BLAS/LAPACK ===' && "
+                        "env | grep -E '^(MKL_|OPENBLAS_|BLAS_|LAPACK_|GOTO_)' 2>/dev/null | sort || echo 'none'"
+                    )
+                    env_vars_res = info_env.run(["bash", "-lc", env_vars_cmd], cwd=workspace_path)
+                    environment_context["parallel_env_vars"] = summarize_text(env_vars_res.stdout or "none", max_lines=50, max_chars=3000)
+                except Exception as exc:
+                    logger.warning("Failed to read parallel environment variables: %s", exc)
+                    environment_context["parallel_env_vars"] = "NA"
+                # Container digest (SHA256 of SIF image)
+                if image_path:
+                    try:
+                        digest_res = info_env.run(
+                            ["bash", "-lc", f"sha256sum {image_path} 2>/dev/null | cut -d' ' -f1 || echo 'NA'"],
+                            cwd=workspace_path,
+                        )
+                        digest_value = (digest_res.stdout or "NA").strip()
+                        if digest_value and len(digest_value) == 64:
+                            environment_context["container_digest"] = f"sha256:{digest_value}"
+                        else:
+                            environment_context["container_digest"] = "NA"
+                    except Exception as exc:
+                        logger.warning("Failed to compute container digest: %s", exc)
+                        environment_context["container_digest"] = "NA"
             environment_context["timeout_seconds"] = cfg.exec.timeout
         else:
             environment_context["timeout_seconds"] = cfg.exec.timeout
@@ -3108,8 +3272,12 @@ class ParallelAgent:
                     {
                         "os_release": environment_context.get("os_release", ""),
                         "cpu_info": environment_context.get("cpu_info", ""),
+                        "cpu_governor": environment_context.get("cpu_governor", "NA"),
+                        "numa_config": environment_context.get("numa_config", "NA"),
                         "memory_info": environment_context.get("memory_info", ""),
+                        "assigned_gpu_id": environment_context.get("assigned_gpu_id"),
                         "gpu_info": environment_context.get("gpu_info", ""),
+                        "parallel_env_vars": environment_context.get("parallel_env_vars", "NA"),
                         "available_compilers": environment_context.get("available_compilers", []),
                         "available_libs": environment_context.get("available_libs", []),
                         "system_performance_tools": environment_context.get("system_performance_tools", []),
@@ -3117,6 +3285,7 @@ class ParallelAgent:
                         "installed_system_packages": environment_context.get("installed_system_packages", []),
                         "network_access": environment_context.get("network_access", "unknown"),
                         "container_runtime": environment_context.get("container_runtime"),
+                        "container_digest": environment_context.get("container_digest", "NA"),
                         "singularity_image": environment_context.get("singularity_image"),
                         "workspace_mount": environment_context.get("workspace_mount"),
                         "timeout_seconds": environment_context.get("timeout_seconds", cfg.exec.timeout),
@@ -3152,6 +3321,9 @@ class ParallelAgent:
                     "History": history_injection,
                     "Environment": {
                         "os_release": environment_context.get("os_release", ""),
+                        "cpu_governor": environment_context.get("cpu_governor", "NA"),
+                        "numa_config": environment_context.get("numa_config", "NA"),
+                        "parallel_env_vars": environment_context.get("parallel_env_vars", "NA"),
                         "available_compilers": environment_context.get("available_compilers", []),
                         "available_libs": environment_context.get("available_libs", []),
                         "system_performance_tools": environment_context.get("system_performance_tools", []),
@@ -3159,6 +3331,7 @@ class ParallelAgent:
                         "installed_system_packages": environment_context.get("installed_system_packages", []),
                         "network_access": environment_context.get("network_access", "unknown"),
                         "container_runtime": environment_context.get("container_runtime"),
+                        "container_digest": environment_context.get("container_digest", "NA"),
                         "singularity_image": environment_context.get("singularity_image"),
                         "workspace_mount": environment_context.get("workspace_mount", "/workspace"),
                         "timeout_seconds": environment_context.get("timeout_seconds", cfg.exec.timeout),
@@ -3710,6 +3883,23 @@ class ParallelAgent:
                             if success:
                                 # Save worker SIF path for potential seed_eval reuse
                                 child_node.worker_sif_path = str(worker_container.worker_sif)
+                                # Memory event: Phase 1 complete
+                                if memory_manager and child_branch_id:
+                                    try:
+                                        phase1_summary = f"Phase 1 download/install complete for node {child_node.id}"
+                                        if download_commands:
+                                            phase1_summary += f"\nCommands: {download_commands[:3]}{'...' if len(download_commands) > 3 else ''}"
+                                        memory_manager.mem_recall_append({
+                                            "ts": time.time(),
+                                            "run_id": memory_manager.run_id,
+                                            "node_id": child_node.id,
+                                            "phase": stage_name,
+                                            "kind": "phase1_complete",
+                                            "summary": phase1_summary,
+                                            "refs": [],
+                                        })
+                                    except Exception as exc:
+                                        logger.warning("Failed to write phase1_complete event: %s", exc)
                                 if memory_manager and resources_path:
                                     try:
                                         memory_manager.mem_resources_resolve_and_refresh(
@@ -3730,6 +3920,21 @@ class ParallelAgent:
                             else:
                                 exc_type = "DownloadError"
                                 exc_info = failure
+                                # Memory event: Phase 1 failed
+                                if memory_manager and child_branch_id:
+                                    try:
+                                        failure_msg = str(failure)[:500] if failure else "Unknown failure"
+                                        memory_manager.mem_recall_append({
+                                            "ts": time.time(),
+                                            "run_id": memory_manager.run_id,
+                                            "node_id": child_node.id,
+                                            "phase": stage_name,
+                                            "kind": "phase1_failed",
+                                            "summary": f"Phase 1 download/install failed for node {child_node.id}: {failure_msg}",
+                                            "refs": [],
+                                        })
+                                    except Exception as exc:
+                                        logger.warning("Failed to write phase1_failed event: %s", exc)
                         else:
                             exc_type = "EnvironmentError"
                             exc_info = {"message": "Singularity image is required for split-phase execution."}
@@ -3770,9 +3975,40 @@ class ParallelAgent:
                                     for line in coding_workspace.get("tree", []):
                                         log.write(str(line) + "\n")
                                 term_outputs.append("Coding phase wrote files.")
+                                # Memory event: Coding phase complete
+                                if memory_manager and child_branch_id:
+                                    try:
+                                        files_list = [str(p) for p in created_files[:5]]
+                                        if len(created_files) > 5:
+                                            files_list.append(f"... and {len(created_files) - 5} more")
+                                        memory_manager.mem_recall_append({
+                                            "ts": time.time(),
+                                            "run_id": memory_manager.run_id,
+                                            "node_id": child_node.id,
+                                            "phase": stage_name,
+                                            "kind": "coding_complete",
+                                            "summary": f"Coding phase complete for node {child_node.id}\nFiles: {files_list}",
+                                            "refs": [],
+                                        })
+                                    except Exception as exc:
+                                        logger.warning("Failed to write coding_complete event: %s", exc)
                             except Exception as exc:
                                 exc_type = "CodingError"
                                 exc_info = {"message": str(exc)}
+                                # Memory event: Coding phase failed
+                                if memory_manager and child_branch_id:
+                                    try:
+                                        memory_manager.mem_recall_append({
+                                            "ts": time.time(),
+                                            "run_id": memory_manager.run_id,
+                                            "node_id": child_node.id,
+                                            "phase": stage_name,
+                                            "kind": "coding_failed",
+                                            "summary": f"Coding phase failed for node {child_node.id}: {str(exc)[:300]}",
+                                            "refs": [],
+                                        })
+                                    except Exception as mem_exc:
+                                        logger.warning("Failed to write coding_failed event: %s", mem_exc)
                             if exc_type is None:
                                 if not selected_compiler:
                                     exc_type = "CompilationError"
@@ -3814,7 +4050,36 @@ class ParallelAgent:
                                             "returncode": getattr(failure, "returncode", None),
                                             "stderr": getattr(failure, "stderr", ""),
                                         }
+                                        # Memory event: Compile phase failed
+                                        if memory_manager and child_branch_id:
+                                            try:
+                                                stderr_snippet = getattr(failure, "stderr", "")[:300] if failure else ""
+                                                memory_manager.mem_recall_append({
+                                                    "ts": time.time(),
+                                                    "run_id": memory_manager.run_id,
+                                                    "node_id": child_node.id,
+                                                    "phase": stage_name,
+                                                    "kind": "compile_failed",
+                                                    "summary": f"Compile phase failed for node {child_node.id}\nCompiler: {selected_compiler}\nError: {stderr_snippet}",
+                                                    "refs": [],
+                                                })
+                                            except Exception as exc:
+                                                logger.warning("Failed to write compile_failed event: %s", exc)
                                     else:
+                                        # Memory event: Compile phase complete
+                                        if memory_manager and child_branch_id:
+                                            try:
+                                                memory_manager.mem_recall_append({
+                                                    "ts": time.time(),
+                                                    "run_id": memory_manager.run_id,
+                                                    "node_id": child_node.id,
+                                                    "phase": stage_name,
+                                                    "kind": "compile_complete",
+                                                    "summary": f"Compile phase complete for node {child_node.id}\nCompiler: {selected_compiler}\nCommands: {formatted_compile_cmds[:2]}",
+                                                    "refs": [],
+                                                })
+                                            except Exception as exc:
+                                                logger.warning("Failed to write compile_complete event: %s", exc)
                                         formatted_run_cmds = []
                                         for cmd in run_commands:
                                             if isinstance(cmd, str):
@@ -3840,6 +4105,21 @@ class ParallelAgent:
                                                 "returncode": getattr(failure, "returncode", None),
                                                 "stderr": getattr(failure, "stderr", ""),
                                             }
+                                            # Memory event: Run phase failed
+                                            if memory_manager and child_branch_id:
+                                                try:
+                                                    stderr_snippet = getattr(failure, "stderr", "")[:300] if failure else ""
+                                                    memory_manager.mem_recall_append({
+                                                        "ts": time.time(),
+                                                        "run_id": memory_manager.run_id,
+                                                        "node_id": child_node.id,
+                                                        "phase": stage_name,
+                                                        "kind": "run_failed",
+                                                        "summary": f"Run phase failed for node {child_node.id}\nError: {stderr_snippet}",
+                                                        "refs": [],
+                                                    })
+                                                except Exception as exc:
+                                                    logger.warning("Failed to write run_failed event: %s", exc)
                                         else:
                                             missing_outputs = [
                                                 str(path)
@@ -3854,6 +4134,35 @@ class ParallelAgent:
                                                     "expected_outputs": expected_outputs,
                                                 }
                                                 term_outputs.append(exc_info["message"])
+                                                # Memory event: Run phase failed (missing outputs)
+                                                if memory_manager and child_branch_id:
+                                                    try:
+                                                        memory_manager.mem_recall_append({
+                                                            "ts": time.time(),
+                                                            "run_id": memory_manager.run_id,
+                                                            "node_id": child_node.id,
+                                                            "phase": stage_name,
+                                                            "kind": "run_failed",
+                                                            "summary": f"Run phase failed for node {child_node.id}: missing outputs {missing_outputs[:3]}",
+                                                            "refs": [],
+                                                        })
+                                                    except Exception as exc:
+                                                        logger.warning("Failed to write run_failed event: %s", exc)
+                                            else:
+                                                # Memory event: Run phase complete
+                                                if memory_manager and child_branch_id:
+                                                    try:
+                                                        memory_manager.mem_recall_append({
+                                                            "ts": time.time(),
+                                                            "run_id": memory_manager.run_id,
+                                                            "node_id": child_node.id,
+                                                            "phase": stage_name,
+                                                            "kind": "run_complete",
+                                                            "summary": f"Run phase complete for node {child_node.id}\nOutputs: {expected_outputs[:3]}",
+                                                            "refs": [],
+                                                        })
+                                                    except Exception as exc:
+                                                        logger.warning("Failed to write run_complete event: %s", exc)
                         exec_time = time.time() - exec_start
                         exec_result = ExecutionResult(
                             term_outputs,
@@ -4035,6 +4344,39 @@ class ParallelAgent:
                                     f"Successfully extracted metrics for node {child_node.id}"
                                 )
                                 parse_success = True
+                                # Write metrics to memory for future reference
+                                if memory_manager and child_branch_id:
+                                    try:
+                                        metrics_summary = (
+                                            f"Metrics extracted for node {child_node.id}: "
+                                            f"{metrics_response['metric_names']}"
+                                        )
+                                        memory_manager.mem_recall_append({
+                                            "ts": time.time(),
+                                            "run_id": memory_manager.run_id,
+                                            "node_id": child_node.id,
+                                            "phase": stage_name,
+                                            "kind": "metrics_extracted",
+                                            "summary": metrics_summary,
+                                            "refs": [],
+                                        })
+                                        # Write detailed metrics to archival for long-term reference
+                                        memory_manager.mem_archival_write(
+                                            f"Metrics extraction successful\n"
+                                            f"Node: {child_node.id}\n"
+                                            f"Stage: {stage_name}\n"
+                                            f"Metrics: {json.dumps(metrics_response['metric_names'], indent=2)}\n"
+                                            f"Parse plan: {parse_metrics_plan[:500] if parse_metrics_plan else 'N/A'}",
+                                            tags=["METRICS", f"node_uid:{child_node.id}", f"stage:{stage_name}"],
+                                            meta={
+                                                "node_id": child_node.id,
+                                                "branch_id": child_branch_id,
+                                                "run_id": memory_manager.run_id,
+                                                "phase": stage_name,
+                                            },
+                                        )
+                                    except Exception as mem_exc:
+                                        logger.warning("Failed to write metrics to memory: %s", mem_exc)
                             else:
                                 last_error_message = (
                                     "Metrics parser did not return valid metrics."
@@ -4070,6 +4412,20 @@ class ParallelAgent:
                     logger.error(
                         f"No valid metrics received for node {child_node.id} after {MAX_METRIC_PARSE_RETRIES} attempts."
                     )
+                    # Write metrics parsing failure to memory
+                    if memory_manager and child_branch_id:
+                        try:
+                            memory_manager.mem_recall_append({
+                                "ts": time.time(),
+                                "run_id": memory_manager.run_id,
+                                "node_id": child_node.id,
+                                "phase": stage_name,
+                                "kind": "metrics_failed",
+                                "summary": f"Metrics parsing failed for node {child_node.id}: {last_error_message[:200] if last_error_message else 'Unknown error'}",
+                                "refs": [],
+                            })
+                        except Exception as mem_exc:
+                            logger.warning("Failed to write metrics failure to memory: %s", mem_exc)
 
             # if experiment was successful, generate and run plotting code
             if not child_node.is_buggy:
@@ -4247,6 +4603,24 @@ class ParallelAgent:
                             "refs": [],
                         }
                     )
+                    # Write successful results to archival for long-term memory
+                    if not child_node.is_buggy and child_node.metric is not None:
+                        method_changes = getattr(child_node, "method_changes", None) or ""
+                        archival_summary = (
+                            f"Successful node {child_node.id} in {stage_name}\n"
+                            f"Metric: {child_node.metric}\n"
+                            f"Method changes: {method_changes[:500] if method_changes else 'N/A'}"
+                        )
+                        memory_manager.mem_archival_write(
+                            archival_summary,
+                            tags=["SUCCESS", f"node_uid:{child_node.id}", f"stage:{stage_name}"],
+                            meta={
+                                "node_id": child_node.id,
+                                "branch_id": child_branch_id,
+                                "run_id": memory_manager.run_id,
+                                "phase": stage_name,
+                            },
+                        )
                     if child_node.is_buggy and child_node.exc_info:
                         memory_manager.mem_archival_write(
                             f"Execution error: {child_node.exc_info}",
@@ -4570,11 +4944,15 @@ class ParallelAgent:
                 include_code=False, memory_context=memory_context
             )
 
-        print("Submitting tasks to process pool")
-        futures = []
+        # NOTE: journal_summary is not written to root branch to keep it memory-free.
+        # The summary is generated and used in-memory but not persisted to root.
+
+        print("Submitting tasks to workers")
+        task_ids = []
+        task_id_to_index: Dict[int, int] = {}  # Map task_id to original index
         for node_data in node_data_list:
             gpu_id = None
-            worker_idx = len(futures)
+            worker_idx = len(task_ids)
             if self.gpu_manager is not None:
                 try:
                     # Get current process ID for GPU assignment
@@ -4616,92 +4994,94 @@ class ParallelAgent:
                 self.best_stage3_node.plot_code if self.best_stage3_node else None
             )
             seed_eval = False
-            futures.append(
-                self.executor.submit(
-                    self._process_node_wrapper,
-                    node_data,
-                    self.task_desc,
-                    self.cfg,
-                    gpu_id,
-                    memory_summary,
-                    self.evaluation_metrics,
-                    self.stage_name,
-                    new_ablation_idea,
-                    new_hyperparam_idea,
-                    best_stage1_plot_code,
-                    best_stage2_plot_code,
-                    best_stage3_plot_code,
-                    seed_eval,
-                    None,
-                    worker_idx,
-                )
+            task_id = self.worker_manager.submit(
+                self._process_node_wrapper,
+                node_data,
+                self.task_desc,
+                self.cfg,
+                gpu_id,
+                memory_summary,
+                self.evaluation_metrics,
+                self.stage_name,
+                new_ablation_idea,
+                new_hyperparam_idea,
+                best_stage1_plot_code,
+                best_stage2_plot_code,
+                best_stage3_plot_code,
+                seed_eval,
+                None,
+                worker_idx,
             )
+            task_ids.append(task_id)
+            task_id_to_index[task_id] = worker_idx
 
         # Add results to journal
         print("Waiting for results")
 
-        # Create mapping from future to index for proper error handling
-        future_to_index = {future: i for i, future in enumerate(futures)}
+        # Wait for results with timeout
+        results = self.worker_manager.wait_for_results(task_ids, timeout=self.timeout)
         completed_indices = set()
 
-        # Use as_completed with overall timeout to process results as they complete
-        try:
-            for future in as_completed(futures, timeout=self.timeout):
-                i = future_to_index[future]
-                completed_indices.add(i)
-                try:
-                    print(f"About to get result from future (worker {i})")
-                    result_data = future.result()  # Already completed, no timeout needed
-                    if "metric" in result_data:
-                        print(f"metric type: {type(result_data['metric'])}")
-                        print(f"metric contents: {result_data['metric']}")
+        # Process completed results
+        for task_id, worker_result in results.items():
+            i = task_id_to_index[task_id]
+            completed_indices.add(i)
+            try:
+                print(f"About to process result from worker {i}")
+                if worker_result.error:
+                    raise worker_result.error
+                result_data = worker_result.result
+                if "metric" in result_data:
+                    print(f"metric type: {type(result_data['metric'])}")
+                    print(f"metric contents: {result_data['metric']}")
 
-                    # Create node and restore relationships using journal.
-                    # Journal acts as a database to look up a parent node,
-                    # and add the result node as a child.
-                    result_node = Node.from_dict(result_data, self.journal)
-                    print("[red]Investigating if result node has metric[/red]", flush=True)
-                    print(result_node.metric)
-                    # Update hyperparam tuning state if in Stage 2
-                    self._update_hyperparam_tuning_state(result_node)
-                    # Update ablation state if in Stage 4
-                    self._update_ablation_state(result_node)
+                # Create node and restore relationships using journal.
+                # Journal acts as a database to look up a parent node,
+                # and add the result node as a child.
+                result_node = Node.from_dict(result_data, self.journal)
+                print("[red]Investigating if result node has metric[/red]", flush=True)
+                print(result_node.metric)
+                # Update hyperparam tuning state if in Stage 2
+                self._update_hyperparam_tuning_state(result_node)
+                # Update ablation state if in Stage 4
+                self._update_ablation_state(result_node)
 
-                    # Add node to journal's list and assign its step number
-                    self.journal.append(result_node)
-                    print("Added result node to journal")
+                # Add node to journal's list and assign its step number
+                self.journal.append(result_node)
+                print("Added result node to journal")
 
-                except Exception as e:
-                    print(f"Error processing node from worker {i}: {escape(str(e))}")
-                    logger.error(f"Error processing node from worker {i}: {str(e)}")
-                    import traceback
-                    traceback.print_exc()
-                    raise
-                finally:
-                    # Release GPU for this process if it was using one
-                    process_id = f"worker_{i}"
-                    if (
-                        self.gpu_manager is not None
-                        and process_id in self.gpu_manager.gpu_assignments
-                    ):
-                        self.gpu_manager.release_gpu(process_id)
-                        logger.info(f"Released GPU for process {process_id}")
+            except Exception as e:
+                print(f"Error processing node from worker {i}: {escape(str(e))}")
+                logger.error(f"Error processing node from worker {i}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                raise
+            finally:
+                # Release GPU for this process if it was using one
+                process_id = f"worker_{i}"
+                if (
+                    self.gpu_manager is not None
+                    and process_id in self.gpu_manager.gpu_assignments
+                ):
+                    self.gpu_manager.release_gpu(process_id)
+                    logger.info(f"Released GPU for process {process_id}")
 
-        except FuturesTimeoutError:
-            # Handle futures that didn't complete within the timeout
+        # Check if any tasks timed out
+        timed_out_indices = set(range(len(task_ids))) - completed_indices
+        if timed_out_indices:
             print(f"Overall timeout of {self.timeout} seconds reached")
-            logger.error(f"Overall timeout of {self.timeout} seconds reached, processing incomplete futures")
+            logger.error(f"Overall timeout of {self.timeout} seconds reached, processing incomplete tasks")
 
-        # Process any futures that timed out
-        for i, future in enumerate(futures):
+            # Terminate and restart workers to clean up timed out processes
+            self.worker_manager.terminate_and_restart()
+
+        # Process any tasks that timed out
+        for i in range(len(task_ids)):
             if i in completed_indices:
                 continue
 
             print(f"Worker process {i} timed out, couldn't get the result")
             logger.error(f"Worker process {i} timed out after {self.timeout} seconds")
-
-            # Cancel the future (may not stop already-running process in ProcessPoolExecutor)
-            future.cancel()
 
             # Create error node and add to journal
             parent_node = nodes_to_process[i] if i < len(nodes_to_process) else None
@@ -5101,31 +5481,20 @@ class ParallelAgent:
     def cleanup(self):
         """Cleanup parallel workers and resources"""
         if not self._is_shutdown:
-            print("Shutting down parallel executor...")
+            print("Shutting down WorkerManager...")
             try:
                 # Release all GPUs
                 if self.gpu_manager is not None:
                     for process_id in list(self.gpu_manager.gpu_assignments.keys()):
                         self.gpu_manager.release_gpu(process_id)
 
-                # Shutdown executor first
-                self.executor.shutdown(wait=False, cancel_futures=True)
+                # Shutdown WorkerManager (terminates all worker processes)
+                self.worker_manager.shutdown(wait=False)
 
-                # Force terminate all worker processes
-                if self.executor._processes:
-                    ## Get copy of processes
-                    processes = list(self.executor._processes.values())
-
-                    # Then terminate processes if they're still alive
-                    for process in processes:
-                        if process.is_alive():
-                            process.terminate()
-                            process.join(timeout=1)
-
-                print("Executor shutdown complete")
+                print("WorkerManager shutdown complete")
 
             except Exception as e:
-                print(f"Error during executor shutdown: {e}")
+                print(f"Error during WorkerManager shutdown: {e}")
             finally:
                 self._is_shutdown = True
 

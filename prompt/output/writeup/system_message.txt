@@ -39,11 +39,11 @@ Here are some tips for each section of the paper:
 
 - **Experimental Setup**:
   - Explain how you tested your method or hypothesis.
-  - Describe necessary details such as data, environment, and baselines, but omit hardware details unless explicitly mentioned.
+  - Describe necessary details such as data, environment, and reference methods or configurations, but omit hardware details unless explicitly mentioned.
 
 - **Experiments**:
   - Present the results truthfully according to the data you have. If outcomes are not as expected, discuss it transparently.
-  - Include comparisons to baselines if available, and only include analyses supported by genuine data.
+  - Include comparisons to reference methods or configurations if available, and only include analyses supported by genuine data.
   - Try to include all relevant plots and tables. Consider combining multiple plots into one figure if they are related.
 
 - **Conclusion**:

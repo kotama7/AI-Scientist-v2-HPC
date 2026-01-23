@@ -1,4 +1,4 @@
-Example to extract data from experiment_data: experiment_data['dataset_name_1']['metrics']['train']
+Example to extract data from experiment_data: experiment_data['case_name_1']['metrics']['primary']
 Example data loading and plot saving code:
 
                 try:
