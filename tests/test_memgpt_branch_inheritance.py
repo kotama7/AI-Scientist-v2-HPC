@@ -15,8 +15,6 @@ class TestMemGPTBranchInheritance(unittest.TestCase):
                 recall_max_events=5,
                 retrieval_k=5,
                 use_fts="off",
-                always_inject_idea_summary=False,
-                always_inject_phase0_summary=False,
             )
             mem = MemoryManager(db_path, cfg)
             root = mem.create_branch(None, node_uid="root")

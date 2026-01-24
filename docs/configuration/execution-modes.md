@@ -6,7 +6,7 @@ on the host and is useful for local development.
 
 ## Split Mode overview
 
-![Split overview](images/phasing_flow.png)
+![Split overview](../images/phasing_flow.png)
 
 ## Split vs single comparison
 

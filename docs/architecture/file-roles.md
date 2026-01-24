@@ -20,10 +20,28 @@ HPC-AutoResearch project.
 | File | Role |
 |------|------|
 | `__init__.py` | Package marker. |
-| `llm.py` | LLM client factory and API call wrappers. Supports OpenAI, Anthropic, Ollama, DeepSeek, Gemini, Bedrock, Vertex AI. Includes token tracking decorator and response normalization. |
-| `vlm.py` | Vision-Language Model client for image-based analysis (plot review, figure captioning). |
 | `prompt_loader.py` | Prompt file loader with caching and persona override support. Resolves templates from `prompt/` directory. |
 | `persona.py` | Persona system for role-based prompt customization. Replaces `{persona}` placeholders with configured `agent.role_description`. |
+
+### llm/ (LLM Client Package)
+
+| File | Role |
+|------|------|
+| `__init__.py` | Exports LLM client factory and utilities. |
+| `clients.py` | LLM client factory. Supports OpenAI, Anthropic, Ollama, DeepSeek, Gemini, Bedrock, Vertex AI. |
+| `constants.py` | LLM-related constants and model configurations. |
+| `response.py` | Response parsing and normalization. Includes token tracking decorator. |
+| `utils.py` | Utility functions for LLM operations. |
+
+### vlm/ (Vision-Language Model Package)
+
+| File | Role |
+|------|------|
+| `__init__.py` | Exports VLM client factory and utilities. |
+| `clients.py` | VLM client factory for image-based analysis. |
+| `constants.py` | VLM-related constants and model configurations. |
+| `response.py` | VLM response parsing and normalization. |
+| `utils.py` | Utility functions for VLM operations (plot review, figure captioning). |
 | `perform_ideation_temp_free.py` | Idea generation module. Generates research ideas from seed topics using LLM. |
 | `perform_plotting.py` | Plot aggregation and VLM-based plot analysis. Selects best plots for paper inclusion. |
 | `perform_writeup.py` | Paper writeup generation. Produces LaTeX content from experiment results with citation gathering. |
@@ -90,12 +108,9 @@ See [prompt-structure.md](prompt-structure.md) for detailed structure.
 | File | Role |
 |------|------|
 | `test_resource.py` | Tests for resource file handling. |
-| `test_resource_memory.py` | Tests for resource memory integration. |
 | `test_llm_compression.py` | Tests for LLM-based memory compression. |
 | `test_iterative_compression.py` | Tests for iterative compression. |
 | `test_memgpt_branch_inheritance.py` | Tests for MemGPT branch inheritance. |
-| `test_phase0_internal_persisted.py` | Tests for Phase 0 internal state persistence. |
-| `test_idea_md_persisted_and_injected.py` | Tests for idea.md persistence and injection. |
 | `test_final_memory_generation.py` | Tests for final memory generation. |
 | `test_writeup_memory_loading.py` | Tests for writeup memory loading. |
 | `test_smoke_split.py` | Smoke tests for split execution mode. |

@@ -209,15 +209,6 @@ RESOURCE_INDEX = {
 ### Resource Memory Operations
 
 ```python
-# Update resource index
-mem_resources_index_update(index_data)
-
-# Upsert resource item snapshot
-mem_resources_snapshot_upsert(item_snapshot)
-
-# Refresh after Phase 1 fetch
-mem_resources_resolve_and_refresh()
-
 # Track resource usage
 track_resource_usage(resource_id, usage_type)
 ```

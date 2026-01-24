@@ -65,7 +65,7 @@ Detailed guides live in `docs/`. Start with
   [template/README.md](template/README.md).
 - Credentials: [docs/credentials.md](docs/credentials.md) (model provider API
   keys and scope); related: [bfts_config.yaml](bfts_config.yaml),
-  [ai_scientist/llm.py](ai_scientist/llm.py).
+  [ai_scientist/llm/](ai_scientist/llm/).
 - CLI entry points: [docs/cli-entry-points.md](docs/cli-entry-points.md) (what
   each script does); related: [launch_scientist_bfts.py](launch_scientist_bfts.py),
   [generate_paper.py](generate_paper.py),

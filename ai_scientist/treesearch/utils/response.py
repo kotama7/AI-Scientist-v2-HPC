@@ -4,6 +4,11 @@ import re
 import black
 
 
+class MalformedMemoryUpdateError(Exception):
+    """Raised when a malformed <memory_update> block is detected."""
+    pass
+
+
 def wrap_code(code: str, lang: str | None = "python") -> str:
     """Wrap code with triple backticks and an optional language hint."""
     lang = lang or ""
@@ -80,3 +85,86 @@ def format_code(code: str) -> str:
         return black.format_str(code, mode=black.FileMode())
     except black.parsing.InvalidInput:  # type: ignore
         return code
+
+
+def extract_memory_updates(text: str) -> dict | None:
+    """Extract memory update instructions from LLM response.
+
+    Looks for a <memory_update>...</memory_update> block containing JSON
+    that specifies memory operations for core, archival, and/or recall.
+
+    Args:
+        text: The LLM response text to parse.
+
+    Returns:
+        A dict with memory update instructions, or None if not found or invalid.
+        Expected format:
+        {
+            "core": {"key": "value", ...},
+            "archival": [{"text": "...", "tags": [...]}],
+            "recall": {"kind": "...", "content": "..."}
+        }
+    """
+    if not text:
+        return None
+
+    pattern = r'<memory_update>\s*(.*?)\s*</memory_update>'
+    match = re.search(pattern, text, re.DOTALL)
+    if not match:
+        return None
+
+    try:
+        updates = json.loads(match.group(1))
+        if not isinstance(updates, dict):
+            return None
+        return updates
+    except json.JSONDecodeError:
+        return None
+
+
+def check_malformed_memory_update(text: str) -> bool:
+    """Check if text contains a malformed <memory_update> block.
+
+    Malformed patterns include:
+    - Missing closing '>' on opening tag: <memory_update"core":...
+    - Self-closing with }}/> instead of proper closing tag
+
+    Note: Escaped slash in closing tag (<\/memory_update>) is NOT malformed,
+    it's a valid format handled by remove_memory_update_tags.
+
+    Args:
+        text: The text to check.
+
+    Returns:
+        True if malformed memory_update block detected, False otherwise.
+    """
+    if not text:
+        return False
+    # Pattern for malformed: <memory_update without proper > before content, ending with }}/>
+    # This catches cases like: <memory_update"core":{...}}/>
+    malformed_pattern = r'<memory_update[^>]*\{.*?\}\}\s*/>'
+    return bool(re.search(malformed_pattern, text, flags=re.DOTALL))
+
+
+def remove_memory_update_tags(text: str) -> str:
+    """Remove <memory_update>...</memory_update> blocks from text.
+
+    Handles various malformed patterns from LLM output:
+    - Normal: <memory_update>...</memory_update>
+    - Escaped slash: <memory_update>...<\/memory_update>
+    - Malformed: <memory_update...}}/>
+
+    Args:
+        text: The text to clean.
+
+    Returns:
+        Text with memory update blocks removed.
+    """
+    if not text:
+        return text
+    # Match <memory_update with various endings:
+    # - </memory_update> (normal)
+    # - <\/memory_update> (escaped slash)
+    # - }}/> (malformed self-closing)
+    pattern = r'<memory_update.*?(?:</memory_update>|<\\/memory_update>|\}\}\s*/>)'
+    return re.sub(pattern, '', text, flags=re.DOTALL).strip()

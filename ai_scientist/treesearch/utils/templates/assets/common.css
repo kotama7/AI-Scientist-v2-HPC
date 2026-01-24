@@ -1,0 +1,369 @@
+/**
+ * Common styles for AI-Scientist visualizations
+ * Shared between memory_database.html and unified_tree_viz.html
+ */
+
+/* ===== Reset & Base ===== */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: #1a1a2e;
+    color: #eee;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ===== Layout: Resizable Panels ===== */
+.panel-container {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+}
+
+.panel {
+    height: 100vh;
+    overflow: hidden;
+    position: relative;
+}
+
+.panel-left {
+    flex-shrink: 0;
+    background-color: #16213e;
+}
+
+.panel-right {
+    flex-grow: 1;
+    background-color: #0f0f23;
+    overflow-y: auto;
+    padding: 20px;
+}
+
+/* Resizer handle */
+.panel-resizer {
+    width: 6px;
+    background-color: #333;
+    cursor: col-resize;
+    flex-shrink: 0;
+    transition: background-color 0.2s;
+    position: relative;
+}
+
+.panel-resizer:hover,
+.panel-resizer.active {
+    background-color: #e94560;
+}
+
+.panel-resizer::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px;
+    height: 40px;
+    background-color: #666;
+    border-radius: 1px;
+}
+
+.panel-resizer:hover::after,
+.panel-resizer.active::after {
+    background-color: #fff;
+}
+
+/* ===== Header ===== */
+.header {
+    background-color: #1a1a2e;
+    padding: 15px;
+    border-bottom: 2px solid #e94560;
+    margin-bottom: 20px;
+    border-radius: 4px;
+}
+
+.header h1 {
+    font-size: 1.5rem;
+    color: #e94560;
+    margin-bottom: 5px;
+}
+
+.header .subtitle {
+    font-size: 0.9rem;
+    color: #888;
+}
+
+/* ===== Collapsible Sections ===== */
+.section {
+    margin-bottom: 20px;
+    background-color: #16213e;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #333;
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 15px;
+    background-color: #1a1a2e;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.2s;
+}
+
+.section-header:hover {
+    background-color: #252540;
+}
+
+.section-title {
+    font-weight: 600;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.section-badge {
+    background-color: #e94560;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.75rem;
+    font-weight: normal;
+}
+
+.section-toggle {
+    color: #888;
+    transition: transform 0.2s;
+    font-size: 0.8rem;
+}
+
+.section-toggle.collapsed {
+    transform: rotate(-90deg);
+}
+
+.section-content {
+    padding: 15px;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.section-content.collapsed {
+    display: none;
+}
+
+/* ===== Tabs ===== */
+.tabs {
+    display: flex;
+    gap: 5px;
+    padding: 10px 15px;
+    background-color: #1a1a2e;
+    border-bottom: 1px solid #333;
+    flex-wrap: wrap;
+}
+
+.tab {
+    padding: 8px 16px;
+    background-color: transparent;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #aaa;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+}
+
+.tab:hover {
+    background-color: #252540;
+    color: #eee;
+}
+
+.tab.active {
+    background-color: #e94560;
+    border-color: #e94560;
+    color: white;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* ===== Cards ===== */
+.card {
+    background-color: #1a1a2e;
+    border-radius: 4px;
+    padding: 12px;
+    margin: 8px 0;
+    border-left: 3px solid #4dabf7;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.card-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.card-meta {
+    font-size: 0.75rem;
+    color: #888;
+}
+
+.card-content {
+    font-size: 0.85rem;
+    color: #ccc;
+    line-height: 1.5;
+}
+
+/* ===== Badges & Tags ===== */
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.badge-read { background-color: rgba(81, 207, 102, 0.2); color: #51cf66; }
+.badge-write { background-color: rgba(255, 107, 107, 0.2); color: #ff6b6b; }
+.badge-fork { background-color: rgba(77, 171, 247, 0.2); color: #4dabf7; }
+.badge-system { background-color: rgba(134, 142, 150, 0.2); color: #868e96; }
+.badge-llm { background-color: rgba(190, 75, 219, 0.2); color: #be4bdb; }
+
+.tag {
+    display: inline-block;
+    padding: 2px 6px;
+    margin: 2px;
+    background-color: #333;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    color: #aaa;
+}
+
+/* ===== Statistics Bar ===== */
+.stats-bar {
+    display: flex;
+    gap: 20px;
+    padding: 15px;
+    background-color: #16213e;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+
+.stat-item {
+    text-align: center;
+    min-width: 80px;
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #e94560;
+}
+
+.stat-label {
+    font-size: 0.75rem;
+    color: #888;
+    margin-top: 4px;
+}
+
+/* ===== Timeline ===== */
+.timeline {
+    position: relative;
+    padding-left: 30px;
+}
+
+.timeline::before {
+    content: '';
+    position: absolute;
+    left: 10px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background-color: #333;
+}
+
+.timeline-item {
+    position: relative;
+    margin-bottom: 15px;
+    padding: 12px;
+    background-color: #1a1a2e;
+    border-radius: 4px;
+}
+
+.timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -24px;
+    top: 16px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: #4dabf7;
+    border: 2px solid #16213e;
+}
+
+.timeline-item.read::before { background-color: #51cf66; }
+.timeline-item.write::before { background-color: #ff6b6b; }
+.timeline-item.fork::before { background-color: #4dabf7; }
+.timeline-item.system::before { background-color: #868e96; }
+.timeline-item.llm::before { background-color: #be4bdb; }
+
+/* ===== Utilities ===== */
+.text-muted { color: #888; }
+.text-success { color: #51cf66; }
+.text-danger { color: #ff6b6b; }
+.text-info { color: #4dabf7; }
+.text-warning { color: #f59f00; }
+
+.mt-1 { margin-top: 0.5rem; }
+.mt-2 { margin-top: 1rem; }
+.mb-1 { margin-bottom: 0.5rem; }
+.mb-2 { margin-bottom: 1rem; }
+
+.hidden { display: none !important; }
+
+/* ===== Code blocks ===== */
+.code-block {
+    background-color: #0f0f23;
+    border-radius: 4px;
+    padding: 10px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.85rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #1a1a2e;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}

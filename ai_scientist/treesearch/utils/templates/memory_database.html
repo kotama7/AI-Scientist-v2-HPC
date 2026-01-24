@@ -64,31 +64,6 @@
             color: #888;
             margin-top: 5px;
         }
-        .phase-buttons {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-bottom: 20px;
-        }
-        .phase-btn {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: all 0.2s;
-            background-color: #16213e;
-            color: #eee;
-            border: 1px solid #333;
-        }
-        .phase-btn:hover {
-            background-color: #1a1a2e;
-            border-color: #e94560;
-        }
-        .phase-btn.active {
-            background-color: #e94560;
-            border-color: #e94560;
-        }
         /* Split-phase navigation */
         .split-phase-nav {
             display: flex;
@@ -387,6 +362,77 @@
         .ancestor-chain a:hover {
             text-decoration: underline;
         }
+        /* Memory calls (reads/operations log) */
+        .memory-call-item {
+            padding: 12px;
+            margin: 8px 0;
+            background-color: #1a1a2e;
+            border-left: 3px solid #f59f00;
+            border-radius: 4px;
+        }
+        .memory-call-item.read {
+            border-left-color: #51cf66;
+        }
+        .memory-call-item.write {
+            border-left-color: #ff6b6b;
+        }
+        .memory-call-item.fork {
+            border-left-color: #4dabf7;
+        }
+        .memory-call-item.system {
+            border-left-color: #868e96;
+        }
+        .memory-call-item.llm {
+            border-left-color: #be4bdb;
+        }
+        .memory-call-item.inherited {
+            opacity: 0.8;
+            border-left-color: #888;
+        }
+        .memory-call-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .memory-call-op {
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+        .memory-call-op.read { color: #51cf66; }
+        .memory-call-op.write { color: #ff6b6b; }
+        .memory-call-op.fork { color: #4dabf7; }
+        .memory-call-op.system { color: #868e96; }
+        .memory-call-op.llm { color: #be4bdb; }
+        .memory-call-op.other { color: #f59f00; }
+        .memory-call-time {
+            font-size: 0.75rem;
+            color: #888;
+        }
+        .memory-call-phase {
+            font-size: 0.8rem;
+            color: #b197fc;
+            margin-bottom: 4px;
+        }
+        .memory-call-details {
+            font-size: 0.85rem;
+            color: #aaa;
+            background-color: #0f0f23;
+            padding: 8px;
+            border-radius: 4px;
+            margin-top: 8px;
+        }
+        .memory-call-detail-row {
+            display: flex;
+            margin: 2px 0;
+        }
+        .memory-call-detail-key {
+            color: #888;
+            min-width: 120px;
+        }
+        .memory-call-detail-value {
+            color: #ccc;
+        }
     </style>
 </head>
 <body>
@@ -396,7 +442,6 @@
             <h1>__EXPERIMENT_NAME__</h1>
             <div class="node-info" id="current-node-info">Click a node to view memory state</div>
         </div>
-        <div class="phase-buttons" id="phase-buttons"></div>
         <div class="split-phase-nav hidden" id="split-phase-nav">
             <span class="split-phase-label">実行フェーズ:</span>
             <button class="split-phase-arrow" id="prev-phase" onclick="navigateSplitPhase(-1)">◀</button>
@@ -457,6 +502,7 @@ const MEMORY_TASK_HINTS = {
     'ablation_node': 'Ablation Study',
     'best_node_selection': 'Best Node Selection',
     'journal_summary': 'Journal Summary',
+    'datasets_successfully_tested': 'Datasets Tested',
 };
 
 class Node {
@@ -619,10 +665,7 @@ function selectNode(index) {
             `Node ${index} | Branch: ${nodeData.branch_id.substring(0, 8)}... | UID: ${nodeData.node_uid || 'unknown'}`;
     }
 
-    const phaseContainer = document.getElementById('phase-buttons');
-    phaseContainer.innerHTML = '';
-
-    // For virtual nodes, show message and hide phase buttons
+    // For virtual nodes, show message
     if (isVirtual) {
         document.getElementById('split-phase-nav').classList.add('hidden');
         document.getElementById('memory-content').innerHTML = `
@@ -634,23 +677,6 @@ function selectNode(index) {
             </div>
         `;
         return;
-    }
-
-    // Always add ALL button first
-    const allBtn = document.createElement('button');
-    allBtn.className = 'phase-btn';
-    allBtn.textContent = 'ALL';
-    allBtn.onclick = () => selectPhase('ALL');
-    phaseContainer.appendChild(allBtn);
-
-    if (nodeData.phases.length > 0) {
-        for (const phase of nodeData.phases) {
-            const btn = document.createElement('button');
-            btn.className = 'phase-btn';
-            btn.textContent = phase;
-            btn.onclick = () => selectPhase(phase);
-            phaseContainer.appendChild(btn);
-        }
     }
 
     // Setup split-phase navigation
@@ -881,10 +907,6 @@ function displaySplitPhaseMemory() {
 function selectPhase(phase) {
     selectedPhase = phase;
 
-    document.querySelectorAll('.phase-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.textContent === phase);
-    });
-
     const nodeData = memoryData.nodes[selectedNodeIndex];
 
     if (phase === 'ALL' || phase === 'summary') {
@@ -976,6 +998,217 @@ function renderArchival(items, isInherited = false) {
     `).join('');
 }
 
+// Memory operation type classification
+// Based on docs/memory.md - MemGPT-style memory API
+const MEMORY_OP_TYPES = {
+    // === Prompt Injection ===
+    'render_for_prompt': { type: 'read', label: 'Memory Injection', category: 'injection' },
+
+    // === Core Memory (always-visible key-value store) ===
+    'mem_core_get': { type: 'read', label: 'Core Get', category: 'core' },
+    'mem_core_set': { type: 'write', label: 'Core Set', category: 'core' },
+    'mem_core_del': { type: 'write', label: 'Core Delete', category: 'core' },
+    'set_core': { type: 'write', label: 'Core Set (legacy)', category: 'core' },
+    'get_core': { type: 'read', label: 'Core Get (legacy)', category: 'core' },
+
+    // === Recall Memory (recent events timeline) ===
+    'mem_recall_append': { type: 'write', label: 'Recall Append', category: 'recall' },
+    'mem_recall_search': { type: 'read', label: 'Recall Search', category: 'recall' },
+    'recall_evict': { type: 'write', label: 'Recall Evict', category: 'recall' },
+    'recall_summarize': { type: 'write', label: 'Recall Summarize', category: 'recall' },
+
+    // === Archival Memory (searchable long-term store) ===
+    'mem_archival_write': { type: 'write', label: 'Archival Write', category: 'archival' },
+    'mem_archival_update': { type: 'write', label: 'Archival Update', category: 'archival' },
+    'mem_archival_search': { type: 'read', label: 'Archival Search', category: 'archival' },
+    'mem_archival_get': { type: 'read', label: 'Archival Get', category: 'archival' },
+    'write_archival': { type: 'write', label: 'Archival Write (legacy)', category: 'archival' },
+    'retrieve_archival': { type: 'read', label: 'Archival Retrieve (legacy)', category: 'archival' },
+
+    // === Node Operations ===
+    'mem_node_fork': { type: 'fork', label: 'Node Fork', category: 'node' },
+    'mem_node_read': { type: 'read', label: 'Node Read', category: 'node' },
+    'mem_node_write': { type: 'write', label: 'Node Write (batch)', category: 'node' },
+
+    // === Memory Management ===
+    'check_memory_pressure': { type: 'system', label: 'Pressure Check', category: 'management' },
+    'consolidate': { type: 'system', label: 'Consolidation', category: 'management' },
+    'importance_evaluation': { type: 'system', label: 'Importance Eval', category: 'management' },
+
+    // === LLM Memory Operations (via <memory_update>) ===
+    'llm_core_set': { type: 'llm', label: 'LLM Core Set', category: 'llm' },
+    'llm_core_get': { type: 'llm', label: 'LLM Core Get', category: 'llm' },
+    'llm_core_delete': { type: 'llm', label: 'LLM Core Delete', category: 'llm' },
+    'llm_archival_write': { type: 'llm', label: 'LLM Archival Write', category: 'llm' },
+    'llm_archival_search': { type: 'llm', label: 'LLM Archival Search', category: 'llm' },
+    'llm_archival_update': { type: 'llm', label: 'LLM Archival Update', category: 'llm' },
+    'llm_recall_append': { type: 'llm', label: 'LLM Recall Append', category: 'llm' },
+    'llm_recall_search': { type: 'llm', label: 'LLM Recall Search', category: 'llm' },
+    'llm_recall_evict': { type: 'llm', label: 'LLM Recall Evict', category: 'llm' },
+    'llm_recall_summarize': { type: 'llm', label: 'LLM Recall Summarize', category: 'llm' },
+    'llm_consolidate': { type: 'llm', label: 'LLM Consolidate', category: 'llm' },
+};
+
+function renderMemoryCalls(items, isInherited = false) {
+    if (!items || items.length === 0) return '';
+    const inheritedClass = isInherited ? 'inherited' : '';
+
+    return items.map(item => {
+        const op = item.op || 'unknown';
+        const opInfo = MEMORY_OP_TYPES[op] || { type: 'other', label: op };
+        const opType = opInfo.type;
+        const opLabel = opInfo.label;
+        const phase = item.phase || 'N/A';
+        const ts = item.ts ? new Date(item.ts * 1000).toLocaleTimeString() : '';
+        const details = item.details || {};
+
+        // Format details based on operation type
+        let detailsHtml = '';
+        const category = opInfo.category || 'other';
+
+        if (op === 'render_for_prompt') {
+            // Memory injection into prompt
+            detailsHtml = `
+                <div class="memory-call-details">
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Budget:</span>
+                        <span class="memory-call-detail-value">${details.budget_chars?.toLocaleString() || 'N/A'} chars</span>
+                    </div>
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Core items:</span>
+                        <span class="memory-call-detail-value">${details.core_count || 0}</span>
+                    </div>
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Recall items:</span>
+                        <span class="memory-call-detail-value">${details.recall_count || 0}</span>
+                    </div>
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Archival items:</span>
+                        <span class="memory-call-detail-value">${details.archival_count || 0}</span>
+                    </div>
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Resource items:</span>
+                        <span class="memory-call-detail-value">${details.resource_items || 0}</span>
+                    </div>
+                </div>`;
+        } else if (op === 'mem_recall_append') {
+            // Recall event append
+            detailsHtml = `
+                <div class="memory-call-details">
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Kind:</span>
+                        <span class="memory-call-detail-value">${details.kind || 'N/A'}</span>
+                    </div>
+                    ${details.summary_preview ? `
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Summary:</span>
+                        <span class="memory-call-detail-value">${escapeHtml(details.summary_preview.substring(0, 200))}${details.summary_preview.length > 200 ? '...' : ''}</span>
+                    </div>` : ''}
+                </div>`;
+        } else if (op === 'mem_node_fork') {
+            // Node fork operation
+            detailsHtml = `
+                <div class="memory-call-details">
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Parent Node:</span>
+                        <span class="memory-call-detail-value">${details.parent_node_id ? details.parent_node_id.substring(0, 12) + '...' : 'None (root)'}</span>
+                    </div>
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Child Branch:</span>
+                        <span class="memory-call-detail-value">${details.child_branch_id ? details.child_branch_id.substring(0, 12) + '...' : 'N/A'}</span>
+                    </div>
+                </div>`;
+        } else if (category === 'core' && (op.includes('set') || op.includes('del'))) {
+            // Core memory set/delete
+            const keys = details.keys || (details.key ? [details.key] : []);
+            detailsHtml = keys.length > 0 ? `
+                <div class="memory-call-details">
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Keys:</span>
+                        <span class="memory-call-detail-value">${escapeHtml(keys.join(', '))}</span>
+                    </div>
+                </div>` : '';
+        } else if (category === 'archival' && op.includes('search')) {
+            // Archival search
+            detailsHtml = `
+                <div class="memory-call-details">
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Query:</span>
+                        <span class="memory-call-detail-value">${escapeHtml(details.query || 'N/A')}</span>
+                    </div>
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Results:</span>
+                        <span class="memory-call-detail-value">${details.k || details.result_count || 'N/A'}</span>
+                    </div>
+                    ${details.tags ? `
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Tags:</span>
+                        <span class="memory-call-detail-value">${escapeHtml(details.tags.join(', '))}</span>
+                    </div>` : ''}
+                </div>`;
+        } else if (category === 'archival' && (op.includes('write') || op.includes('update'))) {
+            // Archival write/update
+            detailsHtml = `
+                <div class="memory-call-details">
+                    ${details.text ? `
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Text:</span>
+                        <span class="memory-call-detail-value">${escapeHtml(String(details.text).substring(0, 150))}${String(details.text).length > 150 ? '...' : ''}</span>
+                    </div>` : ''}
+                    ${details.tags ? `
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Tags:</span>
+                        <span class="memory-call-detail-value">${escapeHtml(details.tags.join(', '))}</span>
+                    </div>` : ''}
+                </div>`;
+        } else if (op === 'check_memory_pressure') {
+            // Memory pressure check
+            detailsHtml = `
+                <div class="memory-call-details">
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Pressure:</span>
+                        <span class="memory-call-detail-value">${details.pressure_level || details.pressure || 'N/A'}</span>
+                    </div>
+                    ${details.usage_percent !== undefined ? `
+                    <div class="memory-call-detail-row">
+                        <span class="memory-call-detail-key">Usage:</span>
+                        <span class="memory-call-detail-value">${(details.usage_percent * 100).toFixed(1)}%</span>
+                    </div>` : ''}
+                </div>`;
+        } else if (category === 'llm') {
+            // LLM-initiated memory operations
+            let llmDetails = [];
+            if (details.keys) llmDetails.push(`Keys: ${details.keys.join(', ')}`);
+            if (details.query) llmDetails.push(`Query: ${details.query}`);
+            if (details.text) llmDetails.push(`Text: ${String(details.text).substring(0, 100)}...`);
+            if (details.kind) llmDetails.push(`Kind: ${details.kind}`);
+            if (details.count !== undefined) llmDetails.push(`Count: ${details.count}`);
+            detailsHtml = llmDetails.length > 0 ? `
+                <div class="memory-call-details">
+                    ${llmDetails.map(d => `<div class="memory-call-detail-row"><span class="memory-call-detail-value">${escapeHtml(d)}</span></div>`).join('')}
+                </div>` : '';
+        } else if (Object.keys(details).length > 0) {
+            // Generic fallback for other operations
+            const detailRows = Object.entries(details).slice(0, 5).map(([k, v]) => `
+                <div class="memory-call-detail-row">
+                    <span class="memory-call-detail-key">${escapeHtml(k)}:</span>
+                    <span class="memory-call-detail-value">${escapeHtml(String(v).substring(0, 100))}</span>
+                </div>`).join('');
+            detailsHtml = `<div class="memory-call-details">${detailRows}</div>`;
+        }
+
+        return `
+        <div class="memory-call-item ${opType} ${inheritedClass}">
+            <div class="memory-call-header">
+                <span class="memory-call-op ${opType}">${escapeHtml(opLabel)}</span>
+                <span class="memory-call-time">${ts}</span>
+            </div>
+            <div class="memory-call-phase">Phase: ${escapeHtml(phase)}</div>
+            ${detailsHtml}
+        </div>
+    `}).join('');
+}
+
 function renderAncestorChain(ancestors) {
     if (!ancestors || ancestors.length === 0) return '';
     const links = ancestors.map(a =>
@@ -991,15 +1224,24 @@ function displayAllMemory(nodeData) {
     const ownCoreKV = nodeData.own_core_kv || nodeData.core_kv || [];
     const ownEvents = nodeData.own_events || nodeData.events || [];
     const ownArchival = nodeData.own_archival || nodeData.archival || [];
+    const ownMemoryCalls = nodeData.own_memory_calls || nodeData.memory_calls || [];
     const inheritedCoreKV = nodeData.inherited_core_kv || [];
     const inheritedEvents = nodeData.inherited_events || [];
     const inheritedArchival = nodeData.inherited_archival || [];
+    const inheritedMemoryCalls = nodeData.inherited_memory_calls || [];
     const ancestors = nodeData.ancestors || [];
 
     let html = '';
 
     // Own data (this node's data)
     html += '<div class="data-group"><div class="data-group-header">このノードのデータ</div>';
+
+    html += createSection(
+        'Memory Operations Log',
+        renderMemoryCalls(ownMemoryCalls),
+        ownMemoryCalls.length,
+        true
+    );
 
     html += createSection(
         'Working Context (Core KV)',
@@ -1025,11 +1267,18 @@ function displayAllMemory(nodeData) {
     html += '</div>';
 
     // Inherited data (from ancestors)
-    const hasInherited = inheritedCoreKV.length + inheritedEvents.length + inheritedArchival.length > 0;
+    const hasInherited = inheritedCoreKV.length + inheritedEvents.length + inheritedArchival.length + inheritedMemoryCalls.length > 0;
 
     if (hasInherited) {
         html += '<div class="data-group"><div class="data-group-header inherited">継承されたデータ（祖先ノードから）</div>';
         html += renderAncestorChain(ancestors);
+
+        html += createSection(
+            'Memory Operations Log',
+            renderMemoryCalls(inheritedMemoryCalls, true),
+            inheritedMemoryCalls.length,
+            false
+        );
 
         html += createSection(
             'Working Context (Core KV)',
@@ -1065,21 +1314,32 @@ function displayPhaseMemory(nodeData, phase) {
     const ownCoreKV = nodeData.own_core_kv || nodeData.core_kv || [];
     const ownEvents = nodeData.own_events || nodeData.events || [];
     const ownArchival = nodeData.own_archival || nodeData.archival || [];
+    const ownMemoryCalls = nodeData.own_memory_calls || nodeData.memory_calls || [];
     const inheritedCoreKV = nodeData.inherited_core_kv || [];
     const inheritedEvents = nodeData.inherited_events || [];
     const inheritedArchival = nodeData.inherited_archival || [];
+    const inheritedMemoryCalls = nodeData.inherited_memory_calls || [];
     const ancestors = nodeData.ancestors || [];
 
     // Filter by phase
     const ownPhaseEvents = ownEvents.filter(e => e.phase === phase);
     const ownPhaseArchival = ownArchival.filter(a => a.phase === phase);
+    const ownPhaseMemoryCalls = ownMemoryCalls.filter(m => m.phase === phase || m.phase?.includes(phase));
     const inheritedPhaseEvents = inheritedEvents.filter(e => e.phase === phase);
     const inheritedPhaseArchival = inheritedArchival.filter(a => a.phase === phase);
+    const inheritedPhaseMemoryCalls = inheritedMemoryCalls.filter(m => m.phase === phase || m.phase?.includes(phase));
 
     let html = '';
 
     // Own data
     html += '<div class="data-group"><div class="data-group-header">このノードのデータ</div>';
+
+    html += createSection(
+        `Memory Operations Log - ${phase}`,
+        renderMemoryCalls(ownPhaseMemoryCalls),
+        ownPhaseMemoryCalls.length,
+        true
+    );
 
     html += createSection(
         'Working Context (Core KV)',
@@ -1105,11 +1365,18 @@ function displayPhaseMemory(nodeData, phase) {
     html += '</div>';
 
     // Inherited data
-    const hasInherited = inheritedCoreKV.length + inheritedPhaseEvents.length + inheritedPhaseArchival.length > 0;
+    const hasInherited = inheritedCoreKV.length + inheritedPhaseEvents.length + inheritedPhaseArchival.length + inheritedPhaseMemoryCalls.length > 0;
 
     if (hasInherited) {
         html += '<div class="data-group"><div class="data-group-header inherited">継承されたデータ（祖先ノードから）</div>';
         html += renderAncestorChain(ancestors);
+
+        html += createSection(
+            `Memory Operations Log - ${phase}`,
+            renderMemoryCalls(inheritedPhaseMemoryCalls, true),
+            inheritedPhaseMemoryCalls.length,
+            false
+        );
 
         html += createSection(
             'Working Context (Core KV)',

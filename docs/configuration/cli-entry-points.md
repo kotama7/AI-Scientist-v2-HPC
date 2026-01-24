@@ -5,7 +5,7 @@ writeup. The launcher is the most common entry point.
 
 ## Entry point decision guide
 
-![Entry point decision tree](images/cli_entry_point_decision_tree.png)
+<!-- TODO: Generate cli_entry_point_decision_tree.png -->
 
 ## `launch_scientist_bfts.py`
 
@@ -134,28 +134,6 @@ python ai_scientist/perform_plotting.py \
 ## `ai_scientist/perform_writeup.py`
 
 Writeup pipeline. Use for generating paper writeups.
-
-## `regenerate_final_memory.py`
-
-Utility script to regenerate final memory artifacts for an existing experiment
-run. Use this when you need to rebuild `final_memory_for_paper.md` and
-`final_writeup_memory.json` after modifying memory configuration or fixing
-corrupted memory data.
-
-Key features:
-
-- Restores idea.md from the original idea source JSON.
-- Refreshes Phase 0 summary in core memory.
-- Regenerates final memory artifacts for paper writeup.
-
-Example:
-
-```bash
-python regenerate_final_memory.py
-```
-
-Note: You need to edit the script to specify the experiment directory and
-source idea file path before running.
 
 ## `ai_scientist/treesearch/perform_experiments_bfts_with_agentmanager.py`
 

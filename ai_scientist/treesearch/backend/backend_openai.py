@@ -78,6 +78,18 @@ def query(
 
         if func_spec is None:
             output = choice.message.content
+            # DEBUG: Log raw response for non-function calls
+            logger.info("[OpenAI DEBUG] Raw content (first 500 chars): %s", repr(output[:500]) if output else "EMPTY/NONE")
+            logger.info("[OpenAI DEBUG] Full message object: %s", choice.message)
+            # Check for reasoning content in newer models (like gpt-5.2, o1, o3)
+            if hasattr(choice.message, 'reasoning') and choice.message.reasoning:
+                logger.info("[OpenAI DEBUG] Reasoning content found: %s", repr(str(choice.message.reasoning)[:500]))
+            if output is None or output == "":
+                # Try to get output from other possible attributes
+                logger.warning("[OpenAI DEBUG] content is empty/None, checking other attributes...")
+                for attr in ['reasoning', 'text', 'response']:
+                    if hasattr(choice.message, attr) and getattr(choice.message, attr):
+                        logger.info("[OpenAI DEBUG] Found non-empty attribute '%s': %s", attr, repr(str(getattr(choice.message, attr))[:200]))
             break
 
         if choice.message.tool_calls:

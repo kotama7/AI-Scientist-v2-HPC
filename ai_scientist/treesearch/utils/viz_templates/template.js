@@ -46,14 +46,21 @@ let memoryCurrentFilter = 'all';
 const MEMORY_OP_CATEGORIES = {
   // Read operations
   'get_core': 'reads',
+  'mem_core_get': 'reads',
   'render_for_prompt': 'reads',
-  // Write operations  
+  'mem_node_read': 'reads',
+  'mem_archival_search': 'reads',
+  'mem_archival_get': 'reads',
+  'mem_recall_search': 'reads',
+  'retrieve_archival': 'reads',
+  // Write operations
   'set_core': 'writes',
   'mem_core_set': 'writes',
   'write_archival': 'writes',
   'mem_archival_write': 'writes',
-  'ingest_idea_md': 'writes',
-  'ingest_phase0_internal_info': 'writes',
+  'mem_archival_update': 'writes',
+  'mem_node_write': 'writes',
+  'write_event': 'writes',
   // Delete operations
   'core_evict': 'deletes',
   'core_delete': 'deletes',
@@ -62,10 +69,11 @@ const MEMORY_OP_CATEGORIES = {
   'mem_node_fork': 'forks',
   // Recall operations
   'mem_recall_append': 'recalls',
-  // Resource operations
-  'mem_resources_index_update': 'resources',
-  'mem_resources_snapshot_upsert': 'resources',
-  'mem_resources_resolve_and_refresh': 'resources',
+  // Maintenance operations
+  'consolidate_recall_events': 'maintenance',
+  'check_memory_pressure': 'maintenance',
+  'auto_consolidate_memory': 'maintenance',
+  'evaluate_importance_with_llm': 'maintenance',
 };
 
 // Category display configuration
@@ -75,7 +83,7 @@ const CATEGORY_CONFIG = {
   'deletes': { icon: '🗑️', label: 'Deletes', color: '#ff6b6b' },
   'forks': { icon: '🌿', label: 'Forks', color: '#da77f2' },
   'recalls': { icon: '🔄', label: 'Recalls', color: '#ffd43b' },
-  'resources': { icon: '📦', label: 'Resources', color: '#74c0fc' },
+  'maintenance': { icon: '🔧', label: 'Maintenance', color: '#adb5bd' },
   'other': { icon: '❓', label: 'Other', color: '#868e96' },
 };
 
@@ -561,6 +569,31 @@ function getEventCategory(op) {
   return MEMORY_OP_CATEGORIES[op] || 'other';
 }
 
+// Infer phase from operation type when phase is null
+function inferPhaseFromOp(op) {
+  if (!op) return 'system';
+  // Node management operations (fork, branch creation)
+  if (op.includes('node_fork') || op.includes('branch')) {
+    return 'node_setup';
+  }
+  // Resource operations
+  if (op.includes('resources') || op.includes('resource')) {
+    return 'resource_init';
+  }
+  // Initial core setup operations
+  if (op.includes('core_set') || op.includes('set_core')) {
+    return 'initialization';
+  }
+  if (op.includes('core_get') || op.includes('get_core')) {
+    return 'initialization';
+  }
+  // Archival operations without explicit phase
+  if (op.includes('archival')) {
+    return 'archival_ops';
+  }
+  return 'system';
+}
+
 function groupMemoryEvents(events) {
   const grouped = {};
   if (!Array.isArray(events)) {
@@ -570,7 +603,8 @@ function groupMemoryEvents(events) {
     if (!event || typeof event !== 'object') {
       continue;
     }
-    const phase = event.phase || 'unknown';
+    // Use explicit phase if available, otherwise infer from operation type
+    const phase = event.phase || inferPhaseFromOp(event.op);
     if (!grouped[phase]) {
       grouped[phase] = [];
     }
@@ -613,7 +647,21 @@ function filterEventsByCategory(events, filter) {
 }
 
 function sortMemoryPhases(phases) {
-  const order = ['phase0', 'phase1', 'phase2', 'phase3', 'phase4'];
+  // Order: system phases first, then explicit phases, then other inferred phases
+  const order = [
+    'node_setup',      // Node/branch creation
+    'resource_init',   // Resource initialization
+    'initialization',  // Core key-value setup
+    'phase0',          // Explicit phases
+    'phase1',
+    'phase2',
+    'phase3',
+    'phase4',
+    'define_metrics',
+    'journal_summary',
+    'archival_ops',    // Archival operations
+    'system',          // Other system operations
+  ];
   return phases.slice().sort((a, b) => {
     const aIndex = order.indexOf(a);
     const bIndex = order.indexOf(b);
@@ -661,7 +709,7 @@ function formatMemoryEvent(event) {
 
 // Render memory summary table
 function renderMemorySummary(stats) {
-  const categories = ['reads', 'writes', 'deletes', 'forks', 'recalls', 'resources'];
+  const categories = ['reads', 'writes', 'deletes', 'forks', 'recalls', 'resources', 'maintenance'];
   let rows = '';
   for (const cat of categories) {
     const config = CATEGORY_CONFIG[cat];

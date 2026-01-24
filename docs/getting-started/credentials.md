@@ -16,8 +16,8 @@ export S2_API_KEY="..."               # Optional; Semantic Scholar
 
 ## Credential flow
 
-![Credential flow](images/credentials_flow.png)
-<!-- IMAGE_PROMPT:
+<!-- TODO: Generate credentials_flow.png
+IMAGE_PROMPT:
 Create a 16:9 flow diagram: left cluster of key icons labeled OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY, HUGGINGFACE_API_KEY, OLLAMA_API_KEY, S2_API_KEY. Arrows converge into a central box "launch_scientist_bfts.py". From there, arrows go to right-side boxes labeled "LLM providers" and optional branches to "Semantic Scholar" and "Hugging Face". Use flat vector style, blue/teal/gray palette, white background, sans-serif labels. Title: "Credential flow". -->
 
 ## Where to set secrets

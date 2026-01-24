@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ai_scientist.memory import MemoryManager
-from ai_scientist.memory.memgpt_store import _summarize_phase0
 
 
 class TestFinalMemoryGeneration(unittest.TestCase):
@@ -18,8 +17,6 @@ class TestFinalMemoryGeneration(unittest.TestCase):
                 recall_max_events=5,
                 retrieval_k=5,
                 use_fts="off",
-                always_inject_idea_summary=False,
-                always_inject_phase0_summary=False,
                 final_memory_filename_md="final_memory_for_paper.md",
                 final_memory_filename_json="final_memory_for_paper.json",
             )
@@ -41,17 +38,19 @@ class TestFinalMemoryGeneration(unittest.TestCase):
             self.assertTrue(json_path.exists())
             self.assertTrue(writeup_path.exists())
             md_text = md_path.read_text(encoding="utf-8")
+            # Check for section headings (snake_case keys converted to Title Case)
             for heading in (
-                "Title Candidates / Abstract Material",
-                "Problem Statement / Motivation",
+                "Title Candidates",
+                "Abstract Material",
+                "Problem Statement",
                 "Hypothesis",
                 "Method",
                 "Experimental Setup",
                 "Phase0 Internal Info Summary",
                 "Results",
-                "Ablations / Negative Results",
-                "Failure Modes & Debugging Timeline",
-                "Threats to Validity",
+                "Ablations Negative",
+                "Failure Modes Timeline",
+                "Threats To Validity",
                 "Reproducibility Checklist",
                 "Narrative Bullets",
                 "Resources Used",
@@ -89,134 +88,3 @@ class TestFinalMemoryGeneration(unittest.TestCase):
                 "provenance",
             ):
                 self.assertIn(key, writeup)
-
-
-class TestSummarizePhase0(unittest.TestCase):
-    """Tests for _summarize_phase0 function to ensure PC info extraction works."""
-
-    def test_extract_env_context_from_direct_payload(self) -> None:
-        """Test extracting environment_context directly from payload."""
-        payload = {
-            "environment_context": {
-                "cpu_info": "x86_64; 256 CPUs online; AMD EPYC 9534",
-                "os_release": 'PRETTY_NAME="Ubuntu 22.04.5 LTS"',
-                "available_compilers": [
-                    {"name": "gcc", "version": "11.4.0"},
-                    {"name": "g++", "version": "11.4.0"},
-                ],
-                "container_runtime": "singularity",
-            }
-        }
-        result = _summarize_phase0(payload, None)
-        self.assertIn("OS=Ubuntu 22.04.5 LTS", result)
-        self.assertIn("compilers=[gcc:11.4.0, g++:11.4.0]", result)
-        self.assertIn("container=singularity", result)
-
-    def test_extract_env_context_from_nested_artifacts(self) -> None:
-        """Test extracting environment_context from nested artifacts array."""
-        env_ctx = {
-            "cpu_info": "x86_64; 256 CPUs online; AMD EPYC 9534 64-Core Processor; 2 sockets",
-            "memory_info": "RAM total 1.5TiB",
-            "gpu_info": "4x NVIDIA H100 PCIe",
-            "os_release": 'PRETTY_NAME="Ubuntu 22.04.5 LTS (jammy)"',
-            "available_compilers": [
-                {"name": "gcc", "version": "11.4.0 (Ubuntu 22.04)"},
-                {"name": "g++", "version": "11.4.0 (Ubuntu 22.04)"},
-                {"name": "nvcc", "version": "NVIDIA CUDA compiler driver"},
-            ],
-            "container_runtime": "singularity",
-        }
-        artifact_content = json.dumps({"environment_context": env_ctx})
-        payload = {
-            "plan": {
-                "goal_summary": "Create a minimal prototype",
-            },
-            "artifacts": [
-                {"path": "/some/plan.json", "content": '{"foo": "bar"}'},
-                {"path": "/some/history.json", "content": artifact_content},
-            ],
-        }
-        result = _summarize_phase0(payload, None)
-        self.assertIn("OS=Ubuntu 22.04.5 LTS (jammy)", result)
-        self.assertIn("compilers=[gcc:11.4.0, g++:11.4.0, nvcc:NVIDIA]", result)
-        self.assertIn("container=singularity", result)
-
-    def test_no_env_context_fallback(self) -> None:
-        """Test fallback when no environment_context is found."""
-        payload = {
-            "plan": {"goal_summary": "Do something"},
-        }
-        result = _summarize_phase0(payload, None)
-        self.assertIn("No structured Phase 0 info captured", result)
-
-    def test_command_string_included(self) -> None:
-        """Test that command string is included in summary."""
-        payload = {}
-        result = _summarize_phase0(payload, "sbatch run.sh")
-        self.assertIn("command=sbatch run.sh", result)
-
-    def test_condensed_cpu_and_simple_os_format(self) -> None:
-        """Test parsing condensed CPU info and simple OS string format."""
-        env_ctx = {
-            "cpu_info": "x86_64; 256 CPUs online (0-255); AMD EPYC 9534 64-Core Processor; "
-                        "2 sockets, 64 cores/socket, 2 threads/core; "
-                        "NUMA nodes:2 (node0:0-63,128-191; node1:64-127,192-255)",
-            "os_release": "Ubuntu 22.04.5 LTS (jammy)",
-            "available_compilers": [
-                {"name": "gcc", "version": "11.4.0"},
-            ],
-            "container_runtime": "singularity",
-        }
-        artifact_content = json.dumps({"environment_context": env_ctx})
-        payload = {
-            "artifacts": [
-                {"path": "/some/history.json", "content": artifact_content},
-            ],
-        }
-        result = _summarize_phase0(payload, None)
-        self.assertIn("CPU:AMD EPYC 9534 64-Core Processor", result)
-        self.assertIn("socket", result.lower())
-        self.assertIn("numa", result.lower())
-        self.assertIn("OS=Ubuntu 22.04.5 LTS (jammy)", result)
-        self.assertIn("compilers=[gcc:11.4.0]", result)
-        self.assertIn("container=singularity", result)
-
-    def test_low_level_system_info_extraction(self) -> None:
-        """Test extraction of low-level system info: cpu_governor, numa_config, parallel_env_vars, container_digest."""
-        env_ctx = {
-            "cpu_info": "x86_64; 256 CPUs online; AMD EPYC 9534",
-            "cpu_governor": "performance",
-            "numa_config": "available: 2 nodes (0-1)\nnode 0 cpus: 0 1 2 3\nnode 1 cpus: 4 5 6 7",
-            "os_release": 'PRETTY_NAME="Ubuntu 22.04.5 LTS"',
-            "available_compilers": [
-                {"name": "gcc", "version": "11.4.0"},
-            ],
-            "container_runtime": "singularity",
-            "container_digest": "sha256:abc123def456789012345678901234567890123456789012345678901234",
-            "parallel_env_vars": "=== OpenMP ===\nOMP_NUM_THREADS=64\nOMP_PROC_BIND=close\n=== MPI ===\nnone\n=== BLAS/LAPACK ===\nOPENBLAS_NUM_THREADS=1",
-        }
-        payload = {"environment_context": env_ctx}
-        result = _summarize_phase0(payload, None)
-        self.assertIn("cpu_governor=performance", result)
-        self.assertIn("numa=", result)
-        self.assertIn("container_digest=sha256:abc123def4567...", result)
-        self.assertIn("OMP_NUM_THREADS=64", result)
-        self.assertIn("OPENBLAS_NUM_THREADS=1", result)
-
-    def test_low_level_system_info_na_fallback(self) -> None:
-        """Test that NA values are not included in summary."""
-        env_ctx = {
-            "cpu_info": "x86_64; 256 CPUs online; AMD EPYC 9534",
-            "cpu_governor": "NA",
-            "numa_config": "NA",
-            "os_release": 'PRETTY_NAME="Ubuntu 22.04.5 LTS"',
-            "available_compilers": [],
-            "container_runtime": "singularity",
-            "container_digest": "NA",
-            "parallel_env_vars": "NA",
-        }
-        payload = {"environment_context": env_ctx}
-        result = _summarize_phase0(payload, None)
-        self.assertNotIn("cpu_governor=NA", result)
-        self.assertNotIn("container_digest=NA", result)
-        self.assertIn("container=singularity", result)

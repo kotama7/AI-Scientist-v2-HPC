@@ -6,7 +6,10 @@ prompt.
 
 ## Memory overview
 
-![Memory flow](images/memory_flow.png)
+![Memory flow](../images/memory_flow.png)
+
+For a detailed flow diagram of memory operations during node execution, see
+[memory_flow.md](memory_flow.md).
 
 ## Enabling memory
 
@@ -391,8 +394,196 @@ Available adapter methods (internal; arguments omitted):
   (`scope=all|core|recall|archival`).
 - `mem_node_write`: batch write core updates, recall event, and/or archival
   records for a node.
-- `mem_resources_index_update`: update the resource index entry for the run.
-- `mem_resources_snapshot_upsert`: upsert a resource item snapshot into
-  archival memory.
-- `mem_resources_resolve_and_refresh`: refresh resource snapshots once
-  resources are available.
+
+## LLM Memory Operations
+
+The LLM can directly manage memory by including a `<memory_update>` block in its
+responses. This enables the agent to record insights, search past experiences,
+and manage its memory during experiment execution.
+
+### Enabling LLM memory operations
+
+LLM memory operations are automatically enabled when MemGPT is active
+(`memory.enabled=true`). The memory operation instructions are injected into
+prompts via `_inject_memory()` in `parallel_agent.py`.
+
+### Available operations (LLM-callable)
+
+The following operations can be invoked by the LLM via `<memory_update>` blocks:
+
+**Core Memory:**
+- `core`: set/update key-value pairs in core memory (always-visible).
+- `core_get`: retrieve values for specified keys.
+- `core_delete`: delete (evict) keys from core memory.
+
+**Archival Memory:**
+- `archival`: write new archival records with text and tags.
+- `archival_update`: update existing archival records by ID.
+- `archival_search`: search archival memory (semantic/keyword search).
+
+**Recall Memory:**
+- `recall`: append an event to the recall timeline.
+- `recall_search`: search recent recall events.
+- `recall_evict`: move recall events to archival, then delete (by IDs, kind, or oldest N).
+- `recall_summarize`: consolidate and summarize recall events.
+
+**Memory Management:**
+- `consolidate`: trigger memory consolidation and compression.
+
+### Operation format reference
+
+The LLM can include a `<memory_update>` block at the end of its response with
+any combination of the following operations:
+
+#### Core Memory (always-visible key-value store)
+
+| Operation | Key | Format | Description |
+|-----------|-----|--------|-------------|
+| SET | `core` | `{"key": "value"}` | Set key-value pairs in core memory |
+| GET | `core_get` | `["key1", "key2"]` | Retrieve values for specified keys |
+| DELETE | `core_delete` | `["key1"]` or `"key"` | Delete keys from core memory (evict) |
+
+#### Archival Memory (searchable long-term store)
+
+| Operation | Key | Format | Description |
+|-----------|-----|--------|-------------|
+| WRITE | `archival` | `[{"text": "...", "tags": ["TAG"]}]` | Write new archival records |
+| UPDATE | `archival_update` | `[{"id": "...", "text": "..."}]` | Update existing records by ID |
+| SEARCH | `archival_search` | `{"query": "...", "k": 5, "tags": ["TAG"]}` | Search archival memory |
+
+#### Recall Memory (recent events timeline)
+
+| Operation | Key | Format | Description |
+|-----------|-----|--------|-------------|
+| APPEND | `recall` | `{"kind": "...", "content": "..."}` | Append event to recall |
+| SEARCH | `recall_search` | `{"query": "...", "k": 10}` | Search recall events |
+| EVICT | `recall_evict` | `{"oldest": N}` or `{"kind": "..."}` or `{"ids": [...]}` | Move recall events to archival, then delete |
+| SUMMARIZE | `recall_summarize` | `true` | Consolidate recall events into summaries |
+
+#### Memory Management
+
+| Operation | Key | Format | Description |
+|-----------|-----|--------|-------------|
+| CONSOLIDATE | `consolidate` | `true` | Trigger memory consolidation/compression |
+
+### Example usage
+
+```xml
+<memory_update>
+{
+  "core": {
+    "optimal_threads": "8",
+    "best_compiler_flags": "-O3 -march=native"
+  },
+  "core_get": ["previous_best_time"],
+  "archival": [
+    {
+      "text": "Thread count 8 gives 2x speedup on matrix multiplication workload",
+      "tags": ["PERFORMANCE", "THREADING"]
+    }
+  ],
+  "archival_search": {
+    "query": "compilation errors",
+    "k": 3
+  },
+  "recall": {
+    "kind": "discovery",
+    "content": "Found optimal configuration after testing 5 variants"
+  }
+}
+</memory_update>
+```
+
+### What to record
+
+**Core memory** (always visible in prompts):
+- Optimal parameters discovered (thread counts, batch sizes)
+- Best configurations found (compiler flags, environment variables)
+- Important constraints or limits identified
+- Key metrics or thresholds
+
+**Archival memory** (searchable, long-term):
+- Detailed explanations of why something works or fails
+- Lessons learned from debugging sessions
+- Patterns to avoid or prefer
+- Experimental results with context
+
+### What NOT to record
+
+- Temporary debug information
+- Information already logged by the system (errors, metrics)
+- Obvious or trivial observations
+- Large data dumps (use summaries instead)
+
+### Return values and multi-turn flow
+
+Read operations (`core_get`, `archival_search`, `recall_search`) trigger a
+**multi-turn flow** when used in split-phase execution.
+
+For a complete flow diagram, see [memory_flow.md](memory_flow.md).
+
+#### How it works
+
+1. LLM outputs `<memory_update>` with read operations + initial JSON
+2. System executes ALL operations (writes are persisted, reads return results)
+3. If read results exist:
+   - Results are formatted as `<memory_results>` block
+   - Injected into prompt as "Memory Read Results" section
+   - LLM is re-queried to produce final response using the retrieved information
+4. Process repeats until no read operations or max rounds reached
+
+#### Configuration
+
+```yaml
+memory:
+  max_memory_read_rounds: 2  # Maximum re-query cycles (default: 2)
+```
+
+#### What happens when max rounds exceeded
+
+If the LLM continues to include read operations after `max_memory_read_rounds`:
+
+- Read operations are still **executed** (results logged)
+- Results are **NOT** returned to LLM (no re-query)
+- Current artifacts are returned as-is
+- This prevents infinite loops while still persisting any write operations
+
+#### Benefits
+
+This allows the LLM to:
+- Search for past learnings before making decisions
+- Retrieve optimal parameters discovered in previous experiments
+- Check archival memory for relevant patterns or errors
+- Make informed decisions based on historical data
+
+#### Other return values
+
+Eviction operations (`recall_evict`) return the count of evicted events and the
+count of events archived to archival memory (events are moved to archival with
+tag `EVICTED_RECALL` before deletion).
+
+Summarization operations (`recall_summarize`) return status and the count of
+consolidated events.
+
+### Implementation details
+
+Memory operations are processed by `apply_llm_memory_updates()` in
+`memgpt_store.py`. The function:
+
+1. Parses `<memory_update>` blocks from LLM responses
+2. Validates the JSON structure
+3. Applies operations in order: core → archival → recall → recall_evict → recall_summarize → consolidate
+4. Returns results dict containing read operation outputs
+5. Logs all operations to `memory_calls.jsonl`
+
+The multi-turn flow is implemented in `generate_phase_artifacts()` in
+`parallel_agent.py`:
+
+1. Calls `apply_llm_memory_updates()` and captures results
+2. Checks if read results exist via `_has_memory_read_results()`
+3. If within round limit, formats results via `_format_memory_results_for_llm()`
+4. Injects results as "Memory Read Results" section and re-queries LLM
+5. Continues until no read results or max rounds reached
+
+LLM-generated archival entries are automatically tagged with `LLM_INSIGHT` for
+identification.

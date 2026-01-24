@@ -17,7 +17,7 @@ Environment context (from inside the worker container):
 - memory_info: {memory_info}
 - assigned_gpu_id: {assigned_gpu_id}
 - gpu_info: {gpu_info}
-- parallel_env_vars (OMP/MPI/BLAS): {parallel_env_vars}
+- all_env_vars: {all_env_vars}
 - python_library_path: /workspace/.pydeps (PYTHONPATH is set to this inside the container)
 - python_alias: python=/usr/bin/python3, python3=/usr/bin/python3 (enforced in container)
 - python_env_note: shell commands are prefixed to export PATH and PYTHONPATH and set python/python3 aliases to /usr/bin/python3

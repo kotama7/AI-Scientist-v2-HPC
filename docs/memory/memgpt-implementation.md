@@ -84,11 +84,6 @@ def mem_node_fork(self, parent_node_id: str, child_node_name: str) -> str
 def mem_node_read(self, node_id: str, scope: str = "all") -> dict
 def mem_node_write(self, node_id: str, core: dict = None, recall: str = None, archival: list = None)
 
-# Resource operations
-def mem_resources_index_update(self, index_data: dict)
-def mem_resources_snapshot_upsert(self, item_snapshot: dict)
-def mem_resources_resolve_and_refresh(self)
-
 # Context injection
 def get_memory_context(self, task_hint: str = None) -> dict
 def format_memory_for_prompt(self) -> str

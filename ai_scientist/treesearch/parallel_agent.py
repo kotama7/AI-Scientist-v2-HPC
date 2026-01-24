@@ -32,10 +32,6 @@ from rich import print
 from rich.markup import escape
 
 from ai_scientist.memory import MemoryManager
-from ai_scientist.memory.resource_memory import (
-    build_resource_snapshot,
-    update_resource_snapshot_if_changed,
-)
 from ai_scientist.prompt_loader import format_prompt, load_prompt, load_prompt_lines
 
 # Import from refactored modules
@@ -47,7 +43,7 @@ from .gpu import GPUManager, parse_cuda_visible_devices as _parse_cuda_visible_d
 from .ablation import AblationConfig, AblationIdea, HyperparamTuningIdea
 from .utils.config import Config
 from .utils.metric import MetricValue, WorstMetricValue
-from .utils.response import extract_code, extract_text_up_to_code, wrap_code
+from .utils.response import extract_code, extract_text_up_to_code, wrap_code, extract_memory_updates, remove_memory_update_tags, check_malformed_memory_update, MalformedMemoryUpdateError
 from .utils.parsing import (
     normalize_language as _normalize_language,
     strip_json_wrappers as _strip_json_wrappers,
@@ -88,6 +84,7 @@ from .utils.phase_plan import (
     combine_sources_for_display,
     extract_phase_artifacts,
     wrap_combined_code,
+    MissingMemoryUpdateError,
 )
 from .utils.resource import (
     ResourceConfig,
@@ -114,6 +111,69 @@ logger = logging.getLogger("ai-scientist")
 ExecCallbackType = Callable[[str, bool], ExecutionResult]
 
 
+# Phase name mapping for memory event logging
+# Maps internal task_hint values to human-readable phase names
+# Phase structure:
+#   Phase 0: Setup/Planning (idea loading, resource indexing, planning)
+#   Phase 1: Environment Setup (container setup, dependencies installation)
+#   Phase 2: Code Implementation (draft, debug, improve)
+#   Phase 3: Compile (build the code)
+#   Phase 4: Execute/Validate (run experiments, analyze results)
+PHASE_NAME_MAP: Dict[str, str] = {
+    # Phase 0: Setup and planning
+    "phase0": "Phase 0: Setup",
+    "phase0_planning": "Phase 0: Planning",
+    "ingest_phase0_internal_info": "Phase 0: Setup",
+    "idea_md": "Phase 0: Idea Loading",
+    "resource_index": "Phase 0: Resource Indexing",
+    # Phase 1: Environment setup
+    "phase1_iterative": "Phase 1: Environment Setup",
+    "phase1-base": "Phase 1: Base Setup",
+    "phase1-sandbox": "Phase 1: Sandbox Setup",
+    # Phase 2: Code implementation
+    "draft": "Phase 2: Draft Implementation",
+    "debug": "Phase 2: Debug",
+    "improve": "Phase 2: Improve",
+    "hyperparam_node": "Phase 2: Hyperparameter Tuning",
+    "ablation_node": "Phase 2: Ablation Study",
+    # Phase 3: Compile
+    "compile": "Phase 3: Compile",
+    "compiler_selection": "Phase 3: Compiler Selection",
+    # Phase 4: Execute
+    "execution_review": "Phase 4: Execution Review",
+    # Post-Phase 4 analysis tasks (displayed as-is without phase number)
+    # metrics_extraction, parse_metrics, plotting_code, seed_plotting,
+    # vlm_analysis, datasets_successfully_tested, stage_completion
+    # are not mapped - they will be displayed as-is
+}
+
+
+def get_phase_display_name(task_hint: str) -> str:
+    """Convert internal task_hint to human-readable phase name.
+
+    Args:
+        task_hint: Internal task hint string (e.g., "draft", "debug")
+
+    Returns:
+        Human-readable phase name (e.g., "Phase 2: Draft Implementation")
+        or the original task_hint if not in the mapping (for post-Phase 4 tasks)
+    """
+    # Direct lookup first
+    if task_hint in PHASE_NAME_MAP:
+        return PHASE_NAME_MAP[task_hint]
+
+    # Handle stage-specific patterns (e.g., "stage_1_..._summary", "1_initial_implementation_...")
+    if task_hint.startswith("stage_") and "_summary" in task_hint:
+        return "stage_summary"
+
+    # Handle numeric stage prefixes (e.g., "1_initial_implementation_1_preliminary")
+    if task_hint and task_hint[0].isdigit() and "_" in task_hint:
+        return f"stage_execution_{task_hint.split('_')[0]}"
+
+    # Fallback: return original as-is (for post-Phase 4 tasks like metrics_extraction, plotting_code, etc.)
+    return task_hint
+
+
 PROMPT_BASE = "agent/parallel/"
 
 BASE_SYSTEM_PROMPT = load_prompt("core/system").rstrip("\n")
@@ -138,6 +198,9 @@ RESPONSE_FORMAT_DEFAULT = load_prompt(
 ).rstrip("\n")
 RESPONSE_FORMAT_SPLIT_PHASE = load_prompt(
     PROMPT_BASE + "response_format/execution_split"
+).rstrip("\n")
+RESPONSE_FORMAT_SPLIT_PHASE_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "response_format/execution_split_with_memory"
 ).rstrip("\n")
 RESPONSE_FORMAT_METRIC_PARSE = load_prompt(
     PROMPT_BASE + "response_format/metric_parse"
@@ -455,12 +518,158 @@ def _summarize_journal_outputs(prev_log_dir: Path) -> dict[str, Any]:
     return summary
 
 
+def _has_memory_read_results(results: dict) -> bool:
+    """Check if memory operation results contain any read operation data."""
+    if not results:
+        return False
+    read_keys = {"core_get", "archival_search", "recall_search"}
+    return bool(read_keys & set(results.keys()))
+
+
+def _format_memory_results_for_llm(results: dict) -> str:
+    """Format memory read results for injection into LLM prompt.
+
+    Args:
+        results: Dict containing results from memory read operations.
+
+    Returns:
+        Formatted string with <memory_results> block for LLM consumption.
+    """
+    if not results:
+        return ""
+
+    parts = []
+
+    # Core memory GET results
+    if "core_get" in results and results["core_get"]:
+        parts.append("**Core Memory Values:**")
+        for key, value in results["core_get"].items():
+            if value is not None:
+                parts.append(f"  - {key}: {value}")
+            else:
+                parts.append(f"  - {key}: (not found)")
+
+    # Archival memory SEARCH results
+    if "archival_search" in results and results["archival_search"]:
+        parts.append("\n**Archival Search Results:**")
+        for i, item in enumerate(results["archival_search"][:10], 1):
+            text = item.get("text", "")[:300]
+            tags = item.get("tags", [])
+            parts.append(f"  [{i}] {text}")
+            if tags:
+                parts.append(f"      Tags: {', '.join(tags)}")
+
+    # Recall memory SEARCH results
+    if "recall_search" in results and results["recall_search"]:
+        parts.append("\n**Recall Search Results:**")
+        for i, item in enumerate(results["recall_search"][:10], 1):
+            kind = item.get("kind", "unknown")
+            summary = item.get("summary", "")[:200]
+            ts = item.get("ts", "")
+            parts.append(f"  [{i}] ({kind}) {summary}")
+            if ts:
+                parts.append(f"      Time: {ts}")
+
+    if not parts:
+        return ""
+
+    return "<memory_results>\n" + "\n".join(parts) + "\n</memory_results>"
+
+
+def _run_memory_update_phase(
+    prompt: dict,
+    memory_manager: Any,
+    branch_id: str,
+    node_id: str | None,
+    phase_name: str,
+    model: str,
+    temperature: float,
+    max_rounds: int = 2,
+    task_description: str = "",
+) -> None:
+    """Run multi-round memory update phase before task execution.
+
+    This function allows the LLM to:
+    1. Update memory (core, archival writes)
+    2. Read from memory (archival_search, core_get, recall_search)
+    3. Re-query with read results if needed
+
+    Args:
+        prompt: The base prompt dict (will be modified with Memory Read Results)
+        memory_manager: The memory manager instance
+        branch_id: Branch ID for memory operations
+        node_id: Node ID for memory operations
+        phase_name: Name of the phase for logging
+        model: LLM model to use
+        temperature: Temperature for LLM query
+        max_rounds: Maximum number of memory read rounds (default 2)
+        task_description: Description of what memory operations to perform
+    """
+    if not memory_manager or not branch_id:
+        return
+
+    memory_prompt = prompt.copy()
+    if task_description:
+        memory_prompt["Task"] = task_description
+    else:
+        memory_prompt["Task"] = (
+            "Review the context and update your memory with any important findings or insights. "
+            "You can also search memory for relevant information. "
+            "Respond with ONLY a <memory_update> block containing your memory operations."
+        )
+
+    memory_read_round = 0
+    while memory_read_round <= max_rounds:
+        try:
+            memory_response = query(
+                system_message=memory_prompt,
+                user_message=None,
+                model=model,
+                temperature=temperature,
+            )
+            if not memory_response:
+                break
+
+            memory_updates = extract_memory_updates(memory_response)
+            if not memory_updates:
+                break
+
+            memory_results = memory_manager.apply_llm_memory_updates(
+                branch_id,
+                memory_updates,
+                node_id=node_id,
+                phase=f"{phase_name}_memory_round{memory_read_round}",
+            )
+
+            # Check if there are read results and we haven't exceeded max rounds
+            if _has_memory_read_results(memory_results) and memory_read_round < max_rounds:
+                memory_read_round += 1
+                # Format results and inject into prompt for re-query
+                results_text = _format_memory_results_for_llm(memory_results)
+                memory_prompt["Memory Read Results"] = (
+                    "Your memory read operations returned the following results:\n\n"
+                    f"{results_text}\n\n"
+                    "Based on this information, you may:\n"
+                    "1. Write additional insights to memory\n"
+                    "2. Search for more related information\n"
+                    "3. Complete with an empty update if done\n\n"
+                    "Respond with ONLY a <memory_update> block."
+                )
+                continue
+            else:
+                break
+
+        except Exception as exc:
+            logger.warning(f"{phase_name} memory update failed (round {memory_read_round}): %s", exc)
+            break
+
+
 def _resolve_run_root(cfg: Config) -> Path:
     run_root_env = os.environ.get("AI_SCIENTIST_RUN_ROOT")
     if run_root_env:
         run_root = Path(run_root_env).expanduser().resolve()
     else:
-        run_root = Path(cfg.log_dir).parent.parent / "runs" / cfg.exp_name
+        run_root = Path(cfg.log_dir).parent / "runs"  # 実験ディレクトリ内に配置
     run_root.mkdir(parents=True, exist_ok=True)
     return run_root
 
@@ -1066,6 +1275,11 @@ class MinimalAgent:
         allow_empty: bool = False,
         node_id: str | None = None,
     ) -> None:
+        # Set current phase for memory event logging (use human-readable name)
+        if self.memory_manager and hasattr(self.memory_manager, "set_current_phase"):
+            phase_display_name = get_phase_display_name(task_hint)
+            self.memory_manager.set_current_phase(phase_display_name)
+
         memory_context = self._memory_context(
             task_hint,
             branch_id=branch_id,
@@ -1073,7 +1287,90 @@ class MinimalAgent:
             allow_summary_fallback=allow_summary_fallback,
         )
         if memory_context or allow_empty:
-            prompt["Memory"] = memory_context
+            # Add memory operation instructions for LLM
+            # For split-phase mode with memory enabled, the Response format already
+            # contains detailed instructions about the required <memory_update> block.
+            # Here we provide a brief reminder and the available operations.
+            if self.phase_mode == "split" and self._is_memory_enabled:
+                memory_ops_instructions = """
+
+## Memory Operations (REQUIRED)
+You MUST include a <memory_update> block at the START of your response before the JSON.
+See "Response format" for the exact format. Missing this block will cause a retry.
+
+### Available Operations (use in <memory_update> JSON):
+- **core**: {"key": "value"} - Always-visible key-value store (optimal params, configs)
+- **archival**: [{"text": "...", "tags": ["TAG"]}] - Searchable long-term store (explanations, lessons)
+- **archival_search**: {"query": "...", "k": 5} - Search archival memory
+- **recall**: {"kind": "...", "content": "..."} - Recent events
+- **consolidate**: true - Trigger memory consolidation
+
+### What to record:
+- **core**: Optimal parameters, best configurations, important constraints
+- **archival**: Detailed explanations, lessons learned, patterns to avoid/prefer
+"""
+            else:
+                memory_ops_instructions = """
+
+## Memory Operations (Optional)
+You can manage your memory by including a <memory_update> block at the end of your response.
+
+### Available Operations:
+
+**1. Core Memory (always-visible key-value store):**
+```json
+{
+  "core": {"key": "value"},
+  "core_get": ["key1", "key2"],
+  "core_delete": ["obsolete_key"]
+}
+```
+
+**2. Archival Memory (searchable long-term store):**
+```json
+{
+  "archival": [{"text": "Insight to remember", "tags": ["TAG1"]}],
+  "archival_update": [{"id": "record_id", "text": "Updated text"}],
+  "archival_search": {"query": "search terms", "k": 5, "tags": ["TAG1"]}
+}
+```
+
+**3. Recall Memory (recent events):**
+```json
+{
+  "recall": {"kind": "discovery", "content": "What happened"},
+  "recall_search": {"query": "search terms", "k": 10},
+  "recall_evict": {"oldest": 10, "kind": "debug", "ids": ["id1"]},
+  "recall_summarize": true
+}
+```
+
+**4. Memory Management:**
+```json
+{
+  "consolidate": true
+}
+```
+
+### Example:
+<memory_update>
+{
+  "core": {"optimal_threads": "8", "best_compiler": "-O3"},
+  "archival": [{"text": "Thread count 8 gives 2x speedup on this workload", "tags": ["PERFORMANCE"]}],
+  "archival_search": {"query": "compilation errors", "k": 3}
+}
+</memory_update>
+
+### What to record:
+- **core**: Optimal parameters, best configurations, important constraints
+- **archival**: Detailed explanations, lessons learned, patterns to avoid/prefer
+
+### Do NOT record:
+- Temporary debug information
+- Information already logged by the system
+- Obvious or trivial observations
+"""
+            prompt["Memory"] = memory_context + memory_ops_instructions
 
         # Record memory injection event for tracking what memory was used at each phase
         if self.memory_manager and memory_context:
@@ -1087,6 +1384,7 @@ class MinimalAgent:
                         "ts": time.time(),
                         "run_id": self.memory_manager.run_id,
                         "node_id": use_node_id,
+                        "branch_id": use_branch,  # Explicit branch_id to avoid resolution issues
                         "phase": self.stage_name or "unknown",
                         "kind": "memory_injected",
                         "summary": f"Memory injected for {task_hint}\nSize: {len(memory_context)} chars\n---\n{memory_summary}",
@@ -1161,7 +1459,7 @@ class MinimalAgent:
                 "memory_info": self.environment_context.get("memory_info", "unknown"),
                 "assigned_gpu_id": self.environment_context.get("assigned_gpu_id", "unknown"),
                 "gpu_info": self.environment_context.get("gpu_info", "unknown"),
-                "parallel_env_vars": self.environment_context.get("parallel_env_vars", "NA"),
+                "all_env_vars": self.environment_context.get("all_env_vars", "NA"),
             }
             rendered_message = format_prompt("config/environment/injection", **payload)
             return {"Environment injection": rendered_message}
@@ -1413,8 +1711,16 @@ class MinimalAgent:
         return {"Implementation guideline": self._build_impl_guideline()}
 
     @property
+    def _is_memory_enabled(self) -> bool:
+        """Check if memory management is enabled."""
+        return bool(self.memory_manager and getattr(self.cfg, 'memory', None) and getattr(self.cfg.memory, 'enabled', False))
+
+    @property
     def _prompt_resp_fmt(self):
         if self.phase_mode == "split":
+            # Use memory-aware format when memory is enabled
+            if self._is_memory_enabled:
+                return {"Response format": RESPONSE_FORMAT_SPLIT_PHASE_WITH_MEMORY}
             return {"Response format": RESPONSE_FORMAT_SPLIT_PHASE}
         return {"Response format": self._format_response_format(RESPONSE_FORMAT_DEFAULT)}
 
@@ -1838,19 +2144,52 @@ class MinimalAgent:
             },
         }
 
-    def generate_phase_artifacts(self, prompt, retries: int = 3, log_label: str = "phase2") -> dict:
-        """Query the LLM for split-phase output and validate the JSON structure."""
+    def generate_phase_artifacts(
+        self,
+        prompt,
+        retries: int = 3,
+        log_label: str = "phase2",
+        max_memory_read_rounds: int | None = None,
+    ) -> dict:
+        """Query the LLM for split-phase output and validate the JSON structure.
+
+        When memory is enabled and the LLM requests read operations (core_get,
+        archival_search, recall_search), the system will execute those operations
+        and re-query the LLM with the results, allowing it to make informed decisions.
+
+        Args:
+            prompt: The prompt dict to send to the LLM.
+            retries: Number of retry attempts for parsing failures.
+            log_label: Label for logging purposes.
+            max_memory_read_rounds: Maximum number of memory read + re-query cycles
+                to prevent infinite loops. If None, uses config value
+                (memory.max_memory_read_rounds, default 2).
+
+        Returns:
+            The parsed phase artifacts dict.
+        """
         last_error = ""
         last_response = ""
+        memory_enabled = self._is_memory_enabled
+        memory_read_round = 0
+
+        # Get max rounds from config or parameter
+        if max_memory_read_rounds is None:
+            max_memory_read_rounds = getattr(
+                getattr(self.cfg, "memory", None), "max_memory_read_rounds", 2
+            )
+
         for attempt in range(1, retries + 1):
             self._log_prompt(
                 prompt,
-                label=f"{log_label}_attempt{attempt}",
+                label=f"{log_label}_attempt{attempt}_round{memory_read_round}",
                 meta={
                     "phase": "phase2",
                     "attempt": attempt,
+                    "memory_read_round": memory_read_round,
                     "label": log_label,
                     "model": self.cfg.agent.code.model,
+                    "memory_enabled": memory_enabled,
                 },
             )
             # LLM context (split-phase artifacts): system_message=prompt dict with task-specific sections, Instructions/Response format, optional System/Domain/Environment/Resources/Phase 0 snippet; request JSON for download/coding/compile/run.
@@ -1865,21 +2204,89 @@ class MinimalAgent:
                 artifacts = extract_phase_artifacts(
                     completion_text,
                     default_language=self.code_language,
+                    require_memory_update=memory_enabled,
                 )
                 self._validate_phase_language(artifacts)
+
+                # Apply memory updates if present
+                if memory_enabled and self.memory_manager and self.branch_id:
+                    memory_updates = artifacts.get("memory_update")
+                    if memory_updates:
+                        try:
+                            memory_results = self.memory_manager.apply_llm_memory_updates(
+                                self.branch_id,
+                                memory_updates,
+                                node_id=getattr(self, "_current_node_id", None),
+                                phase=log_label,
+                            )
+
+                            # Check if there are read results and we haven't exceeded max rounds
+                            if (
+                                _has_memory_read_results(memory_results)
+                                and memory_read_round < max_memory_read_rounds
+                            ):
+                                memory_read_round += 1
+                                # Format results and inject into prompt for re-query
+                                results_text = _format_memory_results_for_llm(memory_results)
+                                prompt["Memory Read Results"] = (
+                                    "Your memory read operations returned the following results. "
+                                    "Use this information to make your final decision and output "
+                                    "the complete phase_artifacts JSON.\n\n"
+                                    f"{results_text}\n\n"
+                                    "Now provide your final response with:\n"
+                                    "1. A <memory_update> block (can include additional writes based on what you learned)\n"
+                                    "2. The complete phase_artifacts JSON\n\n"
+                                    "Do NOT include read operations in this response."
+                                )
+                                # Continue to next iteration to re-query with results
+                                continue
+
+                        except Exception as exc:
+                            logger.warning("Failed to apply LLM memory updates: %s", exc)
+
+                # Remove any memory read results section before returning
+                prompt.pop("Memory Read Results", None)
                 return artifacts
-            except PhasePlanError as exc:
+
+            except MissingMemoryUpdateError as exc:
+                # Memory update is required but missing - provide specific feedback
                 last_error = str(exc)
                 last_response = completion_text
                 prompt["Parsing Feedback"] = (
+                    "CRITICAL: Your response is missing the required <memory_update> block.\n"
+                    "When memory is enabled, you MUST start your response with:\n"
+                    "<memory_update>\n"
+                    '{"core": {...}, "archival": [...]}\n'
+                    "</memory_update>\n\n"
+                    "Then immediately follow with the JSON for phase_artifacts (no markdown fences).\n"
+                    "Even if you have no memory updates, include an empty block: <memory_update>{}</memory_update>\n\n"
+                    "Raw response was:\n"
+                    "<<<RAW_RESPONSE_START>>>\n"
+                    f"{completion_text}\n"
+                    "<<<RAW_RESPONSE_END>>>\n"
+                )
+            except PhasePlanError as exc:
+                last_error = str(exc)
+                last_response = completion_text
+                feedback_msg = (
                     "The previous response failed validation: "
                     f"{last_error}.\n"
                     "Raw response was:\n"
                     "<<<RAW_RESPONSE_START>>>\n"
                     f"{completion_text}\n"
                     "<<<RAW_RESPONSE_END>>>\n"
-                    "Return strict JSON following the Response format with download/coding/compile/run."
                 )
+                if memory_enabled:
+                    feedback_msg += (
+                        "\nRemember: Start with <memory_update>...</memory_update>, "
+                        "then output JSON for phase_artifacts (no markdown fences)."
+                    )
+                else:
+                    feedback_msg += (
+                        "\nReturn strict JSON following the Response format with download/coding/compile/run."
+                    )
+                prompt["Parsing Feedback"] = feedback_msg
+
         # Fallback: return a minimal placeholder plan to keep execution moving
         if last_response:
             self.last_phase_artifacts_response = last_response
@@ -1914,6 +2321,22 @@ class MinimalAgent:
                 temperature=self.cfg.agent.code.temp,
             )
 
+            # Process LLM memory updates if present
+            if completion_text and self.memory_manager and self.branch_id:
+                memory_updates = extract_memory_updates(completion_text)
+                if memory_updates:
+                    try:
+                        self.memory_manager.apply_llm_memory_updates(
+                            self.branch_id,
+                            memory_updates,
+                            node_id=getattr(self, "_current_node_id", None),
+                            phase=log_label,
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to apply LLM memory updates: %s", exc)
+                    # Remove memory update tags from completion text before code extraction
+                    completion_text = remove_memory_update_tags(completion_text)
+
             code = extract_code(completion_text, language=target_language)
             nl_text = extract_text_up_to_code(completion_text)
 
@@ -1941,8 +2364,29 @@ class MinimalAgent:
             "Implementation": wrap_combined_code(node.code, fallback_lang=self.code_language),
             "Execution output": wrap_code(node.term_out, lang=""),
         }
-        self._inject_memory(prompt, "execution_review", branch_id=getattr(node, "branch_id", None))
+        branch_id = getattr(node, "branch_id", None)
+        self._inject_memory(prompt, "execution_review", branch_id=branch_id)
 
+        # Phase 1: Memory update with multi-round support (optional, only if memory is enabled)
+        if self._is_memory_enabled and self.memory_manager and branch_id:
+            max_rounds = getattr(getattr(self.cfg, "memory", None), "max_memory_read_rounds", 2)
+            _run_memory_update_phase(
+                prompt=prompt,
+                memory_manager=self.memory_manager,
+                branch_id=branch_id,
+                node_id=node.id,
+                phase_name="execution_review",
+                model=self.cfg.agent.feedback.model,
+                temperature=self.cfg.agent.feedback.temp,
+                max_rounds=max_rounds,
+                task_description=(
+                    "Review the execution results and update your memory with any important findings, "
+                    "patterns, or lessons learned. You can also search memory for related past experiences. "
+                    "Respond with ONLY a <memory_update> block containing your memory operations."
+                ),
+            )
+
+        # Phase 2: Task execution with structured response
         response = cast(
             dict,
             # LLM context (execution review): Introduction + Research idea + Implementation + Execution output + Memory.
@@ -2104,6 +2548,22 @@ class MinimalAgent:
                 temperature=self.cfg.agent.feedback.temp,
             )
 
+            # Process LLM memory updates if present
+            if response and self.memory_manager and self.branch_id:
+                memory_updates = extract_memory_updates(response)
+                if memory_updates:
+                    try:
+                        self.memory_manager.apply_llm_memory_updates(
+                            self.branch_id,
+                            memory_updates,
+                            node_id=getattr(self, "_current_node_id", None),
+                            phase="datasets_successfully_tested",
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to apply LLM memory updates: %s", exc)
+                    # Remove memory update tags before parsing
+                    response = remove_memory_update_tags(response)
+
             (
                 reasoning,
                 datasets_successfully_tested_str,
@@ -2163,13 +2623,35 @@ class MinimalAgent:
                 "Introduction": SELECT_PLOTS_INTRO,
                 "Plot paths": node.plot_paths,
             }
+            branch_id = getattr(node, "branch_id", None)
             self._inject_memory(
                 prompt_select_plots,
                 "plot_selection",
-                branch_id=getattr(node, "branch_id", None),
+                branch_id=branch_id,
                 budget_chars=getattr(self.cfg.memory, "plot_selection_budget_chars", 1000),
             )
 
+            # Phase 1: Memory update with multi-round support (optional, only if memory is enabled)
+            if self._is_memory_enabled and self.memory_manager and branch_id:
+                max_rounds = getattr(getattr(self.cfg, "memory", None), "max_memory_read_rounds", 2)
+                _run_memory_update_phase(
+                    prompt=prompt_select_plots,
+                    memory_manager=self.memory_manager,
+                    branch_id=branch_id,
+                    node_id=node.id,
+                    phase_name="plot_selection",
+                    model=self.cfg.agent.feedback.model,
+                    temperature=self.cfg.agent.feedback.temp,
+                    max_rounds=max_rounds,
+                    task_description=(
+                        "Review the available plots and update your memory with any observations about "
+                        "plot naming patterns, experiment types, or useful categorizations. "
+                        "You can also search memory for related past observations. "
+                        "Respond with ONLY a <memory_update> block containing your memory operations."
+                    ),
+                )
+
+            # Phase 2: Task execution with structured response
             try:
                 response_select_plots = cast(
                     dict,
@@ -2301,13 +2783,35 @@ class MinimalAgent:
                 else ""
             ),
         }
+        branch_id = getattr(node, "branch_id", None)
         self._inject_memory(
             summary_prompt,
             "node_summary",
-            branch_id=getattr(node, "branch_id", None),
+            branch_id=branch_id,
             budget_chars=getattr(self.cfg.memory, "node_summary_budget_chars", 2000),
         )
 
+        # Phase 1: Memory update with multi-round support (optional, only if memory is enabled)
+        if self._is_memory_enabled and self.memory_manager and branch_id:
+            max_rounds = getattr(getattr(self.cfg, "memory", None), "max_memory_read_rounds", 2)
+            _run_memory_update_phase(
+                prompt=summary_prompt,
+                memory_manager=self.memory_manager,
+                branch_id=branch_id,
+                node_id=node.id,
+                phase_name="node_summary",
+                model=self.cfg.agent.feedback.model,
+                temperature=self.cfg.agent.feedback.temp,
+                max_rounds=max_rounds,
+                task_description=(
+                    "Review the experiment results and update your memory with key findings, "
+                    "lessons learned, successful approaches, and patterns to avoid in future experiments. "
+                    "You can also search memory for related past experiments. "
+                    "Respond with ONLY a <memory_update> block containing your memory operations."
+                ),
+            )
+
+        # Phase 2: Task execution with structured response
         # LLM context (node summary): Introduction + Research idea + Implementation + Plan + Execution output + Analysis + Metric + Plot analyses + VLM feedback + Memory.
         result = cast(
             dict,
@@ -2354,6 +2858,7 @@ class MinimalAgent:
                         "ts": time.time(),
                         "run_id": getattr(self.memory_manager, "run_id", ""),
                         "node_id": node.id,
+                        "branch_id": branch_id,
                         "phase": self.stage_name or "unknown",
                         "kind": "node_summary",
                         "summary": summary_text,
@@ -2618,6 +3123,24 @@ class ParallelAgent:
                 temperature=self.cfg.agent.code.temp,
             )
 
+            # Process LLM memory updates if present
+            if completion_text and hasattr(self, 'memory_manager') and self.memory_manager:
+                branch_id = getattr(self, 'branch_id', None)
+                if branch_id:
+                    memory_updates = extract_memory_updates(completion_text)
+                    if memory_updates:
+                        try:
+                            self.memory_manager.apply_llm_memory_updates(
+                                branch_id,
+                                memory_updates,
+                                node_id=getattr(self, "_current_node_id", None),
+                                phase="plan_and_code",
+                            )
+                        except Exception as exc:
+                            logger.warning("Failed to apply LLM memory updates: %s", exc)
+                        # Remove memory update tags from completion text before code extraction
+                        completion_text = remove_memory_update_tags(completion_text)
+
             code = extract_code(completion_text, language=target_language)
             nl_text = extract_text_up_to_code(completion_text)
 
@@ -2699,6 +3222,7 @@ class ParallelAgent:
                 seed_eval,
                 seed,
                 seed,
+                self.root_branch_id,
             )
             task_ids.append(task_id)
             task_id_to_seed[task_id] = seed
@@ -2853,6 +3377,7 @@ class ParallelAgent:
         seed_eval=False,
         seed: int | None = None,
         worker_id: int | None = None,
+        explicit_root_branch_id: str | None = None,
     ):
         """Wrapper function that creates a fresh environment for each process"""
         import os
@@ -2871,31 +3396,51 @@ class ParallelAgent:
 
         print("Starting _process_node_wrapper")
 
+        # Debug: print received config values for memory
         memory_cfg = getattr(cfg, "memory", None)
+        # Prefer explicit parameter over config value (OmegaConf pickle may lose nested values)
+        config_root_branch_id = getattr(memory_cfg, "root_branch_id", None) if memory_cfg else None
+        effective_root_branch_id = explicit_root_branch_id or config_root_branch_id
+        if memory_cfg:
+            print(f"[Worker {worker_id}] Received memory config: "
+                  f"enabled={getattr(memory_cfg, 'enabled', None)}, "
+                  f"db_path={getattr(memory_cfg, 'db_path', None)}, "
+                  f"config_root_branch_id={config_root_branch_id}, "
+                  f"explicit_root_branch_id={explicit_root_branch_id}")
         memory_manager: MemoryManager | None = None
-        root_branch_id = getattr(memory_cfg, "root_branch_id", None) if memory_cfg else None
+        # Use effective_root_branch_id which prefers explicit parameter over config value
+        root_branch_id = effective_root_branch_id
         if memory_cfg and getattr(memory_cfg, "enabled", False):
             db_path = getattr(memory_cfg, "db_path", None) or (
                 Path(cfg.workspace_dir) / "memory" / "memory.sqlite"
             )
+            print(f"[Worker {worker_id}] Memory config: db_path={db_path}, root_branch_id={root_branch_id}")
             if not getattr(memory_cfg, "run_id", None):
                 memory_cfg.run_id = Path(cfg.workspace_dir).name
             memory_cfg.workspace_root = str(Path(cfg.workspace_dir))
             memory_cfg.ai_scientist_root = os.environ.get("AI_SCIENTIST_ROOT")
             memory_cfg.phase_mode = getattr(cfg.exec, "phase_mode", "single")
             memory_cfg.memory_log_dir = str(Path(cfg.log_dir) / "memory")
-            memory_manager = MemoryManager(db_path, memory_cfg)
-            if not root_branch_id:
-                root_branch_id = uuid.uuid4().hex
-                memory_manager.mem_node_fork(None, root_branch_id)
-                memory_manager.update_branch_node_uid(root_branch_id, "root")
-                memory_manager.set_root_branch_id(root_branch_id)
-                try:
-                    memory_cfg.root_branch_id = root_branch_id
-                except Exception:
-                    pass
-            else:
-                memory_manager.set_root_branch_id(root_branch_id)
+            try:
+                memory_manager = MemoryManager(db_path, memory_cfg)
+                if not root_branch_id:
+                    # If no root_branch_id was passed from main process, create one
+                    # This should not happen if main process initialized correctly
+                    print(f"[Worker {worker_id}] WARNING: No root_branch_id from main process, creating new root")
+                    root_branch_id = uuid.uuid4().hex
+                    memory_manager.mem_node_fork(None, root_branch_id)
+                    memory_manager.update_branch_node_uid(root_branch_id, "root")
+                    memory_manager.set_root_branch_id(root_branch_id)
+                    try:
+                        memory_cfg.root_branch_id = root_branch_id
+                    except Exception:
+                        pass
+                else:
+                    print(f"[Worker {worker_id}] Using root_branch_id from main process: {root_branch_id}")
+                    memory_manager.set_root_branch_id(root_branch_id)
+            except Exception as exc:
+                print(f"[Worker {worker_id}] ERROR: Failed to initialize MemoryManager: {exc}")
+                memory_manager = None
 
         # Create process-specific workspace
         # Use worker_id for predictable path (allows timeout recovery to find intermediate results)
@@ -2944,48 +3489,69 @@ class ParallelAgent:
                 parent_workspace = Path(parent_workspace_path)
                 if parent_workspace.exists() and parent_workspace != Path(workspace):
                     print(f"Copying files from parent workspace: {parent_workspace}")
-                    parent_lock_path = parent_workspace / ".workspace.lock"
-                    with filelock.FileLock(parent_lock_path, timeout=300):
-                        def ignore_mounted_data(directory, contents):
-                            # Skip 'data' only inside 'input' directory
-                            if os.path.basename(directory) == "input":
-                                return ["data"] if "data" in contents else []
-                            return []
+                    # NOTE: No lock on parent workspace - read-only operation.
+                    # Locking both current and parent workspaces caused deadlock
+                    # when multiple workers tried to copy from each other's workspaces.
+                    def ignore_mounted_data(directory, contents):
+                        # Skip 'data' only inside 'input' directory
+                        if os.path.basename(directory) == "input":
+                            return ["data"] if "data" in contents else []
+                        # Skip __pycache__ everywhere (auto-regenerated by Python)
+                        return ["__pycache__"] if "__pycache__" in contents else []
 
-                        def rmtree_skip_data(directory: Path):
-                            """Remove directory tree but skip 'data' inside 'input' directory."""
-                            for subitem in directory.iterdir():
-                                if directory.name == "input" and subitem.name == "data":
-                                    continue  # Skip mounted data
-                                if subitem.is_dir():
-                                    shutil.rmtree(subitem)
-                                else:
-                                    subitem.unlink()
+                    def rmtree_skip_data(directory: Path):
+                        """Remove directory tree but skip 'data' inside 'input' directory."""
+                        for subitem in directory.iterdir():
+                            if directory.name == "input" and subitem.name == "data":
+                                continue  # Skip mounted data
+                            if subitem.is_dir():
+                                shutil.rmtree(subitem)
+                            else:
+                                subitem.unlink()
 
-                        for item in parent_workspace.iterdir():
-                            if item.name == ".workspace.lock":
-                                continue  # Skip the lock file itself
-                            src = parent_workspace / item.name
-                            dst = Path(workspace) / item.name
-                            try:
-                                if src.is_dir():
-                                    if dst.exists():
-                                        if item.name == "input":
-                                            # Don't rmtree the whole input dir, as data might be mounted
-                                            rmtree_skip_data(dst)
-                                        else:
-                                            shutil.rmtree(dst)
-                                    shutil.copytree(src, dst, ignore=ignore_mounted_data, dirs_exist_ok=True)
-                                else:
-                                    shutil.copy2(src, dst)
-                            except OSError as exc:
-                                # EBUSY on 'data' inside 'input' is expected (mounted/symlinked)
-                                if exc.errno == 16 and item.name == "input" and getattr(exc, 'filename', None) == 'data':
-                                    pass  # Silently ignore - data is intentionally skipped
-                                else:
-                                    logger.warning(f"Failed to copy {src} to {dst}: {exc}")
-                            except Exception as exc:
+                    def copy_ignore_missing(src, dst, *, follow_symlinks=True):
+                        """Copy file, silently ignoring if source disappears (race condition)."""
+                        try:
+                            return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+                        except FileNotFoundError:
+                            # Source file was deleted by another process during copy
+                            return dst
+
+                    # Skip directories that are race-condition prone or regenerable
+                    # .pydeps: pip packages (will be reinstalled by each worker if needed)
+                    # __pycache__: bytecode cache (auto-regenerated by Python)
+                    skip_top_level = {".workspace.lock", ".pydeps", "__pycache__"}
+
+                    for item in parent_workspace.iterdir():
+                        if item.name in skip_top_level:
+                            continue
+                        src = parent_workspace / item.name
+                        dst = Path(workspace) / item.name
+                        try:
+                            if src.is_dir():
+                                if dst.exists():
+                                    if item.name == "input":
+                                        # Don't rmtree the whole input dir, as data might be mounted
+                                        rmtree_skip_data(dst)
+                                    else:
+                                        shutil.rmtree(dst)
+                                shutil.copytree(src, dst, ignore=ignore_mounted_data, dirs_exist_ok=True, copy_function=copy_ignore_missing)
+                            else:
+                                copy_ignore_missing(src, dst)
+                        except FileNotFoundError:
+                            # Source was deleted by another process during copy (race condition)
+                            pass
+                        except OSError as exc:
+                            # EBUSY on 'data' inside 'input' is expected (mounted/symlinked)
+                            # ENOENT (errno 2) is also expected in race conditions
+                            if exc.errno == 16 and item.name == "input" and getattr(exc, 'filename', None) == 'data':
+                                pass  # Silently ignore - data is intentionally skipped
+                            elif exc.errno == 2:
+                                pass  # Silently ignore - file/dir deleted by another process
+                            else:
                                 logger.warning(f"Failed to copy {src} to {dst}: {exc}")
+                        except Exception as exc:
+                            logger.warning(f"Failed to copy {src} to {dst}: {exc}")
 
         worker_name = f"worker_{worker_id}" if worker_id is not None else f"worker_{multiprocessing.current_process().name}"
         print(f"Process {worker_name} using workspace: {workspace}")
@@ -2995,19 +3561,6 @@ class ParallelAgent:
         workspace_path = Path(workspace)
         if memory_manager:
             memory_manager.workspace_root = workspace_path
-        resources_path = getattr(cfg.exec, "resources", None)
-        resource_snapshot = None  # Will be saved after child_branch_id is created
-        if memory_manager and resources_path:
-            try:
-                resource_snapshot = build_resource_snapshot(
-                    resources_path,
-                    workspace_root=workspace_path,
-                    ai_scientist_root=os.environ.get("AI_SCIENTIST_ROOT"),
-                    phase_mode=getattr(cfg.exec, "phase_mode", "single"),
-                    log=logger,
-                )
-            except Exception as exc:
-                logger.warning("Failed to build resource snapshot: %s", exc)
         phase_log_dir: Path | None = None
         prompt_session_id = f"{int(time.time() * 1000)}_{os.getpid()}"
         prompt_log_root: Path | None = None
@@ -3196,21 +3749,13 @@ class ParallelAgent:
                 except Exception as exc:
                     logger.warning("Failed to read NUMA config: %s", exc)
                     environment_context["numa_config"] = "NA"
-                # MPI/OpenMP environment variables
+                # All environment variables
                 try:
-                    env_vars_cmd = (
-                        "echo '=== OpenMP ===' && "
-                        "env | grep -E '^(OMP_|GOMP_|KMP_)' 2>/dev/null | sort || echo 'none' && "
-                        "echo '=== MPI ===' && "
-                        "env | grep -E '^(MPI|OMPI_|PMI|SLURM_|I_MPI_)' 2>/dev/null | sort || echo 'none' && "
-                        "echo '=== BLAS/LAPACK ===' && "
-                        "env | grep -E '^(MKL_|OPENBLAS_|BLAS_|LAPACK_|GOTO_)' 2>/dev/null | sort || echo 'none'"
-                    )
-                    env_vars_res = info_env.run(["bash", "-lc", env_vars_cmd], cwd=workspace_path)
-                    environment_context["parallel_env_vars"] = summarize_text(env_vars_res.stdout or "none", max_lines=50, max_chars=3000)
+                    all_env_res = info_env.run(["bash", "-lc", "env | sort"], cwd=workspace_path)
+                    environment_context["all_env_vars"] = summarize_text(all_env_res.stdout or "none", max_lines=200, max_chars=10000)
                 except Exception as exc:
-                    logger.warning("Failed to read parallel environment variables: %s", exc)
-                    environment_context["parallel_env_vars"] = "NA"
+                    logger.warning("Failed to read all environment variables: %s", exc)
+                    environment_context["all_env_vars"] = "NA"
                 # Container digest (SHA256 of SIF image)
                 if image_path:
                     try:
@@ -3277,7 +3822,7 @@ class ParallelAgent:
                         "memory_info": environment_context.get("memory_info", ""),
                         "assigned_gpu_id": environment_context.get("assigned_gpu_id"),
                         "gpu_info": environment_context.get("gpu_info", ""),
-                        "parallel_env_vars": environment_context.get("parallel_env_vars", "NA"),
+                        "all_env_vars": environment_context.get("all_env_vars", "NA"),
                         "available_compilers": environment_context.get("available_compilers", []),
                         "available_libs": environment_context.get("available_libs", []),
                         "system_performance_tools": environment_context.get("system_performance_tools", []),
@@ -3295,102 +3840,94 @@ class ParallelAgent:
                 history_full_path=str(phase0_history_path),
             )
 
-            if phase0_plan_path.exists():
+            # Phase 0 is always generated for each node (no caching)
+            # Build verified system perf tools note
+            performance_tools_list = environment_context.get("system_performance_tools", [])
+            performance_tools_names = [t.get("name", "") for t in performance_tools_list if isinstance(t, dict) and t.get("name")]
+            performance_tools_note = (
+                f"The following system performance tools have been verified and are confirmed functional inside this container: {', '.join(performance_tools_names)}. "
+                "Use them directly without assuming availability issues."
+            ) if performance_tools_names else "No system performance tools detected in this environment."
+            phase0_prompt: dict[str, Any] = {
+                "Introduction": PHASE0_WHOLE_PLANNING_PROMPT,
+                "Task": task_desc,
+                "History": history_injection,
+                "Environment": {
+                    "os_release": environment_context.get("os_release", ""),
+                    "cpu_info": environment_context.get("cpu_info", ""),
+                    "memory_info": environment_context.get("memory_info", ""),
+                    "assigned_gpu_id": environment_context.get("assigned_gpu_id"),
+                    "gpu_info": environment_context.get("gpu_info", ""),
+                    "cpu_governor": environment_context.get("cpu_governor", "NA"),
+                    "numa_config": environment_context.get("numa_config", "NA"),
+                    "all_env_vars": environment_context.get("all_env_vars", "NA"),
+                    "available_compilers": environment_context.get("available_compilers", []),
+                    "available_libs": environment_context.get("available_libs", []),
+                    "system_performance_tools": environment_context.get("system_performance_tools", []),
+                    "system_performance_tools_note": performance_tools_note,
+                    "installed_system_packages": environment_context.get("installed_system_packages", []),
+                    "network_access": environment_context.get("network_access", "unknown"),
+                    "container_runtime": environment_context.get("container_runtime"),
+                    "container_digest": environment_context.get("container_digest", "NA"),
+                    "singularity_image": environment_context.get("singularity_image"),
+                    "workspace_mount": environment_context.get("workspace_mount", "/workspace"),
+                    "timeout_seconds": environment_context.get("timeout_seconds", cfg.exec.timeout),
+                },
+            }
+            if memory_manager and root_branch_id:
+                budget = getattr(
+                    getattr(cfg, "memory", None), "memory_budget_chars", 4000
+                )
+                memory_context = memory_manager.render_for_prompt(
+                    root_branch_id, "phase0_planning", budget_chars=budget
+                )
+                if memory_context:
+                    phase0_prompt["Memory"] = memory_context
+            resources_path = getattr(cfg.exec, "resources", None)
+            if resources_path:
                 try:
-                    phase0_plan = json.loads(phase0_plan_path.read_text(encoding="utf-8"))
+                    resources_cfg = load_resources(resolve_resources_path(resources_path))
+                    phase0_prompt["Resources"] = build_resources_context(resources_cfg, phase="phase0")
                 except Exception as exc:
-                    logger.warning("Failed to load existing Phase 0 plan: %s", exc)
-                    phase0_plan = None
-            if phase0_plan is not None:
-                plan_payload = phase0_plan.get("plan") if isinstance(phase0_plan, dict) else None
-                time_budget = plan_payload.get("time_budget_estimate") if isinstance(plan_payload, dict) else None
-                if not isinstance(time_budget, dict) or "timeout_seconds" not in time_budget:
-                    logger.info("Phase 0 plan missing time_budget_estimate; regenerating.")
-                    phase0_plan = None
-            if phase0_plan is None:
-                # Build verified system perf tools note
-                performance_tools_list = environment_context.get("system_performance_tools", [])
-                performance_tools_names = [t.get("name", "") for t in performance_tools_list if isinstance(t, dict) and t.get("name")]
-                performance_tools_note = (
-                    f"The following system performance tools have been verified and are confirmed functional inside this container: {', '.join(performance_tools_names)}. "
-                    "Use them directly without assuming availability issues."
-                ) if performance_tools_names else "No system performance tools detected in this environment."
-                phase0_prompt: dict[str, Any] = {
-                    "Introduction": PHASE0_WHOLE_PLANNING_PROMPT,
-                    "Task": task_desc,
-                    "History": history_injection,
-                    "Environment": {
-                        "os_release": environment_context.get("os_release", ""),
-                        "cpu_governor": environment_context.get("cpu_governor", "NA"),
-                        "numa_config": environment_context.get("numa_config", "NA"),
-                        "parallel_env_vars": environment_context.get("parallel_env_vars", "NA"),
-                        "available_compilers": environment_context.get("available_compilers", []),
-                        "available_libs": environment_context.get("available_libs", []),
-                        "system_performance_tools": environment_context.get("system_performance_tools", []),
-                        "system_performance_tools_note": performance_tools_note,
-                        "installed_system_packages": environment_context.get("installed_system_packages", []),
-                        "network_access": environment_context.get("network_access", "unknown"),
-                        "container_runtime": environment_context.get("container_runtime"),
-                        "container_digest": environment_context.get("container_digest", "NA"),
-                        "singularity_image": environment_context.get("singularity_image"),
-                        "workspace_mount": environment_context.get("workspace_mount", "/workspace"),
-                        "timeout_seconds": environment_context.get("timeout_seconds", cfg.exec.timeout),
+                    phase0_prompt["Resources"] = {"error": str(exc)}
+            if prompt_log_root:
+                _write_prompt_log(
+                    prompt_log_root,
+                    _format_prompt_log_name("phase0_prompt"),
+                    phase0_prompt,
+                    meta={
+                        "phase": "phase0",
+                        "model": cfg.agent.code.model,
                     },
-                }
-                if memory_manager and root_branch_id:
-                    budget = getattr(
-                        getattr(cfg, "memory", None), "memory_budget_chars", 4000
-                    )
-                    memory_context = memory_manager.render_for_prompt(
-                        root_branch_id, "phase0_planning", budget_chars=budget
-                    )
-                    if memory_context:
-                        phase0_prompt["Memory"] = memory_context
-                resources_path = getattr(cfg.exec, "resources", None)
-                if resources_path:
-                    try:
-                        resources_cfg = load_resources(resolve_resources_path(resources_path))
-                        phase0_prompt["Resources"] = build_resources_context(resources_cfg, phase="phase0")
-                    except Exception as exc:
-                        phase0_prompt["Resources"] = {"error": str(exc)}
-                if prompt_log_root:
-                    _write_prompt_log(
-                        prompt_log_root,
-                        _format_prompt_log_name("phase0_prompt"),
-                        phase0_prompt,
-                        meta={
-                            "phase": "phase0",
-                            "model": cfg.agent.code.model,
-                        },
-                    )
+                )
+            try:
+                # LLM context (Phase 0 planning): Introduction + Task + History (phase summaries/compile-run logs/errors/LLM outputs) + Environment snapshot + optional Resources.
+                phase0_response = query(
+                    system_message=phase0_prompt,
+                    user_message=None,
+                    model=cfg.agent.code.model,
+                    temperature=cfg.agent.code.temp,
+                )
                 try:
-                    # LLM context (Phase 0 planning): Introduction + Task + History (phase summaries/compile-run logs/errors/LLM outputs) + Environment snapshot + optional Resources.
-                    phase0_response = query(
-                        system_message=phase0_prompt,
-                        user_message=None,
-                        model=cfg.agent.code.model,
-                        temperature=cfg.agent.code.temp,
-                    )
-                    try:
-                        (plans_dir / "phase0_llm_output.txt").write_text(
-                            phase0_response,
-                            encoding="utf-8",
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to write Phase 0 raw output: %s", exc)
-                    phase0_plan = _normalize_phase0_plan(
-                        _parse_json_object(phase0_response, context="Phase 0 plan")
-                    )
-                except Exception as exc:
-                    logger.warning("Phase 0 planning failed: %s", exc)
-                    phase0_plan = _normalize_phase0_plan({})
-                try:
-                    phase0_plan_path.write_text(
-                        json.dumps(phase0_plan, indent=2),
+                    (plans_dir / "phase0_llm_output.txt").write_text(
+                        phase0_response,
                         encoding="utf-8",
                     )
                 except Exception as exc:
-                    logger.warning("Failed to write Phase 0 plan: %s", exc)
+                    logger.warning("Failed to write Phase 0 raw output: %s", exc)
+                phase0_plan = _normalize_phase0_plan(
+                    _parse_json_object(phase0_response, context="Phase 0 plan")
+                )
+            except Exception as exc:
+                logger.warning("Phase 0 planning failed: %s", exc)
+                phase0_plan = _normalize_phase0_plan({})
+            try:
+                phase0_plan_path.write_text(
+                    json.dumps(phase0_plan, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning("Failed to write Phase 0 plan: %s", exc)
             if getattr(memory_cfg, "persist_phase0_internal", True):
                 # Prepare phase0 artifacts for later ingestion (will be ingested per child node)
                 phase0_artifact_paths = [str(phase0_plan_path), str(phase0_history_path)]
@@ -3513,15 +4050,6 @@ class ParallelAgent:
                 memory_manager.mem_node_fork(parent_branch_id, child_branch_id, ancestor_chain=ancestor_chain)
                 worker_agent.branch_id = child_branch_id
 
-                # Save resource snapshot to child branch (not root branch)
-                if resource_snapshot is not None:
-                    try:
-                        update_resource_snapshot_if_changed(
-                            resource_snapshot, memory_manager, branch_id=child_branch_id
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to persist resource snapshot to child branch: %s", exc)
-
             # Process the node using worker agent
             print("Starting node processing")
             if seed_eval:
@@ -3581,40 +4109,9 @@ class ParallelAgent:
             # Save intermediate result after node creation (for timeout recovery)
             _save_intermediate_result(child_node, stage="after_node_creation")
 
-            if memory_manager and child_branch_id and getattr(memory_cfg, "persist_idea_md", True):
-                candidates = []
-                desc_file = getattr(cfg, "desc_file", None)
-                for candidate in (
-                    desc_file,
-                    Path(cfg.workspace_dir) / "idea.md",
-                    workspace_path / "idea.md",
-                    workspace_path / "working" / "idea.md",
-                ):
-                    if not candidate:
-                        continue
-                    path = Path(candidate)
-                    if path.exists():
-                        candidates.append(path)
-                if candidates:
-                    latest_path = max(candidates, key=lambda p: p.stat().st_mtime)
-                    try:
-                        memory_manager.ingest_idea_md(
-                            child_branch_id, node_uid=child_node.id, idea_path=latest_path
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to ingest idea.md: %s", exc)
-            # Ingest Phase 0 internal info for this child node (not root branch)
-            if memory_manager and child_branch_id and phase0_plan and phase0_artifact_paths:
-                try:
-                    memory_manager.ingest_phase0_internal_info(
-                        child_branch_id,
-                        node_uid=child_node.id,
-                        phase0_payload=phase0_plan,
-                        artifact_paths=phase0_artifact_paths,
-                        command_str=phase0_command_str,
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to ingest Phase 0 internal info: %s", exc)
+            # Note: idea.md and Phase 0 info are no longer auto-ingested.
+            # LLM manages core memory directly.
+
             if memory_manager and child_branch_id:
                 try:
                     plan_snippet = (child_node.plan or "")[:1200]
@@ -3623,6 +4120,7 @@ class ParallelAgent:
                             "ts": time.time(),
                             "run_id": memory_manager.run_id,
                             "node_id": child_node.id,
+                            "branch_id": child_branch_id,
                             "phase": stage_name,
                             "kind": "node_created",
                             "summary": f"stage={stage_name} node_id={child_node.id}\n{plan_snippet}",
@@ -3739,20 +4237,43 @@ class ParallelAgent:
 
                     def parse_phase1_iterative_response(raw_text: str) -> dict[str, Any]:
                         cleaned = raw_text.strip()
-                        if "```" in cleaned:
-                            start = cleaned.find("{")
-                            end = cleaned.rfind("}")
-                            if start != -1 and end != -1 and end > start:
-                                cleaned = cleaned[start : end + 1]
-                        try:
-                            parsed = json.loads(cleaned)
-                        except json.JSONDecodeError:
-                            try:
-                                import ast
 
-                                parsed = ast.literal_eval(cleaned)
-                            except Exception as exc:  # pragma: no cover
-                                raise ValueError(f"Failed to parse Phase 1 response: {exc}") from exc
+                        # Check for malformed memory_update blocks and raise error to trigger regeneration
+                        if check_malformed_memory_update(cleaned):
+                            logger.error("[Phase1 Parse Error] Malformed <memory_update> block detected, triggering regeneration")
+                            logger.error("[Phase1 Parse Error] Raw text (first 1000 chars): %s", repr(cleaned[:1000]))
+                            raise MalformedMemoryUpdateError(f"Malformed <memory_update> block detected: {repr(cleaned[:500])}")
+
+                        # Remove <memory_update>...</memory_update> blocks before parsing
+                        # This is critical when memory is enabled, as the LLM includes memory updates before JSON
+                        cleaned = remove_memory_update_tags(cleaned)
+
+                        # Try to extract JSON object from anywhere in the response
+                        # This handles cases where LLM adds text before/after JSON
+                        start = cleaned.find("{")
+                        end = cleaned.rfind("}")
+                        if start != -1 and end != -1 and end > start:
+                            json_candidate = cleaned[start : end + 1]
+                        else:
+                            json_candidate = cleaned
+
+                        try:
+                            parsed = json.loads(json_candidate)
+                        except json.JSONDecodeError as json_err:
+                            # If JSON parsing failed, try the original cleaned text too
+                            try:
+                                parsed = json.loads(cleaned)
+                            except json.JSONDecodeError:
+                                try:
+                                    import ast
+                                    parsed = ast.literal_eval(json_candidate)
+                                except Exception as ast_err:
+                                    # Log detailed error info
+                                    logger.error("[Phase1 Parse Error] JSON error: %s", json_err)
+                                    logger.error("[Phase1 Parse Error] AST error: %s", ast_err)
+                                    logger.error("[Phase1 Parse Error] Raw text (first 1000 chars): %s", repr(raw_text[:1000]))
+                                    logger.error("[Phase1 Parse Error] JSON candidate (first 500 chars): %s", repr(json_candidate[:500]))
+                                    raise ValueError(f"Failed to parse Phase 1 response: {ast_err}\nRaw response (first 500 chars): {repr(raw_text[:500])}") from ast_err
                         if not isinstance(parsed, dict):
                             raise ValueError("Phase 1 response must be a JSON object.")
                         return parsed
@@ -3813,29 +4334,57 @@ class ParallelAgent:
                             )
 
                         # LLM context (Phase 1 iterative install): Introduction + Task + Phase plan + Constraints + Progress history + optional Phase 0 guidance + Environment injection + Resources.
-                        response_text = query(
-                            system_message=prompt,
-                            user_message=None,
-                            model=cfg.agent.code.model,
-                            temperature=cfg.agent.code.temp,
-                        )
-                        if phase1_llm_log_path:
-                            try:
-                                phase1_llm_log_path.parent.mkdir(parents=True, exist_ok=True)
-                                with open(phase1_llm_log_path, "a", encoding="utf-8") as fh:
-                                    fh.write(
-                                        json.dumps(
-                                            {
-                                                "step": step_idx,
-                                                "max_steps": max_steps,
-                                                "response": response_text,
-                                            }
+                        # Retry loop for malformed memory_update blocks
+                        max_retries = 3
+                        for retry_attempt in range(max_retries):
+                            response_text = query(
+                                system_message=prompt,
+                                user_message=None,
+                                model=cfg.agent.code.model,
+                                temperature=cfg.agent.code.temp,
+                            )
+                            # DEBUG: Log raw LLM response before parsing
+                            logger.info("[Phase1 DEBUG] Raw LLM response (first 500 chars): %s", repr(response_text[:500]) if response_text else "EMPTY")
+                            if phase1_llm_log_path:
+                                try:
+                                    phase1_llm_log_path.parent.mkdir(parents=True, exist_ok=True)
+                                    with open(phase1_llm_log_path, "a", encoding="utf-8") as fh:
+                                        fh.write(
+                                            json.dumps(
+                                                {
+                                                    "step": step_idx,
+                                                    "max_steps": max_steps,
+                                                    "response": response_text,
+                                                    "retry_attempt": retry_attempt,
+                                                }
+                                            )
+                                            + "\n"
                                         )
-                                        + "\n"
-                                    )
-                            except Exception as exc:
-                                logger.warning("Failed to write Phase 1 LLM output: %s", exc)
-                        return parse_phase1_iterative_response(response_text)
+                                except Exception as exc:
+                                    logger.warning("Failed to write Phase 1 LLM output: %s", exc)
+
+                            # Apply memory updates from Phase 1 response if present
+                            if response_text and worker_agent.memory_manager and child_branch_id:
+                                memory_updates = extract_memory_updates(response_text)
+                                if memory_updates:
+                                    try:
+                                        worker_agent.memory_manager.apply_llm_memory_updates(
+                                            child_branch_id,
+                                            memory_updates,
+                                            node_id=child_node.id,
+                                            phase="phase1_iterative",
+                                        )
+                                    except Exception as exc:
+                                        logger.warning("Failed to apply Phase 1 memory updates: %s", exc)
+
+                            try:
+                                return parse_phase1_iterative_response(response_text)
+                            except MalformedMemoryUpdateError as e:
+                                if retry_attempt < max_retries - 1:
+                                    logger.warning("[Phase1] Malformed memory_update detected, retrying (%d/%d): %s", retry_attempt + 1, max_retries, e)
+                                else:
+                                    logger.error("[Phase1] Malformed memory_update detected, max retries exceeded: %s", e)
+                                    raise
 
                     try:
                         download_log_path = phase_log_dir / "download.log"
@@ -3893,6 +4442,7 @@ class ParallelAgent:
                                             "ts": time.time(),
                                             "run_id": memory_manager.run_id,
                                             "node_id": child_node.id,
+                                            "branch_id": child_branch_id,
                                             "phase": stage_name,
                                             "kind": "phase1_complete",
                                             "summary": phase1_summary,
@@ -3900,13 +4450,6 @@ class ParallelAgent:
                                         })
                                     except Exception as exc:
                                         logger.warning("Failed to write phase1_complete event: %s", exc)
-                                if memory_manager and resources_path:
-                                    try:
-                                        memory_manager.mem_resources_resolve_and_refresh(
-                                            memory_manager.run_id or ""
-                                        )
-                                    except Exception as exc:
-                                        logger.warning("Failed to update resource snapshot after Phase 1: %s", exc)
                                 try:
                                     active_env = worker_container.create_execution_env(
                                         gpu_id=gpu_id if use_gpu else None,
@@ -3928,6 +4471,7 @@ class ParallelAgent:
                                             "ts": time.time(),
                                             "run_id": memory_manager.run_id,
                                             "node_id": child_node.id,
+                                            "branch_id": child_branch_id,
                                             "phase": stage_name,
                                             "kind": "phase1_failed",
                                             "summary": f"Phase 1 download/install failed for node {child_node.id}: {failure_msg}",
@@ -3985,6 +4529,7 @@ class ParallelAgent:
                                             "ts": time.time(),
                                             "run_id": memory_manager.run_id,
                                             "node_id": child_node.id,
+                                            "branch_id": child_branch_id,
                                             "phase": stage_name,
                                             "kind": "coding_complete",
                                             "summary": f"Coding phase complete for node {child_node.id}\nFiles: {files_list}",
@@ -4002,6 +4547,7 @@ class ParallelAgent:
                                             "ts": time.time(),
                                             "run_id": memory_manager.run_id,
                                             "node_id": child_node.id,
+                                            "branch_id": child_branch_id,
                                             "phase": stage_name,
                                             "kind": "coding_failed",
                                             "summary": f"Coding phase failed for node {child_node.id}: {str(exc)[:300]}",
@@ -4058,6 +4604,7 @@ class ParallelAgent:
                                                     "ts": time.time(),
                                                     "run_id": memory_manager.run_id,
                                                     "node_id": child_node.id,
+                                                    "branch_id": child_branch_id,
                                                     "phase": stage_name,
                                                     "kind": "compile_failed",
                                                     "summary": f"Compile phase failed for node {child_node.id}\nCompiler: {selected_compiler}\nError: {stderr_snippet}",
@@ -4073,6 +4620,7 @@ class ParallelAgent:
                                                     "ts": time.time(),
                                                     "run_id": memory_manager.run_id,
                                                     "node_id": child_node.id,
+                                                    "branch_id": child_branch_id,
                                                     "phase": stage_name,
                                                     "kind": "compile_complete",
                                                     "summary": f"Compile phase complete for node {child_node.id}\nCompiler: {selected_compiler}\nCommands: {formatted_compile_cmds[:2]}",
@@ -4113,6 +4661,7 @@ class ParallelAgent:
                                                         "ts": time.time(),
                                                         "run_id": memory_manager.run_id,
                                                         "node_id": child_node.id,
+                                                        "branch_id": child_branch_id,
                                                         "phase": stage_name,
                                                         "kind": "run_failed",
                                                         "summary": f"Run phase failed for node {child_node.id}\nError: {stderr_snippet}",
@@ -4141,6 +4690,7 @@ class ParallelAgent:
                                                             "ts": time.time(),
                                                             "run_id": memory_manager.run_id,
                                                             "node_id": child_node.id,
+                                                            "branch_id": child_branch_id,
                                                             "phase": stage_name,
                                                             "kind": "run_failed",
                                                             "summary": f"Run phase failed for node {child_node.id}: missing outputs {missing_outputs[:3]}",
@@ -4156,6 +4706,7 @@ class ParallelAgent:
                                                             "ts": time.time(),
                                                             "run_id": memory_manager.run_id,
                                                             "node_id": child_node.id,
+                                                            "branch_id": child_branch_id,
                                                             "phase": stage_name,
                                                             "kind": "run_complete",
                                                             "summary": f"Run phase complete for node {child_node.id}\nOutputs: {expected_outputs[:3]}",
@@ -4309,10 +4860,11 @@ class ParallelAgent:
                                 "Introduction": METRICS_PROMPT_INTRO,
                                 "Execution Output": metrics_exec_result.term_out,
                             }
+                            metrics_branch_id = getattr(child_node, "branch_id", None)
                             worker_agent._inject_memory(
                                 metrics_prompt,
                                 "metrics_extraction",
-                                branch_id=getattr(child_node, "branch_id", None),
+                                branch_id=metrics_branch_id,
                                 budget_chars=getattr(cfg.memory, "metrics_extraction_budget_chars", 1500),
                             )
                             print(
@@ -4322,6 +4874,26 @@ class ParallelAgent:
                                 f"[blue]Metrics Parsing Execution Result:\n[/blue] {metrics_exec_result}"
                             )
 
+                            # Phase 1: Memory update (with multi-round support)
+                            if worker_agent._is_memory_enabled and memory_manager and metrics_branch_id:
+                                _run_memory_update_phase(
+                                    prompt=metrics_prompt,
+                                    memory_manager=memory_manager,
+                                    branch_id=metrics_branch_id,
+                                    node_id=child_node.id,
+                                    phase_name="metrics_extraction",
+                                    model=cfg.agent.feedback.model,
+                                    temperature=cfg.agent.feedback.temp,
+                                    max_rounds=getattr(cfg.memory, "max_memory_read_rounds", 2),
+                                    task_description=(
+                                        "Review the metrics output and update your memory with any important observations, "
+                                        "metric patterns, or performance insights that would be useful for future analysis. "
+                                        "You can also search memory for patterns from previous metric extractions. "
+                                        "Respond with ONLY a <memory_update> block containing your memory operations."
+                                    ),
+                                )
+
+                            # Phase 2: Task execution with structured response
                             metrics_response = cast(
                                 dict,
                                 # LLM context (metric extraction): Introduction + Execution Output from metrics parser + Memory.
@@ -4355,6 +4927,7 @@ class ParallelAgent:
                                             "ts": time.time(),
                                             "run_id": memory_manager.run_id,
                                             "node_id": child_node.id,
+                                            "branch_id": child_branch_id,
                                             "phase": stage_name,
                                             "kind": "metrics_extracted",
                                             "summary": metrics_summary,
@@ -4419,6 +4992,7 @@ class ParallelAgent:
                                 "ts": time.time(),
                                 "run_id": memory_manager.run_id,
                                 "node_id": child_node.id,
+                                "branch_id": child_branch_id,
                                 "phase": stage_name,
                                 "kind": "metrics_failed",
                                 "summary": f"Metrics parsing failed for node {child_node.id}: {last_error_message[:200] if last_error_message else 'Unknown error'}",
@@ -4597,6 +5171,7 @@ class ParallelAgent:
                             "ts": time.time(),
                             "run_id": memory_manager.run_id,
                             "node_id": child_node.id,
+                            "branch_id": child_branch_id,
                             "phase": stage_name,
                             "kind": "node_result",
                             "summary": result_text,
@@ -4879,10 +5454,8 @@ class ParallelAgent:
                     continue
 
                 # Get best node from unprocessed tree if possible
-                memory_context = self._memory_context(self.root_branch_id, "best_node_selection")
-                best_node = self.journal.get_best_node(
-                    cfg=self.cfg, memory_context=memory_context
-                )
+                # Note: best_node_selection does not use memory context as root branch has no data
+                best_node = self.journal.get_best_node(cfg=self.cfg)
                 tree_root = best_node
                 while tree_root.parent:
                     tree_root = tree_root.parent
@@ -5011,6 +5584,7 @@ class ParallelAgent:
                 seed_eval,
                 None,
                 worker_idx,
+                self.root_branch_id,
             )
             task_ids.append(task_id)
             task_id_to_index[task_id] = worker_idx
@@ -5188,6 +5762,31 @@ class ParallelAgent:
                 exc_stack=[],
             )
 
+            # Create a new branch in memory DB for the timeout error node
+            # branch_hint is the parent branch (from intermediate data, parent node, or root)
+            parent_branch_id = branch_hint
+            error_branch_id = uuid.uuid4().hex
+            if self.memory_manager:
+                try:
+                    # Build ancestor chain for correct tree structure
+                    ancestor_chain = []
+                    if parent_node:
+                        current = parent_node
+                        while current is not None:
+                            node_id = getattr(current, "branch_id", None) or current.id
+                            ancestor_chain.append(node_id)
+                            current = getattr(current, "parent", None)
+                        ancestor_chain = ancestor_chain[::-1]  # root-to-parent order
+
+                    self.memory_manager.mem_node_fork(
+                        parent_branch_id, error_branch_id, ancestor_chain=ancestor_chain
+                    )
+                    logger.info(f"Created memory branch {error_branch_id} for timeout error node (parent: {parent_branch_id})")
+                except Exception as exc:
+                    logger.warning(f"Failed to create memory branch for timeout error node: {exc}")
+                    # Fall back to using parent's branch_id if branch creation fails
+                    error_branch_id = parent_branch_id
+
             error_node = Node(
                 plan=plan_text,
                 code=code_text,
@@ -5204,7 +5803,7 @@ class ParallelAgent:
                 exec_time_feedback=(
                     f"Execution stopped at {humanize.naturaldelta(self.timeout)} because of the timeout."
                 ),
-                branch_id=branch_hint,
+                branch_id=error_branch_id,
             )
             # Copy additional fields from intermediate result if available
             if intermediate_data:
@@ -5219,7 +5818,7 @@ class ParallelAgent:
 
             error_node.absorb_exec_result(exec_result)
             review_summary, review_is_bug = self._run_execution_review_for_timeout(
-                error_node, branch_hint
+                error_node, error_branch_id
             )
             final_analysis = error_node.analysis or timeout_summary
             if review_summary:
@@ -5231,6 +5830,14 @@ class ParallelAgent:
                 parent_node.children.add(error_node)
             self.journal.append(error_node)
             logger.error(f"Added timeout error node {error_node.id} to journal (parent: {parent_node.id if parent_node else None}, intermediate_stage: {intermediate_stage})")
+
+            # Update the branch's node_uid in memory DB to link it with the error node
+            if self.memory_manager and error_branch_id != parent_branch_id:
+                try:
+                    self.memory_manager.update_branch_node_uid(error_branch_id, error_node.id)
+                    logger.info(f"Updated memory branch {error_branch_id} with node_uid {error_node.id}")
+                except Exception as exc:
+                    logger.warning(f"Failed to update branch node_uid for timeout error node: {exc}")
 
             # Release GPU for this process if it was using one
             process_id = f"worker_{i}"

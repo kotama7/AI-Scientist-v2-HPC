@@ -103,10 +103,6 @@ class MemoryConfig:
     recall_max_events: int = 20
     retrieval_k: int = 8
     use_fts: str = "auto"
-    persist_phase0_internal: bool = True
-    always_inject_phase0_summary: bool = True
-    persist_idea_md: bool = True
-    always_inject_idea_summary: bool = True
     final_memory_enabled: bool = True
     final_memory_filename_md: str = "final_memory_for_paper.md"
     final_memory_filename_json: str = "final_memory_for_paper.json"
@@ -123,7 +119,6 @@ class MemoryConfig:
     use_llm_compression: bool = False
     compression_model: str = "gpt-4o-mini"
     max_compression_iterations: int = 3
-    section_budgets: dict[str, int] = field(default_factory=dict)
     datasets_tested_budget_chars: int = 1500
     metrics_extraction_budget_chars: int = 1500
     plotting_code_budget_chars: int = 2000
@@ -131,6 +126,8 @@ class MemoryConfig:
     vlm_analysis_budget_chars: int = 1000
     node_summary_budget_chars: int = 2000
     parse_metrics_budget_chars: int = 2000
+    archival_snippet_budget_chars: int = 6000
+    results_budget_chars: int = 4000
     writeup_recall_limit: int = 10
     writeup_archival_limit: int = 10
     writeup_core_value_max_chars: int = 500
@@ -141,6 +138,8 @@ class MemoryConfig:
     consolidation_trigger: str = "high"
     recall_consolidation_threshold: float = 1.5
     pressure_thresholds: dict[str, float] = field(default_factory=dict)
+    # Multi-turn memory read flow
+    max_memory_read_rounds: int = 2
 
 
 @dataclass

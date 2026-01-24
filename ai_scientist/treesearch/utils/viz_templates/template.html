@@ -393,6 +393,9 @@
       .memory-event[data-category="resources"] {
         border-left-color: #74c0fc;
       }
+      .memory-event[data-category="maintenance"] {
+        border-left-color: #adb5bd;
+      }
 
       .memory-event-header {
         display: flex;
@@ -501,6 +504,7 @@
             <button class="memory-filter" data-filter="forks" onclick="setMemoryFilter('forks')">🌿 Forks</button>
             <button class="memory-filter" data-filter="recalls" onclick="setMemoryFilter('recalls')">🔄 Recalls</button>
             <button class="memory-filter" data-filter="resources" onclick="setMemoryFilter('resources')">📦 Resources</button>
+            <button class="memory-filter" data-filter="maintenance" onclick="setMemoryFilter('maintenance')">🔧 Maintenance</button>
           </div>
           <div id="memory-content" class="memory-content"></div>
         </div>

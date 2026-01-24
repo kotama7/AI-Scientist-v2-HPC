@@ -28,7 +28,7 @@ def resolve_run_root(cfg: Config) -> Path:
     if run_root_env:
         run_root = Path(run_root_env).expanduser().resolve()
     else:
-        run_root = Path(cfg.log_dir).parent.parent / "runs" / cfg.exp_name
+        run_root = Path(cfg.log_dir).parent / "runs"  # 実験ディレクトリ内に配置
     run_root.mkdir(parents=True, exist_ok=True)
     return run_root
 

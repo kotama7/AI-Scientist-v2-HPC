@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>__EXPERIMENT_NAME__ - Memory Database Viewer</title>
+
+    <!-- External Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+
+    <!-- Inline CSS (will be replaced by build process in production) -->
+    <style>
+    /* === common.css === */
+    __COMMON_CSS__
+    /* === memory_database.css === */
+    __MEMORY_DATABASE_CSS__
+    </style>
+</head>
+<body>
+    <!-- Main Layout: Resizable Panels -->
+    <div class="panel-container">
+        <!-- Left Panel: Tree Canvas -->
+        <div class="panel panel-left" id="canvas-container">
+        </div>
+
+        <!-- Resizer Handle -->
+        <div class="panel-resizer" id="panel-resizer"></div>
+
+        <!-- Right Panel: Info Display -->
+        <div class="panel panel-right" id="info-container">
+            <!-- Header -->
+            <div class="header">
+                <h1>__EXPERIMENT_NAME__</h1>
+                <div class="subtitle" id="current-node-info">Click a node to view memory state</div>
+            </div>
+
+            <!-- View Mode Tabs -->
+            <div class="tabs" id="view-tabs">
+                <button class="tab active" data-view="summary" onclick="switchView('summary')">Summary</button>
+                <button class="tab" data-view="memory-flow" onclick="switchView('memory-flow')">Memory Flow</button>
+                <button class="tab" data-view="by-phase" onclick="switchView('by-phase')">By Phase</button>
+                <button class="tab" data-view="timeline" onclick="switchView('timeline')">Timeline</button>
+                <button class="tab" data-view="all" onclick="switchView('all')">All Data</button>
+            </div>
+
+            <!-- Content Area -->
+            <div id="memory-content">
+                <div class="empty-state">
+                    <div class="empty-state-icon">🌳</div>
+                    <div class="empty-state-text">Select a node from the tree to view its memory state</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Inline JavaScript -->
+    <script>
+    // === resizable.js ===
+    __RESIZABLE_JS__
+    </script>
+
+    <script>
+    // === memory_database.js ===
+    __MEMORY_DATABASE_JS__
+    </script>
+
+    <script>
+    // === tree_canvas.js ===
+    __TREE_CANVAS_JS__
+    </script>
+
+    <script>
+    // === Main Application ===
+    const memoryData = __JS_DATA__;
+
+    // State
+    let currentNodeIndex = -1;
+    let currentView = 'summary';
+    let p5Instance = null;
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+        // Initialize resizable panels
+        new ResizablePanel({
+            leftPanel: document.querySelector('.panel-left'),
+            rightPanel: document.querySelector('.panel-right'),
+            resizer: document.getElementById('panel-resizer'),
+            minLeftWidth: 250,
+            maxLeftWidth: window.innerWidth * 0.6,
+            storageKey: 'memory-db-panel-width'
+        });
+
+        // Initialize tree canvas
+        p5Instance = new p5(createTreeSketch(memoryData, {
+            onNodeSelect: selectNode,
+            onNodeHover: (index, node) => {
+                // Optional: Show tooltip on hover
+            }
+        }), 'canvas-container');
+    });
+
+    // Node Selection
+    function selectNode(index, nodeData) {
+        currentNodeIndex = index;
+
+        // Update header
+        const infoEl = document.getElementById('current-node-info');
+        if (nodeData.is_virtual) {
+            infoEl.textContent = 'Virtual Root Node';
+        } else {
+            const nodeId = nodeData.node_uid || nodeData.branch_id;
+            infoEl.textContent = `Node: ${nodeId ? nodeId.substring(0, 16) + '...' : index}`;
+        }
+
+        // Render content based on current view
+        renderNodeContent(nodeData);
+    }
+
+    // View Switching
+    function switchView(view) {
+        currentView = view;
+
+        // Update tab styles
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.view === view);
+        });
+
+        // Re-render if node is selected
+        if (currentNodeIndex >= 0) {
+            renderNodeContent(memoryData.nodes[currentNodeIndex]);
+        }
+    }
+
+    // Content Rendering
+    function renderNodeContent(nodeData) {
+        const container = document.getElementById('memory-content');
+
+        if (nodeData.is_virtual) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">🔲</div>
+                    <div class="empty-state-text">Virtual root node has no memory data</div>
+                </div>`;
+            return;
+        }
+
+        switch (currentView) {
+            case 'summary':
+                renderSummaryView(container, nodeData);
+                break;
+            case 'memory-flow':
+                renderMemoryFlowView(container, nodeData);
+                break;
+            case 'by-phase':
+                renderByPhaseView(container, nodeData);
+                break;
+            case 'timeline':
+                renderTimelineView(container, nodeData);
+                break;
+            case 'all':
+                renderAllDataView(container, nodeData);
+                break;
+        }
+    }
+
+    // Summary View
+    function renderSummaryView(container, nodeData) {
+        const ownMemoryCalls = nodeData.own_memory_calls || nodeData.memory_calls || [];
+        const ownEvents = nodeData.own_events || nodeData.events || [];
+        const ownArchival = nodeData.own_archival || nodeData.archival || [];
+        const ownCoreKV = nodeData.own_core_kv || nodeData.core_kv || [];
+
+        // Inherited data
+        const inheritedMemoryCalls = nodeData.inherited_memory_calls || [];
+        const inheritedEvents = nodeData.inherited_events || [];
+        const inheritedArchival = nodeData.inherited_archival || [];
+        const inheritedCoreKV = nodeData.inherited_core_kv || [];
+        const ancestors = nodeData.ancestors || [];
+
+        // Calculate stats
+        const allCalls = [...ownMemoryCalls, ...inheritedMemoryCalls];
+        const ownCounts = MemoryDB.countByType(ownMemoryCalls);
+        const inheritedCounts = MemoryDB.countByType(inheritedMemoryCalls);
+        const phaseGroups = MemoryDB.groupByPhase(ownMemoryCalls);
+        const phaseNames = Object.keys(phaseGroups).sort();
+
+        let html = '';
+
+        // Ancestor Chain (if any)
+        if (ancestors.length > 0) {
+            html += `<h3 style="margin-bottom: 15px; color: #888;">Inheritance Chain</h3>`;
+            html += MemoryDB.renderAncestorChain(ancestors, 'selectNodeByIndex');
+        }
+
+        // This Node's Operations Summary
+        html += `<h3 style="margin: 20px 0 15px; color: #4dabf7;">This Node's Memory Operations</h3>`;
+        html += MemoryDB.renderOperationsSummary(ownMemoryCalls);
+
+        // Inherited Operations Summary (if any)
+        if (inheritedMemoryCalls.length > 0) {
+            html += `<h3 style="margin: 20px 0 15px; color: #888;">Inherited from Ancestors (${ancestors.length} nodes)</h3>`;
+            html += `<div class="ops-summary" style="opacity: 0.7;">
+                <div class="ops-summary-item">
+                    <div class="ops-summary-count read">${inheritedCounts.read}</div>
+                    <div class="ops-summary-label">Reads</div>
+                </div>
+                <div class="ops-summary-item">
+                    <div class="ops-summary-count write">${inheritedCounts.write}</div>
+                    <div class="ops-summary-label">Writes</div>
+                </div>
+                <div class="ops-summary-item">
+                    <div class="ops-summary-count fork">${inheritedCounts.fork}</div>
+                    <div class="ops-summary-label">Forks</div>
+                </div>
+                <div class="ops-summary-item">
+                    <div class="ops-summary-count system">${inheritedCounts.system}</div>
+                    <div class="ops-summary-label">System</div>
+                </div>
+                <div class="ops-summary-item">
+                    <div class="ops-summary-count llm">${inheritedCounts.llm}</div>
+                    <div class="ops-summary-label">LLM</div>
+                </div>
+            </div>`;
+        }
+
+        // Phase Summary
+        if (phaseNames.length > 0) {
+            html += `<h3 style="margin: 20px 0 15px; color: #4dabf7;">Operations by Phase</h3>`;
+            html += '<div class="stats-bar">';
+            for (const phase of phaseNames) {
+                const items = phaseGroups[phase];
+                const phaseCounts = MemoryDB.countByType(items);
+                html += `
+                    <div class="stat-item" onclick="switchView('by-phase')" style="cursor: pointer;">
+                        <div class="stat-value">${items.length}</div>
+                        <div class="stat-label">${MemoryDB.PHASE_LABELS[phase] || phase}</div>
+                    </div>`;
+            }
+            html += '</div>';
+        }
+
+        // Memory Contents (Own vs Inherited)
+        html += `
+            <h3 style="margin: 20px 0 15px; color: #4dabf7;">Memory Contents</h3>
+            <div class="stats-bar">
+                <div class="stat-item">
+                    <div class="stat-value">${ownCoreKV.length}</div>
+                    <div class="stat-label">Core KV (own)</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${ownEvents.length}</div>
+                    <div class="stat-label">Events (own)</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">${ownArchival.length}</div>
+                    <div class="stat-label">Archival (own)</div>
+                </div>
+            </div>`;
+
+        // Inherited Memory Contents (if any)
+        const hasInherited = inheritedCoreKV.length + inheritedEvents.length + inheritedArchival.length > 0;
+        if (hasInherited) {
+            html += `
+                <div class="stats-bar" style="opacity: 0.7; margin-top: 10px;">
+                    <div class="stat-item" onclick="switchView('all')" style="cursor: pointer;">
+                        <div class="stat-value" style="color: #888;">${inheritedCoreKV.length}</div>
+                        <div class="stat-label">Core KV (inherited)</div>
+                    </div>
+                    <div class="stat-item" onclick="switchView('all')" style="cursor: pointer;">
+                        <div class="stat-value" style="color: #888;">${inheritedEvents.length}</div>
+                        <div class="stat-label">Events (inherited)</div>
+                    </div>
+                    <div class="stat-item" onclick="switchView('all')" style="cursor: pointer;">
+                        <div class="stat-value" style="color: #888;">${inheritedArchival.length}</div>
+                        <div class="stat-label">Archival (inherited)</div>
+                    </div>
+                </div>
+                <p style="font-size: 0.8rem; color: #666; margin-top: 10px; text-align: center;">
+                    Click "All Data" tab to view inherited data details
+                </p>`;
+        }
+
+        container.innerHTML = html;
+    }
+
+    // Memory Flow View - Shows multi-turn memory read flow and injection context
+    function renderMemoryFlowView(container, nodeData) {
+        const ownMemoryCalls = nodeData.own_memory_calls || nodeData.memory_calls || [];
+        const ownCoreKV = nodeData.own_core_kv || nodeData.core_kv || [];
+        const ownEvents = nodeData.own_events || nodeData.events || [];
+        const ownArchival = nodeData.own_archival || nodeData.archival || [];
+
+        // Sort by timestamp
+        const sorted = [...ownMemoryCalls].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
+        // Group operations into "rounds" based on render_for_prompt calls
+        const rounds = [];
+        let currentRound = { injections: [], operations: [], llmReads: [] };
+
+        for (const item of sorted) {
+            const op = item.op || '';
+
+            if (op === 'render_for_prompt') {
+                // New injection marks potential new round
+                if (currentRound.injections.length > 0 || currentRound.operations.length > 0) {
+                    rounds.push(currentRound);
+                    currentRound = { injections: [], operations: [], llmReads: [] };
+                }
+                currentRound.injections.push(item);
+            } else if (op.startsWith('llm_') && (op.includes('search') || op.includes('get'))) {
+                // LLM-initiated read operations
+                currentRound.llmReads.push(item);
+                currentRound.operations.push(item);
+            } else {
+                currentRound.operations.push(item);
+            }
+        }
+
+        // Don't forget the last round
+        if (currentRound.injections.length > 0 || currentRound.operations.length > 0) {
+            rounds.push(currentRound);
+        }
+
+        let html = '';
+
+        // Header with explanation
+        html += `
+            <div class="memory-flow-header">
+                <h3 style="margin-bottom: 10px; color: #4dabf7;">Memory Flow Visualization</h3>
+                <p style="color: #888; font-size: 0.85rem; margin-bottom: 20px;">
+                    Shows the sequence of memory operations including:<br>
+                    <span style="color: #51cf66;">● Memory Injection</span> - Context injected into LLM prompt<br>
+                    <span style="color: #be4bdb;">● LLM Read Operations</span> - LLM-initiated searches (may trigger re-query)<br>
+                    <span style="color: #ff6b6b;">● Write Operations</span> - Memory updates
+                </p>
+            </div>`;
+
+        if (rounds.length === 0) {
+            html += `
+                <div class="empty-state">
+                    <div class="empty-state-text">No memory flow data recorded for this node</div>
+                </div>`;
+        } else {
+            // Render each round
+            for (let i = 0; i < rounds.length; i++) {
+                const round = rounds[i];
+                const roundNum = i;
+                const hasLlmReads = round.llmReads.length > 0;
+
+                html += `
+                    <div class="memory-flow-round ${hasLlmReads ? 'has-llm-reads' : ''}">
+                        <div class="memory-flow-round-header">
+                            <span class="round-number">Round ${roundNum}</span>
+                            ${hasLlmReads ? '<span class="round-badge llm-read">LLM Reads</span>' : ''}
+                            <span class="round-ops-count">${round.operations.length} operations</span>
+                        </div>`;
+
+                // Memory Injection Section
+                if (round.injections.length > 0) {
+                    for (const injection of round.injections) {
+                        html += renderMemoryInjection(injection, ownCoreKV, ownEvents, ownArchival);
+                    }
+                }
+
+                // LLM Read Operations (highlighted)
+                if (round.llmReads.length > 0) {
+                    html += `
+                        <div class="memory-flow-section llm-reads">
+                            <div class="memory-flow-section-header">
+                                <span class="section-icon">🔍</span>
+                                <span class="section-title">LLM Read Operations</span>
+                                <span class="section-note">(may trigger re-query with results)</span>
+                            </div>
+                            <div class="memory-flow-section-content">`;
+
+                    for (const item of round.llmReads) {
+                        const opInfo = MemoryDB.getOpInfo(item.op);
+                        html += `
+                            <div class="memory-call llm">
+                                <div class="memory-call-header">
+                                    <div class="memory-call-info">
+                                        <span class="memory-call-op llm">${MemoryDB.escapeHtml(opInfo.label)}</span>
+                                        <span class="memory-call-phase">Phase: ${MemoryDB.escapeHtml(item.phase || 'N/A')}</span>
+                                    </div>
+                                    <span class="memory-call-time">${MemoryDB.formatTimestamp(item.ts)}</span>
+                                </div>
+                                ${MemoryDB.renderMemoryCallDetails(item)}
+                            </div>`;
+                    }
+
+                    html += `
+                            </div>
+                        </div>`;
+                }
+
+                // Other Operations
+                const otherOps = round.operations.filter(op => !round.llmReads.includes(op));
+                if (otherOps.length > 0) {
+                    html += `
+                        <div class="memory-flow-section other-ops">
+                            <div class="memory-flow-section-header">
+                                <span class="section-icon">⚙️</span>
+                                <span class="section-title">Other Operations</span>
+                            </div>
+                            <div class="memory-flow-section-content">`;
+
+                    for (const item of otherOps) {
+                        const opInfo = MemoryDB.getOpInfo(item.op);
+                        html += `
+                            <div class="memory-call ${opInfo.type}">
+                                <div class="memory-call-header">
+                                    <div class="memory-call-info">
+                                        <span class="memory-call-op ${opInfo.type}">${MemoryDB.escapeHtml(opInfo.label)}</span>
+                                        <span class="memory-call-phase">Phase: ${MemoryDB.escapeHtml(item.phase || 'N/A')}</span>
+                                    </div>
+                                    <span class="memory-call-time">${MemoryDB.formatTimestamp(item.ts)}</span>
+                                </div>
+                                ${MemoryDB.renderMemoryCallDetails(item)}
+                            </div>`;
+                    }
+
+                    html += `
+                            </div>
+                        </div>`;
+                }
+
+                html += `</div>`; // Close round
+            }
+        }
+
+        container.innerHTML = html;
+    }
+
+    // Render memory injection with context details
+    function renderMemoryInjection(injection, coreKV, events, archival) {
+        const details = injection.details || {};
+        const injectionId = `injection-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+        let html = `
+            <div class="memory-flow-section injection">
+                <div class="memory-flow-section-header">
+                    <span class="section-icon">💉</span>
+                    <span class="section-title">Memory Injection</span>
+                    <span class="memory-call-time">${MemoryDB.formatTimestamp(injection.ts)}</span>
+                </div>
+                <div class="injection-summary">
+                    <div class="injection-stat">
+                        <span class="injection-stat-value">${details.budget_chars ? details.budget_chars.toLocaleString() : 'N/A'}</span>
+                        <span class="injection-stat-label">Budget (chars)</span>
+                    </div>
+                    <div class="injection-stat">
+                        <span class="injection-stat-value">${details.core_count || 0}</span>
+                        <span class="injection-stat-label">Core Items</span>
+                    </div>
+                    <div class="injection-stat">
+                        <span class="injection-stat-value">${details.recall_count || 0}</span>
+                        <span class="injection-stat-label">Recall Events</span>
+                    </div>
+                    <div class="injection-stat">
+                        <span class="injection-stat-value">${details.archival_count || 0}</span>
+                        <span class="injection-stat-label">Archival Results</span>
+                    </div>
+                </div>`;
+
+        // Show injected context details if available
+        if (details.task_hint) {
+            html += `
+                <div class="injection-detail-row">
+                    <span class="injection-detail-key">Task Hint:</span>
+                    <span class="injection-detail-value">${MemoryDB.escapeHtml(details.task_hint)}</span>
+                </div>`;
+        }
+
+        // Collapsible context sections
+        html += `
+            <button class="detail-toggle-btn" onclick="toggleInjectionContext('${injectionId}', this)">
+                <span class="toggle-icon">▼</span>
+                <span>Show Injected Context</span>
+            </button>
+            <div class="injection-context" id="${injectionId}">`;
+
+        // Core Memory Context
+        if (details.core_items && details.core_items.length > 0) {
+            html += `
+                <div class="injection-context-section">
+                    <div class="injection-context-header">Core Memory (${details.core_items.length} items)</div>
+                    <div class="injection-context-content">`;
+            for (const item of details.core_items) {
+                html += `
+                    <div class="injection-context-item">
+                        <span class="context-item-key">${MemoryDB.escapeHtml(item.key || 'unknown')}</span>
+                        <span class="context-item-value">${MemoryDB.escapeHtml(MemoryDB.truncateText(item.value || '', 200))}</span>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        } else if (coreKV.length > 0 && details.core_count > 0) {
+            // Fallback: show from stored core KV data
+            html += `
+                <div class="injection-context-section">
+                    <div class="injection-context-header">Core Memory (from database)</div>
+                    <div class="injection-context-content">`;
+            for (const item of coreKV.slice(0, details.core_count || 10)) {
+                html += `
+                    <div class="injection-context-item">
+                        <span class="context-item-key">${MemoryDB.escapeHtml(item.key || 'unknown')}</span>
+                        <span class="context-item-value">${MemoryDB.escapeHtml(MemoryDB.truncateText(item.value || '', 200))}</span>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        }
+
+        // Recall Events Context
+        if (details.recall_items && details.recall_items.length > 0) {
+            html += `
+                <div class="injection-context-section">
+                    <div class="injection-context-header">Recall Events (${details.recall_items.length} items)</div>
+                    <div class="injection-context-content">`;
+            for (const item of details.recall_items) {
+                html += `
+                    <div class="injection-context-item">
+                        <span class="context-item-key">[${MemoryDB.escapeHtml(item.kind || 'event')}]</span>
+                        <span class="context-item-value">${MemoryDB.escapeHtml(MemoryDB.truncateText(item.text || item.summary || '', 200))}</span>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        } else if (events.length > 0 && details.recall_count > 0) {
+            // Fallback: show from stored events
+            html += `
+                <div class="injection-context-section">
+                    <div class="injection-context-header">Recall Events (from database)</div>
+                    <div class="injection-context-content">`;
+            for (const item of events.slice(-details.recall_count || -10)) {
+                html += `
+                    <div class="injection-context-item">
+                        <span class="context-item-key">[${MemoryDB.escapeHtml(item.kind || 'event')}]</span>
+                        <span class="context-item-value">${MemoryDB.escapeHtml(MemoryDB.truncateText(item.text || '', 200))}</span>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        }
+
+        // Archival Search Results Context
+        if (details.archival_items && details.archival_items.length > 0) {
+            html += `
+                <div class="injection-context-section">
+                    <div class="injection-context-header">Archival Search Results (${details.archival_items.length} items)</div>
+                    <div class="injection-context-content">`;
+            for (const item of details.archival_items) {
+                html += `
+                    <div class="injection-context-item">
+                        <span class="context-item-key">${MemoryDB.escapeHtml((item.tags || []).join(', ') || 'no tags')}</span>
+                        <span class="context-item-value">${MemoryDB.escapeHtml(MemoryDB.truncateText(item.text || '', 200))}</span>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        } else if (details.archival_query) {
+            html += `
+                <div class="injection-context-section">
+                    <div class="injection-context-header">Archival Search Query</div>
+                    <div class="injection-context-content">
+                        <div class="injection-context-item">
+                            <span class="context-item-key">Query:</span>
+                            <span class="context-item-value">${MemoryDB.escapeHtml(details.archival_query)}</span>
+                        </div>
+                        <div class="injection-context-item">
+                            <span class="context-item-key">Top-K:</span>
+                            <span class="context-item-value">${details.archival_k || 'N/A'}</span>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        // If no detailed context, show a note
+        if (!details.core_items && !details.recall_items && !details.archival_items &&
+            coreKV.length === 0 && events.length === 0) {
+            html += `
+                <div class="injection-context-note">
+                    <p style="color: #888; font-style: italic;">
+                        Detailed injection context not logged. To see full context, enable
+                        <code>log_injection_details: true</code> in memory config.
+                    </p>
+                </div>`;
+        }
+
+        html += `</div></div>`; // Close injection-context and memory-flow-section
+
+        return html;
+    }
+
+    // Toggle injection context visibility
+    function toggleInjectionContext(contextId, btn) {
+        const contextEl = document.getElementById(contextId);
+        if (!contextEl) return;
+
+        const isExpanded = contextEl.classList.toggle('expanded');
+        btn.classList.toggle('expanded', isExpanded);
+        btn.querySelector('span:last-child').textContent = isExpanded ? 'Hide Injected Context' : 'Show Injected Context';
+    }
+
+    // Make toggle function global
+    window.toggleInjectionContext = toggleInjectionContext;
+
+    // By Phase View
+    function renderByPhaseView(container, nodeData) {
+        const ownMemoryCalls = nodeData.own_memory_calls || nodeData.memory_calls || [];
+        const phaseGroups = MemoryDB.groupByPhase(ownMemoryCalls);
+        const phaseOrder = ['phase0', 'phase1', 'phase2', 'phase3', 'phase4', 'summary', 'unknown'];
+
+        let html = '<h3 style="margin-bottom: 15px; color: #4dabf7;">Memory Operations by Phase</h3>';
+
+        // Sort phases
+        const sortedPhases = Object.keys(phaseGroups).sort((a, b) => {
+            const aIdx = phaseOrder.indexOf(a);
+            const bIdx = phaseOrder.indexOf(b);
+            return (aIdx === -1 ? 999 : aIdx) - (bIdx === -1 ? 999 : bIdx);
+        });
+
+        if (sortedPhases.length === 0) {
+            html += `
+                <div class="empty-state">
+                    <div class="empty-state-text">No memory operations recorded for this node</div>
+                </div>`;
+        } else {
+            for (const phase of sortedPhases) {
+                html += MemoryDB.renderPhaseGroup(phase, phaseGroups[phase], true);
+            }
+        }
+
+        container.innerHTML = html;
+    }
+
+    // Timeline View
+    function renderTimelineView(container, nodeData) {
+        const ownMemoryCalls = nodeData.own_memory_calls || nodeData.memory_calls || [];
+
+        let html = '<h3 style="margin-bottom: 15px; color: #4dabf7;">Memory Operations Timeline</h3>';
+
+        if (ownMemoryCalls.length === 0) {
+            html += `
+                <div class="empty-state">
+                    <div class="empty-state-text">No memory operations recorded for this node</div>
+                </div>`;
+        } else {
+            // Sort by timestamp
+            const sorted = [...ownMemoryCalls].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
+            html += '<div class="timeline">';
+            for (const item of sorted) {
+                const opInfo = MemoryDB.getOpInfo(item.op);
+                html += `
+                    <div class="timeline-item ${opInfo.type}">
+                        <div class="memory-call-header">
+                            <div class="memory-call-info">
+                                <span class="memory-call-op ${opInfo.type}">${MemoryDB.escapeHtml(opInfo.label)}</span>
+                                <span class="memory-call-phase">Phase: ${MemoryDB.escapeHtml(item.phase || 'N/A')}</span>
+                            </div>
+                            <span class="memory-call-time">${MemoryDB.formatTimestamp(item.ts)}</span>
+                        </div>
+                        ${MemoryDB.renderMemoryCallDetails(item)}
+                    </div>`;
+            }
+            html += '</div>';
+        }
+
+        container.innerHTML = html;
+    }
+
+    // All Data View
+    function renderAllDataView(container, nodeData) {
+        const ownCoreKV = nodeData.own_core_kv || nodeData.core_kv || [];
+        const ownEvents = nodeData.own_events || nodeData.events || [];
+        const ownArchival = nodeData.own_archival || nodeData.archival || [];
+        const ownMemoryCalls = nodeData.own_memory_calls || nodeData.memory_calls || [];
+        const inheritedCoreKV = nodeData.inherited_core_kv || [];
+        const inheritedEvents = nodeData.inherited_events || [];
+        const inheritedArchival = nodeData.inherited_archival || [];
+        const inheritedMemoryCalls = nodeData.inherited_memory_calls || [];
+        const ancestors = nodeData.ancestors || [];
+
+        let html = '';
+
+        // Own Data
+        html += '<div class="data-group"><div class="data-group-header">This Node\'s Data</div>';
+        html += MemoryDB.createSection('Memory Operations', ownMemoryCalls.map(c => MemoryDB.renderMemoryCall(c)).join(''), ownMemoryCalls.length, true);
+        html += MemoryDB.createSection('Core Memory (KV)', MemoryDB.renderCoreKV(ownCoreKV), ownCoreKV.length, true);
+        html += MemoryDB.createSection('Recall Events', MemoryDB.renderEvents(ownEvents), ownEvents.length, true);
+        html += MemoryDB.createSection('Archival Records', MemoryDB.renderArchival(ownArchival), ownArchival.length, true);
+        html += '</div>';
+
+        // Inherited Data
+        const hasInherited = inheritedCoreKV.length + inheritedEvents.length + inheritedArchival.length + inheritedMemoryCalls.length > 0;
+        if (hasInherited) {
+            html += '<div class="data-group"><div class="data-group-header inherited">Inherited Data (from ancestors)</div>';
+            html += MemoryDB.renderAncestorChain(ancestors, 'selectNodeByIndex');
+            html += MemoryDB.createSection('Memory Operations', inheritedMemoryCalls.map(c => MemoryDB.renderMemoryCall(c, true)).join(''), inheritedMemoryCalls.length, false);
+            html += MemoryDB.createSection('Core Memory (KV)', MemoryDB.renderCoreKV(inheritedCoreKV, true), inheritedCoreKV.length, false);
+            html += MemoryDB.createSection('Recall Events', MemoryDB.renderEvents(inheritedEvents, true), inheritedEvents.length, false);
+            html += MemoryDB.createSection('Archival Records', MemoryDB.renderArchival(inheritedArchival, true), inheritedArchival.length, false);
+            html += '</div>';
+        }
+
+        container.innerHTML = html;
+    }
+
+    // Helper: Select node by index (used in ancestor chain links)
+    function selectNodeByIndex(index) {
+        if (p5Instance && index >= 0 && index < memoryData.nodes.length) {
+            p5Instance.selectNode(index);
+        }
+    }
+
+    // Make functions globally available
+    window.switchView = switchView;
+    window.selectNodeByIndex = selectNodeByIndex;
+    window.toggleSection = MemoryDB.toggleSection;
+    window.togglePhaseGroup = MemoryDB.togglePhaseGroup;
+    </script>
+</body>
+</html>

@@ -49,20 +49,28 @@ def query(
 
     # Handle models with beta limitations
     # ref: https://platform.openai.com/docs/guides/reasoning/beta-limitations
-    if model.startswith(("o1", "o3")):
+    # GPT-5.x and o1/o3 models have similar limitations (no system message, different response format)
+    is_reasoning_model = model.startswith(("o1", "o3", "gpt-5"))
+    if is_reasoning_model:
+        # These models don't support system messages well - convert to user message
         if system_message and user_message is None:
             user_message = system_message
         elif system_message is None and user_message:
             pass
         elif system_message and user_message:
-            system_message["Main Instructions"] = {}
-            system_message["Main Instructions"] |= user_message
+            if isinstance(user_message, dict):
+                system_message["Main Instructions"] = user_message.copy()
+            else:
+                system_message["Main Instructions"] = user_message
             user_message = system_message
         system_message = None
-        # model_kwargs["temperature"] = 0.5
-        model_kwargs["reasoning_effort"] = "high"
+
+        # Only apply reasoning_effort to o1/o3 models (may not be supported by gpt-5.x)
+        if model.startswith(("o1", "o3")):
+            model_kwargs["reasoning_effort"] = "high"
+
         model_kwargs |= build_token_params(model, 100000)  # max_tokens
-        # remove 'temperature' from model_kwargs
+        # remove 'temperature' from model_kwargs (reasoning models don't support it)
         model_kwargs.pop("temperature", None)
     else:
         model_kwargs |= build_token_params(model, max_tokens)

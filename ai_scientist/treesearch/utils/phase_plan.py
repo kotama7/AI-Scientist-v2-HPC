@@ -1,10 +1,53 @@
 import json
+import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple, Optional
 
 
 class PhasePlanError(ValueError):
     """Raised when the LLM phase plan is missing required structure."""
+
+
+class MissingMemoryUpdateError(PhasePlanError):
+    """Raised when memory is enabled but <memory_update> block is missing."""
+
+
+def extract_memory_update_block(raw_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Extract <memory_update> block from text and return (updates, remaining_text).
+
+    Args:
+        raw_text: The raw LLM response text.
+
+    Returns:
+        A tuple of (memory_updates_dict, text_without_memory_block).
+        If no <memory_update> block is found, returns (None, original_text).
+    """
+    if not raw_text:
+        return None, raw_text
+
+    pattern = r'<memory_update>\s*(.*?)\s*</memory_update>'
+    match = re.search(pattern, raw_text, re.DOTALL)
+
+    if not match:
+        return None, raw_text
+
+    # Extract the JSON content from the memory_update block
+    memory_json = match.group(1).strip()
+
+    # Remove the memory_update block from the text
+    remaining_text = re.sub(pattern, '', raw_text, flags=re.DOTALL).strip()
+
+    # Parse the memory update JSON
+    try:
+        if not memory_json or memory_json == '{}':
+            return {}, remaining_text
+        updates = json.loads(memory_json)
+        if not isinstance(updates, dict):
+            return None, raw_text
+        return updates, remaining_text
+    except json.JSONDecodeError:
+        # If JSON parsing fails, return None but still remove the block
+        return None, remaining_text
 
 
 def _strip_json_wrappers(raw_text: str) -> str:
@@ -18,8 +61,29 @@ def _strip_json_wrappers(raw_text: str) -> str:
     return cleaned
 
 
-def extract_phase_artifacts(raw_text: str, *, default_language: str = "c") -> Dict[str, Any]:
-    """Parse and validate the JSON returned by the LLM for split-phase execution."""
+def extract_phase_artifacts(
+    raw_text: str,
+    *,
+    default_language: str = "c",
+    require_memory_update: bool = False,
+) -> Dict[str, Any]:
+    """Parse and validate the JSON returned by the LLM for split-phase execution.
+
+    Args:
+        raw_text: The raw LLM response text.
+        default_language: Default programming language for placeholders.
+        require_memory_update: If True, raise MissingMemoryUpdateError when
+            <memory_update> block is not found.
+
+    Returns:
+        A dict containing 'phase_artifacts', 'constraints', and optionally
+        'memory_update' if a <memory_update> block was found.
+
+    Raises:
+        PhasePlanError: If the JSON structure is invalid.
+        MissingMemoryUpdateError: If require_memory_update=True and no
+            <memory_update> block is found.
+    """
     def normalize_language(value: str | None) -> str:
         lang = str(value or "").strip().lower()
         if not lang:
@@ -68,8 +132,18 @@ def extract_phase_artifacts(raw_text: str, *, default_language: str = "c") -> Di
             ),
         )
 
+    # First, extract memory_update block if present
+    memory_updates, remaining_text = extract_memory_update_block(raw_text)
+
+    # Check if memory_update is required but missing
+    if require_memory_update and memory_updates is None:
+        raise MissingMemoryUpdateError(
+            "Memory is enabled but <memory_update> block is missing from LLM response. "
+            "The response must start with a <memory_update>...</memory_update> block."
+        )
+
     default_language = normalize_language(default_language)
-    cleaned = _strip_json_wrappers(raw_text)
+    cleaned = _strip_json_wrappers(remaining_text)
     try:
         parsed = json.loads(cleaned)
     except json.JSONDecodeError:
@@ -170,6 +244,11 @@ def extract_phase_artifacts(raw_text: str, *, default_language: str = "c") -> Di
 
     parsed["phase_artifacts"] = phase
     parsed["constraints"] = constraints
+
+    # Include memory_update in the result if it was found
+    if memory_updates is not None:
+        parsed["memory_update"] = memory_updates
+
     return parsed
 
 

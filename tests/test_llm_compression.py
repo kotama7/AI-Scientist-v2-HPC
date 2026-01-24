@@ -98,53 +98,5 @@ class TestMemoryManagerCompression(unittest.TestCase):
             self.assertTrue(result.endswith("..."))
 
 
-class TestSummarizeWithCompression(unittest.TestCase):
-    """Test summarization functions with compression."""
-
-    def test_summarize_idea_without_compress_fn(self) -> None:
-        """_summarize_idea should work without compress_fn."""
-        from ai_scientist.memory.memgpt_store import _summarize_idea
-        
-        text = """
-## Abstract
-This is a test abstract.
-## Hypothesis
-This is a hypothesis.
-"""
-        result = _summarize_idea(text)
-        self.assertIn("Purpose:", result)
-        self.assertIn("Hypothesis:", result)
-
-    def test_summarize_phase0_without_compress_fn(self) -> None:
-        """_summarize_phase0 should work without compress_fn."""
-        from ai_scientist.memory.memgpt_store import _summarize_phase0
-        
-        payload = {"threads": 8, "pinning": "compact"}
-        result = _summarize_phase0(payload, "run command")
-        self.assertIn("threads=8", result)
-        self.assertIn("pinning=compact", result)
-
-    def test_summarize_idea_with_compress_fn(self) -> None:
-        """_summarize_idea should use compress_fn when provided."""
-        from ai_scientist.memory.memgpt_store import _summarize_idea
-        
-        compress_calls = []
-        
-        def mock_compress(text, max_chars, context):
-            compress_calls.append((text, max_chars, context))
-            return text[:max_chars] if len(text) > max_chars else text
-        
-        # Long text that triggers compression
-        text = """
-## Abstract
-""" + "A" * 500 + """
-## Hypothesis
-""" + "B" * 500
-
-        result = _summarize_idea(text, max_chars=200, compress_fn=mock_compress)
-        # Should have called compress_fn
-        self.assertTrue(len(compress_calls) > 0)
-
-
 if __name__ == "__main__":
     unittest.main()

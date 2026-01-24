@@ -343,6 +343,7 @@ class AgentManager:
                     "ts": time.time(),
                     "run_id": getattr(self.memory_manager, "run_id", ""),
                     "node_id": branch_id,
+                    "branch_id": branch_id,
                     "phase": phase,
                     "kind": kind,
                     "summary": summary[:2000],  # Truncate if too long

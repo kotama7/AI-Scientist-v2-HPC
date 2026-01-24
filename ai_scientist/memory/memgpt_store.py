@@ -6,10 +6,13 @@ import re
 import sqlite3
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Generator, Iterable, Sequence
+
+from ai_scientist.prompt_loader import PromptNotFoundError, load_prompt
 
 from .resource_memory import (
     RESOURCE_DIGEST_KEY,
@@ -18,9 +21,7 @@ from .resource_memory import (
     RESOURCE_ITEM_TAG,
     RESOURCE_USED_KEY,
     RESOURCE_USED_TAG,
-    build_resource_snapshot,
     track_resource_usage,
-    update_resource_snapshot_if_changed,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,17 @@ def _cfg_get(cfg: Any, key: str, default: Any) -> Any:
 
 def _now_ts() -> float:
     return time.time()
+
+
+def _row_get(row: sqlite3.Row | None, key: str, default: Any = None) -> Any:
+    """Safely get a value from a sqlite3.Row object, similar to dict.get()."""
+    if row is None:
+        return default
+    try:
+        value = row[key]
+        return value if value is not None else default
+    except (KeyError, IndexError):
+        return default
 
 
 def _normalize_tags(tags: Any) -> list[str]:
@@ -82,40 +94,108 @@ def _truncate(text: str, max_chars: int) -> str:
 # LLM compression cache: {(text_hash, max_chars, context_hint): compressed_text}
 _compression_cache: dict[tuple[str, int, str], str] = {}
 
-# Default character budgets for each memory section
-DEFAULT_SECTION_BUDGETS: dict[str, int] = {
-    "idea_summary": 800,
-    "idea_section_limit": 400,
-    "phase0_summary": 800,
-    "archival_snippet": 400,
-    "results": 600,
+# Phase name mapping for memory event logging
+# Maps internal task_hint values to human-readable phase names
+# Phase structure:
+#   Phase 0: Setup/Planning (idea loading, resource indexing, planning)
+#   Phase 1: Environment Setup (container setup, dependencies installation)
+#   Phase 2: Code Implementation (draft, debug, improve)
+#   Phase 3: Compile (build the code)
+#   Phase 4: Execute/Validate (run experiments, analyze results)
+PHASE_NAME_MAP: dict[str, str] = {
+    # Phase 0: Setup and planning
+    "phase0": "Phase 0: Setup",
+    "phase0_planning": "Phase 0: Planning",
+    "ingest_phase0_internal_info": "Phase 0: Setup",
+    "idea_md": "Phase 0: Idea Loading",
+    "resource_index": "Phase 0: Resource Indexing",
+    # Phase 1: Environment setup
+    "phase1_iterative": "Phase 1: Environment Setup",
+    "phase1-base": "Phase 1: Base Setup",
+    "phase1-sandbox": "Phase 1: Sandbox Setup",
+    # Phase 2: Code implementation
+    "draft": "Phase 2: Draft Implementation",
+    "debug": "Phase 2: Debug",
+    "improve": "Phase 2: Improve",
+    "hyperparam_node": "Phase 2: Hyperparameter Tuning",
+    "ablation_node": "Phase 2: Ablation Study",
+    # Phase 3: Compile
+    "compile": "Phase 3: Compile",
+    "compiler_selection": "Phase 3: Compiler Selection",
+    # Phase 4: Execute
+    "execution_review": "Phase 4: Execution Review",
+    "datasets_successfully_tested": "Phase 4: Datasets Tested",
+    # Post-Phase 4 analysis tasks (displayed as-is without phase number)
+    # metrics_extraction, parse_metrics, plotting_code, seed_plotting,
+    # vlm_analysis, stage_completion
+    # are not mapped - they will be displayed as-is
 }
 
-# Fixed compression prompt file path
-COMPRESSION_PROMPT_FILE = "prompt/config/memory/compression.txt"
 
+def _get_phase_display_name(task_hint: str | None) -> str | None:
+    """Convert internal task_hint to human-readable phase name.
 
-def _load_compression_prompt(prompt_file: str | Path | None) -> str | None:
-    """Load compression prompt template from file."""
-    if not prompt_file:
+    Args:
+        task_hint: Internal task hint string (e.g., "draft", "debug")
+
+    Returns:
+        Human-readable phase name (e.g., "Phase 2: Draft Implementation")
+        or the original task_hint if not in the mapping (for post-Phase 4 tasks)
+        or None if task_hint is None
+    """
+    if task_hint is None:
         return None
-    path = Path(prompt_file)
-    if not path.is_absolute():
-        # Try relative to ai_scientist root
-        for candidate in [
-            Path(__file__).parent.parent.parent / prompt_file,
-            Path.cwd() / prompt_file,
-        ]:
-            if candidate.exists():
-                path = candidate
-                break
-    if not path.exists():
-        logger.warning("Compression prompt file not found: %s", prompt_file)
+
+    # If already a "Phase X:" format, return as-is
+    if task_hint.startswith("Phase "):
+        return task_hint
+
+    # Direct lookup first
+    if task_hint in PHASE_NAME_MAP:
+        return PHASE_NAME_MAP[task_hint]
+
+    # Handle stage-specific patterns (e.g., "stage_1_..._summary", "1_initial_implementation_...")
+    if task_hint.startswith("stage_") and "_summary" in task_hint:
+        return "stage_summary"
+
+    # Handle numeric stage prefixes (e.g., "1_initial_implementation_1_preliminary")
+    if task_hint and task_hint[0].isdigit() and "_" in task_hint:
+        return f"stage_execution_{task_hint.split('_')[0]}"
+
+    # Fallback: return original as-is (for post-Phase 4 tasks like metrics_extraction, plotting_code, etc.)
+    return task_hint
+
+
+# Prompt names for load_prompt (relative to prompt/ directory, without .txt extension)
+COMPRESSION_PROMPT_NAME = "config/memory/compression"
+COMPRESSION_SYSTEM_MESSAGE_NAME = "config/memory/compression_system_message"
+IMPORTANCE_EVALUATION_PROMPT_NAME = "config/memory/importance_evaluation"
+IMPORTANCE_EVALUATION_SYSTEM_MESSAGE_NAME = "config/memory/importance_evaluation_system_message"
+CONSOLIDATION_PROMPT_NAME = "config/memory/consolidation"
+CONSOLIDATION_SYSTEM_MESSAGE_NAME = "config/memory/consolidation_system_message"
+PAPER_SECTION_GENERATION_NAME = "config/memory/paper_section_generation"
+PAPER_SECTION_GENERATION_SYSTEM_MESSAGE_NAME = "config/memory/paper_section_generation_system_message"
+
+
+def _try_load_prompt(name: str, description: str = "prompt") -> str | None:
+    """Try to load a prompt template using load_prompt, returning None if not found.
+
+    Args:
+        name: Prompt name (relative to prompt/ directory, without .txt extension)
+        description: Description of the prompt for logging purposes
+
+    Returns:
+        The prompt text if loaded successfully, None otherwise
+    """
+    if not name:
         return None
     try:
-        return path.read_text(encoding="utf-8")
+        return load_prompt(name)
+    except PromptNotFoundError:
+        logger.warning("%s file not found: %s", description.capitalize(), name)
+        return None
     except Exception as exc:
-        logger.warning("Failed to read compression prompt: %s", exc)
+        logger.warning("Failed to read %s: %s", description, exc)
         return None
 
 
@@ -167,7 +247,7 @@ def _compress_with_llm(
 
     # Load prompt template if not provided
     if prompt_template is None:
-        prompt_template = _load_compression_prompt(COMPRESSION_PROMPT_FILE)
+        prompt_template = _try_load_prompt(COMPRESSION_PROMPT_NAME, "compression prompt")
         if prompt_template is None:
             prompt_template = (
                 "Compress the following {context_hint} text to fit within {max_chars} characters. "
@@ -200,12 +280,14 @@ def _compress_with_llm(
                 memory_context_section=memory_context_section,
             )
             
-            system_message = "You are a text compression assistant. Output only the compressed text, no explanations."
+            system_message = _try_load_prompt(COMPRESSION_SYSTEM_MESSAGE_NAME, "compression system message")
+            if system_message is None:
+                system_message = "You are a text compression assistant. Output only the compressed text, no explanations."
             response, _ = get_response_from_llm(
                 prompt=prompt,
                 client=client,
                 model=model,
-                system_message=system_message,
+                system_message=system_message.strip(),
                 temperature=0.3,
             )
             
@@ -315,325 +397,6 @@ def _parse_markdown_sections(text: str) -> dict[str, str]:
     return {k: "\n".join(v).strip() for k, v in sections.items()}
 
 
-def _summarize_idea(
-    text: str,
-    max_chars: int = 800,
-    compress_fn: Any = None,
-    section_limit: int = 400,
-) -> str:
-    """
-    Summarize idea markdown content into bullet points.
-
-    Args:
-        text: Raw idea markdown text
-        max_chars: Maximum characters for final summary
-        compress_fn: Optional compression function (text, max_chars, context) -> str
-                     If provided, uses LLM compression; otherwise uses truncation
-        section_limit: Maximum characters per section bullet (default 400)
-    """
-    sections = _parse_markdown_sections(text)
-    purpose = sections.get("Abstract") or sections.get("Task goal") or ""
-    hypothesis = sections.get("Short Hypothesis") or sections.get("Hypothesis") or ""
-    method = sections.get("Experiments") or sections.get("Code") or ""
-    evaluation = sections.get("Task evaluation") or sections.get("Evaluation") or ""
-    risks = sections.get("Risk Factors And Limitations") or sections.get(
-        "Risk Factors and Limitations"
-    ) or ""
-
-    def pick(src: str, limit: int = section_limit, context: str = "section") -> str:
-        cleaned = " ".join(src.split())
-        if compress_fn is not None and len(cleaned) > limit:
-            return compress_fn(cleaned, limit, f"idea {context}")
-        return _truncate(cleaned, limit)
-
-    bullets = [
-        f"- Purpose: {pick(purpose, context='purpose')}" if purpose else "- Purpose: (not provided)",
-        f"- Hypothesis: {pick(hypothesis, context='hypothesis')}" if hypothesis else "- Hypothesis: (not provided)",
-        f"- Method/Variables: {pick(method, context='method')}" if method else "- Method/Variables: (not provided)",
-        f"- Evaluation: {pick(evaluation, context='evaluation')}" if evaluation else "- Evaluation: (not provided)",
-        f"- Known failures/mitigations: {pick(risks, context='risks')}" if risks else "- Known failures/mitigations: (not provided)",
-    ]
-    summary = "\n".join(bullets)
-    if compress_fn is not None and len(summary) > max_chars:
-        return compress_fn(summary, max_chars, "idea summary")
-    return _truncate(summary, max_chars)
-
-
-def _extract_cpu_info_from_lscpu(cpu_lines: list[str]) -> tuple[list[str], bool]:
-    """Extract CPU info from lscpu format."""
-    items = []
-    extracted = False
-    for line in cpu_lines:
-        line_lower = line.lower()
-        if "model name" in line_lower:
-            items.append(line.strip().replace("Model name:", "CPU:").strip())
-            extracted = True
-        elif line_lower.startswith("cpu(s):"):
-            items.append(line.strip())
-            extracted = True
-        elif "socket(s)" in line_lower:
-            items.append(line.strip())
-            extracted = True
-        elif "numa node(s)" in line_lower:
-            items.append(line.strip())
-            extracted = True
-    return items, extracted
-
-
-def _extract_cpu_info_from_condensed(cpu_info: str) -> list[str]:
-    """Extract CPU info from condensed semicolon format."""
-    cpu_summary_parts = []
-    # Extract CPU model
-    for segment in cpu_info.split(";"):
-        segment = segment.strip()
-        segment_lower = segment.lower()
-        if any(x in segment_lower for x in ["processor", "epyc", "xeon", "core", "intel", "amd"]):
-            if "online" not in segment_lower:
-                cpu_summary_parts.append(f"CPU:{segment}")
-                break
-    # Extract socket/core info
-    for segment in cpu_info.split(";"):
-        segment = segment.strip()
-        segment_lower = segment.lower()
-        if "socket" in segment_lower or "core" in segment_lower:
-            if "processor" not in segment_lower:
-                cpu_summary_parts.append(segment)
-                break
-    # Extract NUMA info
-    for segment in cpu_info.split(";"):
-        segment = segment.strip()
-        if "numa" in segment.lower():
-            if len(segment) > 50:
-                segment = segment[:50] + "..."
-            cpu_summary_parts.append(segment)
-            break
-    return cpu_summary_parts
-
-
-def _extract_cpu_info(cpu_info: str | dict) -> list[str]:
-    """Extract CPU information from various formats."""
-    if not cpu_info:
-        return []
-
-    # Handle dict format
-    if isinstance(cpu_info, dict):
-        items = []
-        # Common keys for CPU info dictionaries
-        key_mapping = {
-            "model_name": "CPU",
-            "model": "CPU",
-            "cpu_model": "CPU",
-            "cores": "cores",
-            "cpu_cores": "cores",
-            "threads": "threads",
-            "sockets": "sockets",
-            "architecture": "arch",
-        }
-        for key, label in key_mapping.items():
-            if key in cpu_info and cpu_info[key]:
-                items.append(f"{label}={cpu_info[key]}")
-        # If no mapped keys found, extract all primitive values
-        if not items:
-            for key, value in cpu_info.items():
-                if isinstance(value, (str, int, float)) and value:
-                    items.append(f"{key}={value}")
-        return items
-
-    # Handle string format
-    cpu_lines = cpu_info.split("\\n") if "\\n" in cpu_info else cpu_info.split("\n")
-    items, lscpu_extracted = _extract_cpu_info_from_lscpu(cpu_lines)
-
-    if not lscpu_extracted and cpu_info:
-        items = _extract_cpu_info_from_condensed(cpu_info)
-
-    return items
-
-
-def _extract_os_info(os_release: str | dict) -> str | None:
-    """Extract OS information from os_release string or dict."""
-    if not os_release:
-        return None
-
-    # Handle dict format
-    if isinstance(os_release, dict):
-        # Try common keys for OS name
-        for key in ["PRETTY_NAME", "pretty_name", "NAME", "name", "os_name"]:
-            if key in os_release and os_release[key]:
-                return f"OS={os_release[key]}"
-        # Fallback: use first string value found
-        for value in os_release.values():
-            if isinstance(value, str) and value:
-                return f"OS={value}"
-        return None
-
-    # Handle string format
-    # Try PRETTY_NAME format first
-    for line in os_release.split("\\n") if "\\n" in os_release else os_release.split("\n"):
-        if "PRETTY_NAME" in line:
-            os_name = line.replace("PRETTY_NAME=", "").replace('"', '').strip()
-            return f"OS={os_name}"
-
-    # If not PRETTY_NAME format, use the string directly
-    if "PRETTY_NAME" not in os_release:
-        return f"OS={os_release.strip()}"
-
-    return None
-
-
-def _extract_compiler_info(compilers: list) -> str | None:
-    """Extract compiler information."""
-    if not compilers:
-        return None
-
-    compiler_strs = []
-    for c in compilers[:3]:  # Limit to first 3
-        if isinstance(c, dict):
-            name = c.get("name", "")
-            version = c.get("version", "").split()[0] if c.get("version") else ""
-            if name:
-                compiler_strs.append(f"{name}:{version}" if version else name)
-
-    if compiler_strs:
-        return f"compilers=[{', '.join(compiler_strs)}]"
-    return None
-
-
-def _extract_environment_context(payload: dict, build_plan: dict | None) -> dict | None:
-    """Extract environment_context from payload, build_plan, or artifacts."""
-    env_ctx = payload.get("environment_context")
-    if env_ctx:
-        return env_ctx
-
-    if isinstance(build_plan, dict):
-        env_ctx = build_plan.get("environment_context")
-        if env_ctx:
-            return env_ctx
-
-    # Search in artifacts array
-    artifacts = payload.get("artifacts", [])
-    for artifact in artifacts:
-        if not isinstance(artifact, dict):
-            continue
-        content_str = artifact.get("content", "")
-        if not content_str or not isinstance(content_str, str):
-            continue
-        try:
-            content_obj = json.loads(content_str)
-            if isinstance(content_obj, dict):
-                env_ctx = content_obj.get("environment_context")
-                if env_ctx:
-                    return env_ctx
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-    return None
-
-
-def _summarize_phase0(
-    payload: Any,
-    command_str: str | None,
-    max_chars: int = 800,
-    compress_fn: Any = None,
-) -> str:
-    """
-    Summarize Phase 0 configuration payload.
-
-    Args:
-        payload: Phase 0 configuration dictionary
-        command_str: Command string if available
-        max_chars: Maximum characters for summary
-        compress_fn: Optional compression function (text, max_chars, context) -> str
-    """
-    items: list[str] = []
-
-    # Keys to skip (typically large nested structures or redundant data)
-    skip_keys = {"environment_context", "env_context", "plan", "build_plan", "cpu_info", "os_release", "available_compilers"}
-
-    if isinstance(payload, dict):
-        # Extract all primitive-type key-value pairs from top level
-        for key, value in payload.items():
-            if key in skip_keys:
-                continue
-            # Include primitive types and simple collections
-            if isinstance(value, (str, int, float, bool)):
-                items.append(f"{key}={value}")
-            elif isinstance(value, (list, tuple)) and value and all(isinstance(v, (str, int, float, bool)) for v in value):
-                items.append(f"{key}={value}")
-
-        # Extract nested build_plan if present
-        build_plan = payload.get("plan") or payload.get("build_plan")
-        if isinstance(build_plan, dict):
-            for key, value in build_plan.items():
-                if isinstance(value, (str, int, float, bool)):
-                    items.append(f"{key}={value}")
-
-        # Extract environment context
-        env_ctx = _extract_environment_context(payload, build_plan)
-
-        if isinstance(env_ctx, dict):
-            # Extract CPU info
-            cpu_info_items = _extract_cpu_info(env_ctx.get("cpu_info", ""))
-            items.extend(cpu_info_items)
-
-            # Extract CPU governor
-            cpu_governor = env_ctx.get("cpu_governor", "")
-            if cpu_governor and cpu_governor != "NA":
-                items.append(f"cpu_governor={cpu_governor}")
-
-            # Extract NUMA config (summarized)
-            numa_config = env_ctx.get("numa_config", "")
-            if numa_config and numa_config != "NA" and isinstance(numa_config, str):
-                # Just extract key NUMA info
-                numa_lines = numa_config.split("\n")
-                for line in numa_lines[:5]:
-                    if "node" in line.lower() or "cpu" in line.lower():
-                        items.append(f"numa={line.strip()}")
-                        break
-
-            # Extract OS info
-            os_info = _extract_os_info(env_ctx.get("os_release", ""))
-            if os_info:
-                items.append(os_info)
-
-            # Extract compiler info
-            compiler_info = _extract_compiler_info(env_ctx.get("available_compilers", []))
-            if compiler_info:
-                items.append(compiler_info)
-
-            # Container runtime
-            container = env_ctx.get("container_runtime", "")
-            if container:
-                items.append(f"container={container}")
-
-            # Container digest
-            container_digest = env_ctx.get("container_digest", "")
-            if container_digest and container_digest != "NA":
-                items.append(f"container_digest={container_digest[:20]}...")
-
-            # Parallel env vars (summarized)
-            parallel_env_vars = env_ctx.get("parallel_env_vars", "")
-            if parallel_env_vars and parallel_env_vars != "NA" and parallel_env_vars != "none":
-                # Extract key variables
-                for line in parallel_env_vars.split("\n"):
-                    line = line.strip()
-                    if line.startswith("OMP_NUM_THREADS="):
-                        items.append(line)
-                    elif line.startswith("OMP_PROC_BIND="):
-                        items.append(line)
-                    elif line.startswith("MKL_NUM_THREADS="):
-                        items.append(line)
-                    elif line.startswith("OPENBLAS_NUM_THREADS="):
-                        items.append(line)
-    if command_str:
-        items.append(f"command={command_str}")
-    if not items:
-        items.append("No structured Phase 0 info captured.")
-    result = " | ".join(items)
-    if compress_fn is not None and len(result) > max_chars:
-        return compress_fn(result, max_chars, "phase0 configuration")
-    return _truncate(result, max_chars)
-
-
 class MemoryManager:
     def __init__(self, db_path: str | Path, config: Any | None = None):
         self.config = config or {}
@@ -656,12 +419,6 @@ class MemoryManager:
         self.max_compression_iterations = int(
             _cfg_get(self.config, "max_compression_iterations", 3)
         )
-        self.always_inject_phase0_summary = bool(
-            _cfg_get(self.config, "always_inject_phase0_summary", True)
-        )
-        self.always_inject_idea_summary = bool(
-            _cfg_get(self.config, "always_inject_idea_summary", True)
-        )
         self.redact_secrets = bool(_cfg_get(self.config, "redact_secrets", True))
         self.memory_log_enabled = bool(_cfg_get(self.config, "memory_log_enabled", True))
         self.memory_log_max_chars = int(_cfg_get(self.config, "memory_log_max_chars", 400))
@@ -680,7 +437,10 @@ class MemoryManager:
             except Exception:
                 self.memory_log_dir = None
                 self.memory_log_path = None
-        
+
+        # Current phase tracking for memory event logging
+        self._current_phase: str | None = None
+
         # LLM compression settings
         self.use_llm_compression = bool(
             _cfg_get(self.config, "use_llm_compression", False)
@@ -688,16 +448,17 @@ class MemoryManager:
         self.compression_model = str(
             _cfg_get(self.config, "compression_model", "gpt-4o-mini")
         )
-        self._compression_prompt_template = _load_compression_prompt(
-            COMPRESSION_PROMPT_FILE
+        self._compression_prompt_template = _try_load_prompt(
+            COMPRESSION_PROMPT_NAME, "compression prompt"
         )
         
-        # Section-specific character budgets (merge config with defaults)
-        section_budgets_cfg = _cfg_get(self.config, "section_budgets", {}) or {}
-        self.section_budgets = {
-            key: int(_cfg_get(section_budgets_cfg, key, default))
-            for key, default in DEFAULT_SECTION_BUDGETS.items()
-        }
+        # Memory retrieval/display budgets
+        self.archival_snippet_budget_chars = int(
+            _cfg_get(self.config, "archival_snippet_budget_chars", 6000)
+        )
+        self.results_budget_chars = int(
+            _cfg_get(self.config, "results_budget_chars", 4000)
+        )
 
         # Writeup memory limits (for final_writeup_memory.json)
         self.writeup_recall_limit = int(_cfg_get(self.config, "writeup_recall_limit", 10))
@@ -837,6 +598,39 @@ class MemoryManager:
             return [self._sanitize_detail_value(v) for v in value]
         return _safe_json_value(value)
 
+    def set_current_phase(self, phase: str | None) -> None:
+        """Set the current phase for memory event logging.
+
+        All subsequent memory operations will be tagged with this phase
+        unless they explicitly specify a different phase.
+
+        Args:
+            phase: The phase name (e.g., "draft", "execution_review", "phase1_iterative")
+                   or None to clear the current phase.
+        """
+        self._current_phase = phase
+
+    @contextmanager
+    def phase_context(self, phase: str) -> Generator[None, None, None]:
+        """Context manager for scoped phase tracking.
+
+        All memory operations within this context will be tagged with the
+        specified phase unless they explicitly specify a different phase.
+
+        Example:
+            with mem.phase_context("draft"):
+                mem.set_core(branch_id, "key", "value")  # Tagged with phase="draft"
+
+        Args:
+            phase: The phase name for this context.
+        """
+        previous_phase = self._current_phase
+        self._current_phase = phase
+        try:
+            yield
+        finally:
+            self._current_phase = previous_phase
+
     def _log_memory_event(
         self,
         op: str,
@@ -849,13 +643,17 @@ class MemoryManager:
     ) -> None:
         if not self.memory_log_enabled or not self.memory_log_path:
             return
+        # Use _current_phase as fallback if phase is not explicitly provided
+        raw_phase = phase if phase is not None else self._current_phase
+        # Convert to human-readable phase name
+        effective_phase = _get_phase_display_name(raw_phase)
         payload: dict[str, Any] = {
             "ts": _now_ts(),
             "op": op,
             "memory_type": memory_type,
             "branch_id": branch_id,
             "node_id": node_id,
-            "phase": phase,
+            "phase": effective_phase,
             "run_id": self.run_id,
         }
         if details:
@@ -980,6 +778,11 @@ class MemoryManager:
             (branch_id, parent_branch_id, node_uid, _now_ts()),
         )
         self._conn.commit()
+        # Force WAL checkpoint so new branch is immediately visible to other processes
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            pass  # Ignore checkpoint errors as they are non-critical
         if parent_branch_id is None and not self.root_branch_id:
             self.set_root_branch_id(branch_id)
         return branch_id
@@ -1011,7 +814,19 @@ class MemoryManager:
         ).fetchone()
         return bool(row)
 
-    def _resolve_branch_id(self, node_id: str | None) -> str | None:
+    def _resolve_branch_id(self, node_id: str | None, *, retry: bool = True) -> str | None:
+        """Resolve node_id to branch_id.
+
+        In multi-process WAL mode, a branch created by another process may not be
+        immediately visible. This method retries with WAL refresh if not found.
+
+        Args:
+            node_id: The node ID to resolve
+            retry: If True, retry with WAL refresh when not found (default True)
+
+        Returns:
+            The branch_id if found, None otherwise
+        """
         if not node_id:
             return None
         if self._branch_exists(node_id):
@@ -1019,7 +834,30 @@ class MemoryManager:
         row = self._conn.execute(
             "SELECT id FROM branches WHERE node_uid=?", (node_id,)
         ).fetchone()
-        return row["id"] if row else None
+        if row:
+            return row["id"]
+
+        # Branch not found - in WAL mode, it may exist but not be visible yet
+        if retry:
+            import time
+            for attempt in range(3):
+                # Force WAL checkpoint to make recent writes visible
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except Exception:
+                    pass
+                time.sleep(0.1 * (attempt + 1))  # 0.1s, 0.2s, 0.3s delays
+                # Retry the lookup
+                if self._branch_exists(node_id):
+                    return node_id
+                row = self._conn.execute(
+                    "SELECT id FROM branches WHERE node_uid=?", (node_id,)
+                ).fetchone()
+                if row:
+                    return row["id"]
+            logger.debug(f"Branch not found after retries: node_id={node_id}")
+
+        return None
 
     def _branch_chain(self, branch_id: str) -> list[str]:
         chain = []
@@ -1338,15 +1176,7 @@ class MemoryManager:
 
     def _load_importance_prompt(self) -> str | None:
         """Load importance evaluation prompt template from file."""
-        prompt_file = Path(__file__).parent.parent.parent / "prompt/config/memory/importance_evaluation.txt"
-        if not prompt_file.exists():
-            logger.warning("Importance evaluation prompt file not found: %s", prompt_file)
-            return None
-        try:
-            return prompt_file.read_text(encoding="utf-8")
-        except Exception as exc:
-            logger.warning("Failed to read importance evaluation prompt: %s", exc)
-            return None
+        return _try_load_prompt(IMPORTANCE_EVALUATION_PROMPT_NAME, "importance evaluation prompt")
 
     def evaluate_importance_with_llm(
         self,
@@ -1395,11 +1225,14 @@ class MemoryManager:
         try:
             from ai_scientist.llm import get_response_from_llm
 
+            system_message = _try_load_prompt(IMPORTANCE_EVALUATION_SYSTEM_MESSAGE_NAME, "importance evaluation system message")
+            if system_message is None:
+                system_message = "You are a memory management assistant. Output only valid JSON."
             response, _ = get_response_from_llm(
                 prompt=prompt,
                 client=self._compression_client,
                 model=self._compression_model_name,
-                system_message="You are a memory management assistant. Output only valid JSON.",
+                system_message=system_message.strip(),
                 temperature=0.2,
             )
 
@@ -1449,15 +1282,7 @@ class MemoryManager:
 
     def _load_consolidation_prompt(self) -> str | None:
         """Load consolidation prompt template from file."""
-        prompt_file = Path(__file__).parent.parent.parent / "prompt/config/memory/consolidation.txt"
-        if not prompt_file.exists():
-            logger.warning("Consolidation prompt file not found: %s", prompt_file)
-            return None
-        try:
-            return prompt_file.read_text(encoding="utf-8")
-        except Exception as exc:
-            logger.warning("Failed to read consolidation prompt: %s", exc)
-            return None
+        return _try_load_prompt(CONSOLIDATION_PROMPT_NAME, "consolidation prompt")
 
     def _consolidate_with_llm(
         self,
@@ -1499,11 +1324,14 @@ class MemoryManager:
         try:
             from ai_scientist.llm import get_response_from_llm
 
+            system_message = _try_load_prompt(CONSOLIDATION_SYSTEM_MESSAGE_NAME, "consolidation system message")
+            if system_message is None:
+                system_message = "You are a memory consolidation assistant. Output only the consolidated text."
             response, _ = get_response_from_llm(
                 prompt=prompt,
                 client=self._compression_client,
                 model=self._compression_model_name,
-                system_message="You are a memory consolidation assistant. Output only the consolidated text.",
+                system_message=system_message.strip(),
                 temperature=0.3,
             )
 
@@ -1543,20 +1371,17 @@ class MemoryManager:
         if not branch_id:
             return 0
 
-        branch_ids = self._branch_chain(branch_id)
-        if not branch_ids:
-            return 0
-
-        # Get all events for the branch chain
-        placeholders = ",".join(["?"] * len(branch_ids))
+        # Only consolidate events for this specific branch, not parent branches.
+        # Using _branch_chain would include parent nodes' events, which would
+        # incorrectly delete parent nodes' events when consolidating a child node.
         all_events = self._conn.execute(
-            f"""
+            """
             SELECT id, branch_id, kind, text, tags, created_at
             FROM events
-            WHERE branch_id IN ({placeholders})
+            WHERE branch_id = ?
             ORDER BY created_at DESC
             """,
-            branch_ids,
+            (branch_id,),
         ).fetchall()
 
         if not all_events:
@@ -1937,7 +1762,12 @@ class MemoryManager:
         skip_duplicate: bool = True,
         task_hint: str | None = None,
         memory_size: int | None = None,
-    ) -> None:
+    ) -> bool:
+        """Write an event to the database.
+
+        Returns:
+            True if the event was written, False if skipped due to duplicate.
+        """
         payload = _redact(str(text), self.redact_secrets)
         tag_list = _normalize_tags(tags)
         tags_json = json.dumps(tag_list)
@@ -1950,7 +1780,7 @@ class MemoryManager:
             ).fetchone()
             if existing:
                 # Duplicate found, skip insertion
-                return
+                return False
 
         self._conn.execute(
             "INSERT INTO events (branch_id, kind, text, tags, created_at, task_hint, memory_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1986,6 +1816,8 @@ class MemoryManager:
                     self.consolidate_recall_events(branch_id)
                 except Exception as exc:
                     logger.warning("Auto-consolidation of recall events failed: %s", exc)
+
+        return True
 
     def _insert_archival(
         self,
@@ -2171,7 +2003,13 @@ class MemoryManager:
         if not payload.get("run_id") and self.run_id:
             payload["run_id"] = self.run_id
         node_id = payload.get("node_id")
-        branch_id = self._resolve_branch_id(node_id) or self._default_branch_id()
+        # Use explicit branch_id if provided and valid, otherwise resolve from node_id
+        # This is important because node_uid may not be set on the branch yet during processing
+        explicit_branch_id = payload.get("branch_id")
+        if explicit_branch_id and self._branch_exists(explicit_branch_id):
+            branch_id = explicit_branch_id
+        else:
+            branch_id = self._resolve_branch_id(node_id) or self._default_branch_id()
         if not branch_id:
             return
         kind = str(payload.get("kind") or "event")
@@ -2190,7 +2028,7 @@ class MemoryManager:
         for ref in refs if isinstance(refs, Iterable) and not isinstance(refs, str) else []:
             tags.append(f"ref:{ref}")
         tag_list = [tag for tag in tags if tag]
-        self.write_event(
+        written = self.write_event(
             branch_id,
             kind,
             summary,
@@ -2199,21 +2037,23 @@ class MemoryManager:
             task_hint=task_hint,
             memory_size=memory_size,
         )
-        self._log_memory_event(
-            "mem_recall_append",
-            "recall",
-            branch_id=branch_id,
-            node_id=node_id,
-            phase=phase,
-            details={
-                "kind": kind,
-                "summary_preview": _truncate(
-                    _redact(summary, self.redact_secrets),
-                    self.memory_log_max_chars,
-                ),
-                "tags": tag_list,
-            },
-        )
+        # Only log if the event was actually written (not skipped due to duplicate)
+        if written:
+            self._log_memory_event(
+                "mem_recall_append",
+                "recall",
+                branch_id=branch_id,
+                node_id=node_id,
+                phase=phase,
+                details={
+                    "kind": kind,
+                    "summary_preview": _truncate(
+                        _redact(summary, self.redact_secrets),
+                        self.memory_log_max_chars,
+                    ),
+                    "tags": tag_list,
+                },
+            )
 
     def mem_recall_search(self, query: str, *, k: int = 20) -> list[dict]:
         branch_id = self._default_branch_id()
@@ -2330,7 +2170,7 @@ class MemoryManager:
             payload = _redact(str(text), self.redact_secrets)
             updates.append("text=?")
             params.append(payload)
-        if tags is not None or meta_in is not None:
+        if tags is not None or meta is not None:
             tag_list = list(tags or [])
             if self.run_id and not meta.get("run_id"):
                 meta["run_id"] = self.run_id
@@ -2420,6 +2260,7 @@ class MemoryManager:
         parent_node_id: str | None,
         child_node_id: str,
         ancestor_chain: list[str] | None = None,
+        phase: str | None = None,
     ) -> None:
         """Fork a new branch from parent.
 
@@ -2430,6 +2271,8 @@ class MemoryManager:
                            (e.g., [grandparent_id, parent_id]). If provided, missing
                            branches will be created in the correct order to preserve
                            the full tree structure.
+            phase: Optional phase name for the node fork operation. If not provided,
+                   defaults to "tree_structure" to indicate tree structure operations.
         """
         parent_branch = self._resolve_branch_id(parent_node_id) if parent_node_id else None
 
@@ -2459,11 +2302,14 @@ class MemoryManager:
 
         branch_id = child_node_id or uuid.uuid4().hex
         self.create_branch(parent_branch, node_uid=child_node_id, branch_id=branch_id)
+        # Use provided phase, or fall back to _current_phase, or default to "tree_structure"
+        effective_phase = phase if phase is not None else (self._current_phase or "tree_structure")
         self._log_memory_event(
             "mem_node_fork",
             "node",
             branch_id=branch_id,
             node_id=child_node_id,
+            phase=effective_phase,
             details={
                 "parent_node_id": parent_node_id,
                 "parent_branch_id": parent_branch,
@@ -2560,6 +2406,8 @@ class MemoryManager:
             event = dict(recall_event)
             if "node_id" not in event:
                 event["node_id"] = node_id
+            if "branch_id" not in event:
+                event["branch_id"] = branch_id
             self.mem_recall_append(event)
         if archival_records:
             for record in archival_records:
@@ -2570,85 +2418,299 @@ class MemoryManager:
                 meta = record.get("meta", {})
                 if "node_id" not in meta:
                     meta = {**meta, "node_id": node_id}
+                if "branch_id" not in meta:
+                    meta = {**meta, "branch_id": branch_id}
                 self.mem_archival_write(str(text), tags=list(tags or []), meta=meta)
 
-    def mem_resources_index_update(self, run_id: str, index_text: str, *, branch_id: str | None = None) -> None:
-        use_branch = branch_id or self._default_branch_id()
-        if not use_branch:
-            return
-        if run_id and not self.run_id:
-            self.run_id = str(run_id)
-        self.set_core(
-            use_branch,
-            RESOURCE_INDEX_KEY,
-            index_text,
-            importance=5,
-            log_event=False,
-        )
-        self._log_memory_event(
-            "mem_resources_index_update",
-            "resources",
-            branch_id=use_branch,
-            details={
-                "run_id": run_id,
-                "index_chars": len(index_text or ""),
-            },
-        )
+    def apply_llm_memory_updates(
+        self,
+        branch_id: str,
+        updates: dict,
+        node_id: str | None = None,
+        phase: str | None = None,
+    ) -> dict:
+        """Apply memory updates from LLM response.
 
-    def mem_resources_snapshot_upsert(self, run_id: str, item_name: str, snapshot: dict) -> None:
-        tags = ["RESOURCE_ITEM", f"resource_name:{item_name}"]
-        if run_id:
-            tags.append(f"run_id:{run_id}")
-        payload = json.dumps(snapshot, ensure_ascii=True, indent=2)
-        self.mem_archival_write(payload, tags=tags, meta={"run_id": run_id})
-        self._log_memory_event(
-            "mem_resources_snapshot_upsert",
-            "resources",
-            branch_id=self._default_branch_id(),
-            details={
-                "run_id": run_id,
-                "item_name": item_name,
-                "payload_chars": len(payload),
-            },
-        )
+        This method processes memory update instructions embedded in LLM responses
+        and applies them to the appropriate memory layers.
 
-    def mem_resources_resolve_and_refresh(self, run_id: str) -> None:
-        branch_id = self._default_branch_id()
-        if not branch_id:
-            return
-        raw_index = self.get_core(branch_id, RESOURCE_INDEX_JSON_KEY, log_event=False)
-        resource_file = None
-        if raw_index:
+        Args:
+            branch_id: The branch ID to apply updates to.
+            updates: A dict containing memory updates with optional keys:
+                - "core": dict of key-value pairs to set in core memory
+                - "core_delete": list of keys to delete from core memory
+                - "core_get": list of keys to retrieve from core memory
+                - "archival": list of dicts with "text" and optional "tags"
+                - "archival_update": list of dicts with "id", "text", and optional "tags"
+                - "archival_search": dict with "query" and optional "k", "tags"
+                - "recall": dict with event data to append to recall
+                - "recall_search": dict with "query" and optional "k"
+                - "consolidate": bool to trigger memory consolidation
+            node_id: Optional node ID for logging.
+            phase: Optional phase name for logging.
+
+        Returns:
+            A dict containing results from read operations (get, search).
+        """
+        if not updates or not isinstance(updates, dict):
+            return {}
+
+        use_phase = phase or self._current_phase
+        results: dict = {}
+
+        # Core memory SET operations
+        if "core" in updates and isinstance(updates["core"], dict):
+            for key, value in updates["core"].items():
+                importance = 4  # LLM insights are moderately important by default
+                ttl = None
+                actual_value = value
+
+                # Support extended format: {"value": "...", "importance": 5, "ttl": "..."}
+                if isinstance(value, dict) and "value" in value:
+                    actual_value = value.get("value")
+                    importance = _coerce_importance(value.get("importance", 4))
+                    ttl = value.get("ttl")
+                else:
+                    actual_value = str(value)
+
+                self.set_core(
+                    branch_id,
+                    key,
+                    actual_value,
+                    importance=importance,
+                    ttl=ttl,
+                    op_name="llm_memory_update",
+                    phase=use_phase,
+                    node_id=node_id,
+                )
+
+        # Core memory GET operations
+        if "core_get" in updates:
+            keys = updates["core_get"]
+            if isinstance(keys, list):
+                results["core_get"] = {}
+                for key in keys:
+                    value = self.get_core(branch_id, key, log_event=False)
+                    results["core_get"][key] = value
+
+        # Core memory DELETE/EVICT operations
+        if "core_delete" in updates:
+            keys = updates["core_delete"]
+            if isinstance(keys, list):
+                for key in keys:
+                    self._delete_core_key(
+                        branch_id,
+                        key,
+                        reason="llm_requested",
+                        log_event=True,
+                        node_id=node_id,
+                    )
+            elif isinstance(keys, str):
+                self._delete_core_key(
+                    branch_id,
+                    keys,
+                    reason="llm_requested",
+                    log_event=True,
+                    node_id=node_id,
+                )
+
+        # Archival memory WRITE operations
+        if "archival" in updates and isinstance(updates["archival"], list):
+            for item in updates["archival"]:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text", "")
+                if not text:
+                    continue
+                tags = item.get("tags", [])
+                if not isinstance(tags, list):
+                    tags = [str(tags)] if tags else []
+                # Add LLM_INSIGHT tag to identify LLM-generated archival entries
+                if "LLM_INSIGHT" not in tags:
+                    tags = ["LLM_INSIGHT"] + tags
+                meta = item.get("meta", {})
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta.update({
+                    "node_id": node_id,
+                    "branch_id": branch_id,
+                    "phase": use_phase,
+                    "source": "llm",
+                })
+                self.mem_archival_write(str(text), tags=tags, meta=meta)
+
+        # Archival memory UPDATE operations
+        if "archival_update" in updates and isinstance(updates["archival_update"], list):
+            for item in updates["archival_update"]:
+                if not isinstance(item, dict):
+                    continue
+                record_id = item.get("id")
+                if not record_id:
+                    continue
+                text = item.get("text")
+                tags = item.get("tags")
+                self.mem_archival_update(record_id, text=text, tags=tags)
+
+        # Archival memory SEARCH operations
+        if "archival_search" in updates and isinstance(updates["archival_search"], dict):
+            search_params = updates["archival_search"]
+            query = search_params.get("query", "")
+            k = search_params.get("k", 10)
+            tags_filter = search_params.get("tags")
+            if query:
+                search_results = self.retrieve_archival(
+                    branch_id=branch_id,
+                    query=query,
+                    k=k,
+                    include_ancestors=True,
+                    tags_filter=tags_filter,
+                    log_event=True,
+                )
+                results["archival_search"] = [
+                    {"id": r.get("id"), "text": r.get("text", "")[:500], "tags": r.get("tags", [])}
+                    for r in search_results
+                ]
+
+        # Recall memory APPEND operations
+        if "recall" in updates and isinstance(updates["recall"], dict):
+            event = dict(updates["recall"])
+            event["node_id"] = node_id
+            event["branch_id"] = branch_id
+            event["source"] = "llm"
+            if "kind" not in event:
+                event["kind"] = "llm_insight"
+            self.mem_recall_append(event)
+
+        # Recall memory SEARCH operations
+        if "recall_search" in updates and isinstance(updates["recall_search"], dict):
+            search_params = updates["recall_search"]
+            query = search_params.get("query", "")
+            k = search_params.get("k", 20)
+            if query:
+                search_results = self.mem_recall_search(query, k=k)
+                results["recall_search"] = [
+                    {"kind": r.get("kind"), "summary": str(r.get("summary", ""))[:300], "ts": r.get("ts")}
+                    for r in search_results
+                ]
+
+        # Recall memory EVICT operations (move to archival before deleting)
+        if "recall_evict" in updates:
+            evict_params = updates["recall_evict"]
+            evicted_count = 0
+            archived_count = 0
+            if isinstance(evict_params, dict):
+                ids_to_archive: list[str] = []
+
+                # Collect IDs to evict by explicit IDs
+                ids_to_evict = evict_params.get("ids", [])
+                if ids_to_evict and isinstance(ids_to_evict, list):
+                    ids_to_archive.extend(ids_to_evict)
+
+                # Collect IDs to evict by kind
+                kind_to_evict = evict_params.get("kind")
+                if kind_to_evict:
+                    kind_rows = self._conn.execute(
+                        "SELECT id FROM events WHERE kind = ? AND branch_id = ?",
+                        (kind_to_evict, branch_id),
+                    ).fetchall()
+                    ids_to_archive.extend([r["id"] for r in kind_rows])
+
+                # Collect IDs to evict by oldest N
+                evict_oldest = evict_params.get("oldest", 0)
+                if evict_oldest and isinstance(evict_oldest, int) and evict_oldest > 0:
+                    oldest_rows = self._conn.execute(
+                        "SELECT id FROM events WHERE branch_id = ? ORDER BY created_at ASC LIMIT ?",
+                        (branch_id, evict_oldest),
+                    ).fetchall()
+                    ids_to_archive.extend([r["id"] for r in oldest_rows])
+
+                # Deduplicate IDs
+                ids_to_archive = list(dict.fromkeys(ids_to_archive))
+
+                # Fetch full event data and archive to archival memory
+                if ids_to_archive:
+                    id_placeholders = ",".join(["?"] * len(ids_to_archive))
+                    events_to_archive = self._conn.execute(
+                        f"SELECT * FROM events WHERE id IN ({id_placeholders})",
+                        ids_to_archive,
+                    ).fetchall()
+
+                    for evt in events_to_archive:
+                        evt_dict = dict(evt)
+                        # Build archival text from event data
+                        summary = evt_dict.get("summary", "")
+                        kind = evt_dict.get("kind", "unknown")
+                        ts = evt_dict.get("ts") or evt_dict.get("created_at", "")
+                        archival_text = f"[Evicted Recall Event]\nKind: {kind}\nTime: {ts}\n\n{summary}"
+
+                        self.mem_archival_write(
+                            archival_text,
+                            tags=["EVICTED_RECALL", f"RECALL_{kind.upper()}" if kind else "RECALL_UNKNOWN"],
+                            meta={
+                                "source": "recall_evict",
+                                "original_event_id": evt_dict.get("id"),
+                                "original_kind": kind,
+                                "original_ts": ts,
+                                "node_id": node_id,
+                                "branch_id": branch_id,
+                                "phase": phase,
+                            },
+                        )
+                        archived_count += 1
+
+                    # Delete from recall after archiving
+                    self._conn.execute(
+                        f"DELETE FROM events WHERE id IN ({id_placeholders})",
+                        ids_to_archive,
+                    )
+                    evicted_count = len(ids_to_archive)
+                    self._conn.commit()
+
+            results["recall_evict"] = {"evicted_count": evicted_count, "archived_count": archived_count}
+
+        # Recall memory SUMMARIZE operations
+        if "recall_summarize" in updates:
+            summarize_params = updates["recall_summarize"]
+            if isinstance(summarize_params, dict) or summarize_params is True:
+                try:
+                    consolidated = self.consolidate_recall_events(branch_id)
+                    results["recall_summarize"] = {"status": "success", "events_consolidated": consolidated}
+                except Exception as exc:
+                    logger.warning("LLM-requested recall summarize failed: %s", exc)
+                    results["recall_summarize"] = {"status": "failed", "error": str(exc)}
+
+        # Memory CONSOLIDATION operations
+        if updates.get("consolidate"):
             try:
-                parsed = json.loads(raw_index)
-                resource_file = parsed.get("resource_file")
-            except json.JSONDecodeError:
-                resource_file = None
-        if not resource_file:
-            self._log_memory_event(
-                "mem_resources_resolve_and_refresh",
-                "resources",
-                branch_id=branch_id,
-                details={"run_id": run_id, "resource_file": "", "status": "skipped"},
-            )
-            return
-        if run_id and not self.run_id:
-            self.run_id = str(run_id)
-        workspace_root = self.workspace_root or self.db_path.parent.parent
+                # Use "high" pressure level to trigger consolidation
+                consolidate_result = self.auto_consolidate_memory(branch_id, pressure_level="high")
+                results["consolidate"] = {"status": "success", "details": consolidate_result}
+            except Exception as exc:
+                logger.warning("LLM-requested consolidation failed: %s", exc)
+                results["consolidate"] = {"status": "failed", "error": str(exc)}
+
         self._log_memory_event(
-            "mem_resources_resolve_and_refresh",
-            "resources",
+            "apply_llm_memory_updates",
+            "llm_update",
             branch_id=branch_id,
-            details={"run_id": run_id, "resource_file": resource_file, "status": "refresh"},
+            node_id=node_id,
+            phase=use_phase,
+            details={
+                "core_keys": list(updates.get("core", {}).keys()) if isinstance(updates.get("core"), dict) else [],
+                "core_delete_keys": updates.get("core_delete", []) if isinstance(updates.get("core_delete"), list) else [],
+                "core_get_keys": updates.get("core_get", []) if isinstance(updates.get("core_get"), list) else [],
+                "archival_count": len(updates.get("archival", [])) if isinstance(updates.get("archival"), list) else 0,
+                "archival_update_count": len(updates.get("archival_update", [])) if isinstance(updates.get("archival_update"), list) else 0,
+                "has_archival_search": "archival_search" in updates,
+                "has_recall": "recall" in updates,
+                "has_recall_search": "recall_search" in updates,
+                "has_recall_evict": "recall_evict" in updates,
+                "has_recall_summarize": "recall_summarize" in updates,
+                "has_consolidate": updates.get("consolidate", False),
+            },
         )
-        snapshot = build_resource_snapshot(
-            resource_file,
-            workspace_root=workspace_root,
-            ai_scientist_root=str(self.ai_scientist_root) if self.ai_scientist_root else None,
-            phase_mode=_cfg_get(self.config, "phase_mode", "unknown"),
-            log=logger,
-        )
-        update_resource_snapshot_if_changed(snapshot, self)
+
+        return results
 
     def _render_resource_items(self, branch_id: str, task_hint: str | None) -> str:
         query = (task_hint or "").strip()
@@ -2667,10 +2729,10 @@ class MemoryManager:
         resource_ids: set[str] = set()
         chunks: list[str] = []
         for row in rows:
-            for rid in _extract_resource_ids(row.get("tags")):
+            for rid in _extract_resource_ids(_row_get(row, "tags")):
                 if rid:
                     resource_ids.add(rid)
-            chunks.append(self._compress(row.get("text", ""), 1200, "resource item"))
+            chunks.append(self._compress(_row_get(row, "text", ""), 1200, "resource item"))
         if resource_ids:
             note = f"prompt:{query}"
             for rid in sorted(resource_ids):
@@ -2679,8 +2741,13 @@ class MemoryManager:
 
     def _render_core_memory(
         self, branch_ids: list[str], branch_id: str, no_limit: bool
-    ) -> tuple[str, str]:
-        """Render core memory section and extract resource index."""
+    ) -> tuple[str, str, list[dict]]:
+        """Render core memory section and extract resource index.
+
+        Returns:
+            Tuple of (core_text, resource_index, core_items) where core_items
+            is a list of dicts with key/value for logging purposes.
+        """
         core_rows = self._conn.execute(
             f"SELECT branch_id, key, value, updated_at FROM core_kv WHERE branch_id IN ({','.join(['?']*len(branch_ids))})",
             branch_ids,
@@ -2700,31 +2767,19 @@ class MemoryManager:
         core_latest.pop(RESOURCE_INDEX_JSON_KEY, None)
         core_latest.pop(RESOURCE_DIGEST_KEY, None)
         core_latest.pop(RESOURCE_USED_KEY, None)
-        idea_summary = core_latest.pop("idea_md_summary", (None, 0))[0]
 
-        # Handle idea summary
-        if no_limit and self.always_inject_idea_summary:
-            idea_archival = self.retrieve_archival(
-                branch_id, query="idea", k=1, include_ancestors=True, tags_filter=["IDEA_MD"], log_event=False
-            )
-            if idea_archival:
-                core_lines.append(f"- Idea (full text): {idea_archival[0].get('text', '')}")
-            elif idea_summary:
-                core_lines.append(f"- Idea summary: {idea_summary}")
-        elif self.always_inject_idea_summary:
-            core_lines.append(f"- Idea summary: {idea_summary or '(not available)'}")
-
-        # Handle phase0 summary
-        phase0_summary = core_latest.pop("phase0_summary", (None, 0))[0]
-        if self.always_inject_phase0_summary:
-            core_lines.append(f"- Phase 0 internal summary: {phase0_summary or '(not available)'}")
-
-        # Add remaining core items
+        # Build core items for logging (truncated values)
+        core_items: list[dict] = []
+        # Add all core items (LLM manages what to store)
+        # Note: idea_md_summary and phase0_summary are no longer auto-injected
         for key, (value, _) in sorted(core_latest.items(), key=lambda kv: kv[0]):
             core_lines.append(f"- {key}: {value}")
+            # Truncate value for logging (max 300 chars)
+            truncated_value = value[:300] + "..." if len(value) > 300 else value
+            core_items.append({"key": key, "value": truncated_value})
 
         core_text = "\n".join(core_lines).strip()
-        return core_text, resource_index or ""
+        return core_text, resource_index or "", core_items
 
     def _render_recall_memory(self, branch_ids: list[str]) -> tuple[str, list]:
         """Render recall memory section."""
@@ -2757,17 +2812,17 @@ class MemoryManager:
         for row in archival_rows:
             tags = ""
             try:
-                tag_list = json.loads(row.get("tags") or "[]")
+                tag_list = json.loads(_row_get(row, "tags") or "[]")
                 if tag_list:
                     tags = f" (tags: {', '.join(tag_list)})"
             except json.JSONDecodeError:
                 tags = ""
             if no_limit:
-                snippet = row.get("text", "")
+                snippet = _row_get(row, "text", "")
             else:
                 snippet = self._compress(
-                    row.get("text", ""),
-                    self.section_budgets["archival_snippet"],
+                    _row_get(row, "text", ""),
+                    self.archival_snippet_budget_chars,
                     "archival memory entry"
                 )
             archival_lines.append(f"- {snippet}{tags}")
@@ -2822,7 +2877,7 @@ class MemoryManager:
             return ""
 
         # Render each memory section
-        core_text, resource_index = self._render_core_memory(branch_ids, branch_id, no_limit)
+        core_text, resource_index, core_items = self._render_core_memory(branch_ids, branch_id, no_limit)
         resource_items_text = self._render_resource_items(branch_id, task_hint)
         recall_text, recall_rows = self._render_recall_memory(branch_ids)
         archival_text, archival_rows = self._render_archival_memory(branch_id, task_hint, no_limit)
@@ -2840,19 +2895,54 @@ class MemoryManager:
         if resource_items_text:
             sections.append(("Resource Memory", resource_items_text))
 
+        # Convert task_hint to human-readable phase name for logging
+        phase_display_name = _get_phase_display_name(task_hint)
+
+        # Build detailed items for logging (truncated for size)
+        recall_items = []
+        for row in recall_rows[:20]:  # Limit to 20 items
+            text = str(_row_get(row, "text", ""))[:200]
+            recall_items.append({
+                "kind": _row_get(row, "kind"),
+                "text": text + "..." if len(str(_row_get(row, "text", ""))) > 200 else text,
+            })
+
+        archival_items = []
+        for row in archival_rows[:10]:  # Limit to 10 items
+            text = str(_row_get(row, "text", ""))[:200]
+            tags = []
+            try:
+                tags = json.loads(_row_get(row, "tags") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                pass
+            archival_items.append({
+                "text": text + "..." if len(str(_row_get(row, "text", ""))) > 200 else text,
+                "tags": tags,
+            })
+
+        # Build log details with injection context
+        log_details = {
+            "budget_chars": budget_chars,
+            "task_hint": task_hint,
+            "core_count": len(core_items),
+            "recall_count": len(recall_rows),
+            "archival_count": len(archival_rows),
+            "resource_items": 1 if resource_items_text else 0,
+            # Detailed items for visualization
+            "core_items": core_items,
+            "recall_items": recall_items,
+            "archival_items": archival_items,
+            "archival_query": task_hint,
+            "archival_k": self.retrieval_k,
+        }
+
         if not sections:
             self._log_memory_event(
                 "render_for_prompt",
                 "prompt",
                 branch_id=branch_id,
-                phase=task_hint,
-                details={
-                    "budget_chars": budget_chars,
-                    "core_count": len(core_text.splitlines()) if core_text else 0,
-                    "recall_count": len(recall_rows),
-                    "archival_count": len(archival_rows),
-                    "resource_items": 0,
-                },
+                phase=phase_display_name,
+                details=log_details,
             )
             return ""
 
@@ -2863,162 +2953,10 @@ class MemoryManager:
             "render_for_prompt",
             "prompt",
             branch_id=branch_id,
-            phase=task_hint,
-            details={
-                "budget_chars": budget_chars,
-                "core_count": len(core_text.splitlines()) if core_text else 0,
-                "recall_count": len(recall_rows),
-                "archival_count": len(archival_rows),
-                "resource_items": 1 if resource_items_text else 0,
-            },
+            phase=phase_display_name,
+            details=log_details,
         )
         return rendered
-
-    def ingest_phase0_internal_info(
-        self,
-        branch_id: str,
-        node_uid: str,
-        phase0_payload: Any,
-        artifact_paths: Sequence[str] | None,
-        command_str: str | None,
-    ) -> None:
-        payload_obj = phase0_payload
-        if is_dataclass(phase0_payload):
-            payload_obj = asdict(phase0_payload)
-        artifacts = []
-        for path in artifact_paths or []:
-            p = Path(path)
-            if not p.exists():
-                continue
-            try:
-                content = p.read_text(encoding="utf-8")
-            except Exception:
-                content = ""
-            artifacts.append(
-                {
-                    "path": str(p),
-                    "content": self._compress(content, 5000, "phase0 artifact content"),
-                }
-            )
-
-        payload = {
-            "branch_id": branch_id,
-            "node_uid": node_uid,
-            "command": command_str,
-            "phase0_payload": payload_obj,
-            "artifacts": artifacts,
-            "created_at": _now_ts(),
-        }
-        md_lines = [
-            "# Phase 0 Internal Info",
-            "",
-            f"- node_uid: {node_uid}",
-            f"- branch_id: {branch_id}",
-            f"- command: {command_str or ''}",
-            "",
-            "## Phase 0 Payload",
-            "```json",
-            json.dumps(payload_obj, indent=2),
-            "```",
-        ]
-        if artifacts:
-            md_lines.append("")
-            md_lines.append("## Artifacts")
-            for item in artifacts:
-                md_lines.append(f"### {item['path']}")
-                md_lines.append("```")
-                md_lines.append(item["content"])
-                md_lines.append("```")
-        md_text = "\n".join(md_lines)
-
-        # Prepare payload for summarization (merge artifacts so they can be parsed)
-        summary_payload = payload_obj.copy()
-        summary_payload["artifacts"] = artifacts
-        
-        summary = _summarize_phase0(
-            summary_payload,
-            command_str,
-            max_chars=self.section_budgets["phase0_summary"],
-            compress_fn=self._compress,
-        )
-        self.set_core(
-            branch_id,
-            "phase0_summary",
-            summary,
-            importance=5,
-            op_name="ingest_phase0_internal_info",
-            phase="phase0",
-            node_id=node_uid,
-        )
-        archival_text = f"{summary}\n\n{md_text}"
-        self.mem_archival_write(
-            archival_text,
-            tags=["PHASE0_INTERNAL", f"node_uid:{node_uid}", f"branch_id:{branch_id}"],
-            meta={
-                "node_id": node_uid,
-                "run_id": self.run_id,
-                "branch_id": branch_id,
-                "phase": "phase0",
-            },
-        )
-
-    def ingest_idea_md(
-        self,
-        branch_id: str,
-        node_uid: str,
-        idea_path: str | Path,
-        is_root: bool = False,
-    ) -> None:
-        path = Path(idea_path)
-        if not path.exists():
-            return
-        try:
-            content = path.read_text(encoding="utf-8")
-        except Exception as exc:
-            logger.warning("Failed to read idea.md: %s", exc)
-            return
-        content_hash = sha256(content.encode("utf-8")).hexdigest()
-        previous_hash = self.get_core(branch_id, "idea_md_hash", log_event=False)
-        if previous_hash == content_hash:
-            return
-
-        summary = _summarize_idea(
-            content,
-            max_chars=self.section_budgets["idea_summary"],
-            compress_fn=self._compress,
-            section_limit=self.section_budgets["idea_section_limit"],
-        )
-        self.set_core(
-            branch_id,
-            "idea_md_summary",
-            summary,
-            importance=5,
-            op_name="ingest_idea_md",
-            phase="idea_md",
-            node_id=node_uid,
-        )
-        self.set_core(
-            branch_id,
-            "idea_md_hash",
-            content_hash,
-            op_name="ingest_idea_md",
-            phase="idea_md",
-            node_id=node_uid,
-        )
-        tags = ["IDEA_MD", f"node_uid:{node_uid}", f"branch_id:{branch_id}"]
-        if is_root:
-            tags.append("ROOT_IDEA")
-        archival_text = f"{summary}\n\n{content}"
-        self.mem_archival_write(
-            archival_text,
-            tags=tags,
-            meta={
-                "node_id": node_uid,
-                "run_id": self.run_id,
-                "branch_id": branch_id,
-                "phase": "idea_md",
-            },
-        )
 
     def _collect_experimental_results(self, best_branch: str, no_budget_limit: bool) -> str:
         """Collect experimental results from events and core memory."""
@@ -3043,7 +2981,7 @@ class MemoryManager:
             core_snapshot = "No experimental results recorded."
 
         if not no_budget_limit:
-            core_snapshot = self._compress(core_snapshot, self.section_budgets["results"], "experimental results", branch_id=best_branch)
+            core_snapshot = self._compress(core_snapshot, self.results_budget_chars, "experimental results", branch_id=best_branch)
 
         return core_snapshot
 
@@ -3066,18 +3004,11 @@ class MemoryManager:
             )
             idea_text = idea_archival[0]["text"] if idea_archival else ""
 
-        # Get idea summary
+        # Get idea summary from core memory (LLM manages this now)
         idea_summary = self.get_core(best_branch, "idea_md_summary") or ""
+        # If no summary in core memory, use the text directly (no auto-summarization)
         if not idea_summary and idea_text:
-            if no_budget_limit:
-                idea_summary = idea_text
-            else:
-                idea_summary = _summarize_idea(
-                    idea_text,
-                    max_chars=self.section_budgets["idea_summary"],
-                    compress_fn=self._compress,
-                    section_limit=self.section_budgets["idea_section_limit"],
-                )
+            idea_summary = idea_text if no_budget_limit else self._compress(idea_text, 4000, "idea summary")
 
         return idea_text, idea_summary
 
@@ -3232,7 +3163,7 @@ class MemoryManager:
                 if rows:
                     # Look for JSON entry
                     for row in rows:
-                        archival_text = row.get("text", "")
+                        archival_text = _row_get(row, "text", "")
                         try:
                             # Parse JSON from archival text to get notes
                             archival_data = json.loads(archival_text)
@@ -3272,26 +3203,64 @@ class MemoryManager:
 
     def _build_paper_sections(
         self,
-        idea_text: str,
-        idea_summary: str,
-        phase0_summary: str,
-        core_snapshot: str,
-        failure_notes: list[str],
+        best_branch: str,
         resources_used: list[dict[str, Any]],
         no_budget_limit: bool,
-        best_branch: str | None = None,
     ) -> dict[str, Any]:
         """
-        Build paper sections dynamically using LLM to analyze memory and determine
-        the appropriate structure and content for the research paper.
+        Build paper sections by letting LLM autonomously retrieve relevant
+        information from all 3 memory tiers (Core, Recall, Archive).
+
+        The LLM receives the full memory context and decides what information
+        is relevant for each paper section.
         """
-        # Collect all available memory data for LLM analysis
+        # Collect all 3-tier memory for the best branch
+        branch_chain = self._branch_chain(best_branch)
+
+        # Core Memory - all key-value pairs
+        core_memory: dict[str, Any] = {}
+        for bid in branch_chain:
+            core_rows = self._conn.execute(
+                "SELECT key, value FROM core_kv WHERE branch_id=?",
+                (bid,),
+            ).fetchall()
+            for row in core_rows:
+                key = row["key"]
+                if key not in core_memory:
+                    core_memory[key] = row["value"] or ""
+
+        # Recall Memory - all events
+        recall_memory: list[dict[str, Any]] = []
+        event_rows = self._fetch_events(branch_chain, 500 if no_budget_limit else 100)
+        for row in event_rows:
+            recall_memory.append({
+                "ts": row["created_at"],
+                "kind": row["kind"],
+                "text": row["text"] or "",
+            })
+
+        # Archival Memory - all entries
+        archival_k = 200 if no_budget_limit else 50
+        archival_rows = self.retrieve_archival(
+            branch_id=best_branch,
+            query="",
+            k=archival_k,
+            include_ancestors=True,
+            log_event=False,
+        )
+        archival_memory: list[dict[str, Any]] = []
+        for row in archival_rows:
+            archival_memory.append({
+                "id": _row_get(row, "id"),
+                "text": _row_get(row, "text", "") or "",
+                "tags": _row_get(row, "tags", []),
+            })
+
+        # Build memory context for LLM
         memory_context = {
-            "idea_text": idea_text,
-            "idea_summary": idea_summary,
-            "phase0_summary": phase0_summary,
-            "experimental_results": core_snapshot,
-            "failure_notes": failure_notes,
+            "core_memory": core_memory,
+            "recall_memory": recall_memory,
+            "archival_memory": archival_memory,
             "resources_used": resources_used,
             "best_branch": best_branch,
         }
@@ -3322,8 +3291,11 @@ class MemoryManager:
             # Prepare memory summary for LLM
             memory_summary = self._prepare_memory_summary(memory_context)
 
-            # Prompt for LLM to analyze memory and generate sections
-            prompt = f"""Analyze the following research memory data and generate appropriate sections for a research paper.
+            # Load prompt template from file
+            prompt_template = _try_load_prompt(PAPER_SECTION_GENERATION_NAME, "paper section generation prompt")
+            if prompt_template is None:
+                # Fallback to hardcoded prompt
+                prompt_template = """Analyze the following research memory data and generate appropriate sections for a research paper.
 
 Memory Data:
 {memory_summary}
@@ -3341,13 +3313,17 @@ Important guidelines:
 
 Return ONLY a valid JSON object, no additional text or formatting."""
 
-            system_message = "You are a research paper writing assistant. Analyze memory data and generate comprehensive paper sections in JSON format."
+            prompt = prompt_template.format(memory_summary=memory_summary)
+
+            system_message = _try_load_prompt(PAPER_SECTION_GENERATION_SYSTEM_MESSAGE_NAME, "paper section generation system message")
+            if system_message is None:
+                system_message = "You are a research paper writing assistant. Analyze memory data and generate comprehensive paper sections in JSON format."
 
             response, _ = get_response_from_llm(
                 prompt=prompt,
                 client=self._compression_client,
                 model=self._compression_model_name,
-                system_message=system_message,
+                system_message=system_message.strip(),
                 temperature=0.3,
             )
 
@@ -3389,123 +3365,102 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             return self._build_fallback_sections(memory_context)
 
     def _prepare_memory_summary(self, memory_context: dict[str, Any]) -> str:
-        """Prepare a formatted summary of memory context for LLM analysis."""
+        """Prepare a formatted summary of 3-tier memory for LLM analysis.
+
+        The LLM will autonomously search through this memory to extract
+        relevant information for paper sections.
+        """
         parts = []
 
-        if memory_context.get("idea_text"):
-            parts.append(f"## Research Idea\n{memory_context['idea_text'][:2000]}")
+        # Core Memory (always-injected key-value context)
+        core_memory = memory_context.get("core_memory", {})
+        if core_memory:
+            core_lines = ["## Core Memory (Key-Value Context)"]
+            for key, value in core_memory.items():
+                # Truncate very long values for the summary
+                value_str = str(value)[:2000] if len(str(value)) > 2000 else str(value)
+                core_lines.append(f"### {key}\n{value_str}")
+            parts.append("\n\n".join(core_lines))
 
-        if memory_context.get("idea_summary"):
-            parts.append(f"## Idea Summary\n{memory_context['idea_summary'][:1000]}")
+        # Recall Memory (event timeline)
+        recall_memory = memory_context.get("recall_memory", [])
+        if recall_memory:
+            recall_lines = ["## Recall Memory (Event Timeline)"]
+            for event in recall_memory[:50]:  # Limit for LLM context
+                ts = event.get("ts", "")
+                kind = event.get("kind", "")
+                text = event.get("text", "")[:1000]  # Truncate long events
+                recall_lines.append(f"- [{ts}] {kind}: {text}")
+            if len(recall_memory) > 50:
+                recall_lines.append(f"... and {len(recall_memory) - 50} more events")
+            parts.append("\n".join(recall_lines))
 
-        # Retrieve detailed phase0 information from archival memory
-        best_branch = memory_context.get("best_branch")
-        if best_branch:
-            try:
-                # Get phase0 internal info from archival memory
-                phase0_rows = self._conn.execute(
-                    """SELECT text FROM archival
-                    WHERE branch_id = ?
-                    AND tags LIKE '%PHASE0_INTERNAL%'
-                    LIMIT 1""",
-                    (best_branch,)
-                ).fetchall()
+        # Archival Memory (long-term searchable memory)
+        archival_memory = memory_context.get("archival_memory", [])
+        if archival_memory:
+            archival_lines = ["## Archival Memory (Long-term Storage)"]
+            for entry in archival_memory[:30]:  # Limit for LLM context
+                entry_id = entry.get("id", "")
+                tags = entry.get("tags", [])
+                text = entry.get("text", "")[:1500]  # Truncate long entries
+                tags_str = ", ".join(tags) if tags else "no tags"
+                archival_lines.append(f"### Entry {entry_id} [{tags_str}]\n{text}")
+            if len(archival_memory) > 30:
+                archival_lines.append(f"... and {len(archival_memory) - 30} more archival entries")
+            parts.append("\n\n".join(archival_lines))
 
-                if phase0_rows:
-                    phase0_full_text = phase0_rows[0][0]
-                    # Extract hardware info from the JSON
-                    # Look for phase0_history_full.json section which contains environment_context
-                    try:
-                        # Find the JSON block containing environment_context
-                        start_marker = "phase0_history_full.json"
-                        json_start_idx = phase0_full_text.find(start_marker)
-                        if json_start_idx >= 0:
-                            # Find the start of the JSON object after the marker
-                            json_start_idx = phase0_full_text.find("{", json_start_idx)
-                            if json_start_idx >= 0:
-                                # Find the end of the JSON object (balanced braces)
-                                brace_count = 0
-                                json_end_idx = json_start_idx
-                                for i in range(json_start_idx, len(phase0_full_text)):
-                                    if phase0_full_text[i] == '{':
-                                        brace_count += 1
-                                    elif phase0_full_text[i] == '}':
-                                        brace_count -= 1
-                                        if brace_count == 0:
-                                            json_end_idx = i + 1
-                                            break
+        # Resources used
+        resources_used = memory_context.get("resources_used", [])
+        if resources_used:
+            resource_lines = ["## Resources Used"]
+            for res in resources_used:
+                name = res.get("name", "unknown")
+                res_class = res.get("class", "unknown")
+                resource_lines.append(f"- {name} ({res_class})")
+            parts.append("\n".join(resource_lines))
 
-                                if json_end_idx > json_start_idx:
-                                    json_text = phase0_full_text[json_start_idx:json_end_idx]
-                                    phase0_data = json.loads(json_text)
-                                    env_context = phase0_data.get("environment_context", {})
-
-                                    # Format hardware information
-                                    hw_info = []
-                                    if "cpu_info" in env_context:
-                                        cpu = env_context["cpu_info"]
-                                        hw_info.append(f"CPU: {cpu.get('model', 'Unknown')}")
-                                        hw_info.append(f"Sockets: {cpu.get('sockets', 'N/A')}, Cores per socket: {cpu.get('cores_per_socket', 'N/A')}, Threads per core: {cpu.get('threads_per_core', 'N/A')}")
-                                        hw_info.append(f"Total CPUs: {cpu.get('cpus', 'N/A')}, NUMA nodes: {cpu.get('numa_nodes', 'N/A')}")
-
-                                    if "memory_info" in env_context:
-                                        mem = env_context["memory_info"]
-                                        hw_info.append(f"Memory: Total={mem.get('total', 'N/A')}, Available={mem.get('available', 'N/A')}")
-
-                                    if "gpu_info" in env_context and env_context["gpu_info"]:
-                                        hw_info.append(f"GPU: {', '.join(env_context['gpu_info'])}")
-
-                                    if "available_compilers" in env_context:
-                                        compilers = env_context["available_compilers"]
-                                        compiler_list = [f"{c.get('name', 'unknown')} {c.get('version', '')}" for c in compilers if isinstance(c, dict)]
-                                        if compiler_list:
-                                            hw_info.append(f"Compilers: {', '.join(compiler_list[:3])}")
-
-                                    if hw_info:
-                                        parts.append(f"## Hardware Configuration\n" + "\n".join(hw_info))
-                    except (json.JSONDecodeError, KeyError, Exception) as e:
-                        logger.debug(f"Could not parse phase0 JSON for hardware info: {e}")
-            except Exception as e:
-                logger.debug(f"Could not retrieve phase0 hardware info: {e}")
-
-        if memory_context.get("phase0_summary"):
-            parts.append(f"## Experimental Setup (Phase 0)\n{memory_context['phase0_summary'][:1500]}")
-
-        if memory_context.get("experimental_results"):
-            parts.append(f"## Experimental Results\n{memory_context['experimental_results'][:2000]}")
-
-        if memory_context.get("failure_notes"):
-            failure_text = "\n".join(memory_context["failure_notes"])
-            if failure_text:
-                parts.append(f"## Failure Notes\n{failure_text[:1000]}")
-
-        if memory_context.get("resources_used"):
-            resources_summary = f"Number of resources used: {len(memory_context['resources_used'])}"
-            parts.append(f"## Resources\n{resources_summary}")
-
-        return "\n\n".join(parts)
+        return "\n\n---\n\n".join(parts)
 
     def _build_fallback_sections(self, memory_context: dict[str, Any]) -> dict[str, Any]:
-        """Build a simple fallback section structure when LLM is not available."""
-        parsed_idea = _parse_markdown_sections(memory_context.get("idea_text", ""))
-        idea_summary = memory_context.get("idea_summary", "")
+        """Build a simple fallback section structure when LLM is not available.
 
-        def extract_bullet(summary_text: str, bullet_name: str) -> str:
-            """Helper to extract a specific bullet point from summary."""
-            for line in summary_text.splitlines():
-                if line.lstrip().startswith(f"- {bullet_name}:"):
-                    return line.split(":", 1)[1].strip()
+        Extracts information from 3-tier memory (Core, Recall, Archive).
+        """
+        core_memory = memory_context.get("core_memory", {})
+        recall_memory = memory_context.get("recall_memory", [])
+        archival_memory = memory_context.get("archival_memory", [])
+
+        # Helper to find archival entries by tag
+        def find_archival_by_tag(tag: str) -> str:
+            for entry in archival_memory:
+                tags = entry.get("tags", [])
+                if tag in tags:
+                    return entry.get("text", "")
             return ""
 
-        # Extract basic information
-        title_text = parsed_idea.get("Title") or parsed_idea.get("Name") or extract_bullet(idea_summary, "Title") or idea_summary
-        abstract_text = parsed_idea.get("Abstract") or parsed_idea.get("Task goal") or extract_bullet(idea_summary, "Purpose") or idea_summary
-        hypothesis_text = parsed_idea.get("Short Hypothesis") or parsed_idea.get("Hypothesis") or extract_bullet(idea_summary, "Hypothesis") or idea_summary
-        problem_text = parsed_idea.get("Problem Statement") or parsed_idea.get("Motivation") or abstract_text
-        method_text = parsed_idea.get("Experiments") or parsed_idea.get("Code") or parsed_idea.get("Method") or extract_bullet(idea_summary, "Method/Variables") or idea_summary
-        narrative_text = parsed_idea.get("Related Work") or parsed_idea.get("Narrative") or "Related work positioning, key trade-offs, implications."
+        # Helper to collect recall events by kind
+        def collect_recall_by_kind(kind: str) -> list[str]:
+            return [e.get("text", "") for e in recall_memory if e.get("kind") == kind]
 
-        failure_text = "\n".join(memory_context.get("failure_notes", [])) if memory_context.get("failure_notes") else "No failures recorded."
+        # Extract idea from archival (IDEA_MD tag)
+        idea_text = find_archival_by_tag("IDEA_MD") or find_archival_by_tag("ROOT_IDEA")
+        parsed_idea = _parse_markdown_sections(idea_text) if idea_text else {}
+
+        # Extract from core memory
+        phase0_summary = core_memory.get("phase0_summary", "")
+        experimental_results = core_memory.get("experimental_results", "") or core_memory.get("results", "")
+
+        # Extract failure notes from recall events
+        failure_notes = collect_recall_by_kind("error_encountered")
+        failure_text = "\n".join(failure_notes) if failure_notes else "No failures recorded."
+
+        # Build sections from extracted data
+        title_text = parsed_idea.get("Title") or parsed_idea.get("Name") or "Title not found in memory"
+        abstract_text = parsed_idea.get("Abstract") or parsed_idea.get("Task goal") or "Abstract not found in memory"
+        hypothesis_text = parsed_idea.get("Short Hypothesis") or parsed_idea.get("Hypothesis") or "Hypothesis not found in memory"
+        problem_text = parsed_idea.get("Problem Statement") or parsed_idea.get("Motivation") or abstract_text
+        method_text = parsed_idea.get("Experiments") or parsed_idea.get("Code") or parsed_idea.get("Method") or "Method not found in memory"
+        narrative_text = parsed_idea.get("Related Work") or parsed_idea.get("Narrative") or "Related work positioning, key trade-offs, implications."
 
         sections = {
             "title_candidates": title_text,
@@ -3513,10 +3468,13 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             "problem_statement": problem_text,
             "hypothesis": hypothesis_text,
             "method": method_text,
-            "experimental_setup": memory_context.get("phase0_summary", ""),
-            "phase0_internal_info_summary": memory_context.get("phase0_summary", ""),
-            "results": memory_context.get("experimental_results", ""),
+            "experimental_setup": phase0_summary,
+            "phase0_internal_info_summary": phase0_summary,
+            "results": experimental_results,
+            "ablations_negative": "Not available (LLM analysis required)",
             "failure_modes_timeline": failure_text,
+            "threats_to_validity": "Not available (LLM analysis required)",
+            "reproducibility_checklist": "Not available (LLM analysis required)",
             "narrative_bullets": narrative_text,
             "resources_used": memory_context.get("resources_used", []),
         }
@@ -3548,26 +3506,17 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         memory_dir.mkdir(parents=True, exist_ok=True)
         best_branch = best_branch_id or root_branch_id
 
-        # Collect all necessary data using helper methods
-        core_snapshot = self._collect_experimental_results(best_branch, no_budget_limit)
-        idea_text, idea_summary = self._get_idea_text_and_summary(run_dir, best_branch, no_budget_limit)
-        phase0_summary = self._get_phase0_summary(memory_dir, best_branch, no_budget_limit)
-        failure_notes = self._collect_failure_notes(best_branch)
+        # Collect resource data for the sections
         resource_snapshot, resource_index, item_index = self._load_resource_snapshot_and_index(
             memory_dir, root_branch_id, best_branch
         )
         resources_used = self._collect_resource_usage(root_branch_id, best_branch, item_index, no_budget_limit)
 
-        # Build paper sections
+        # Build paper sections using LLM self-retrieval from 3-tier memory
         sections = self._build_paper_sections(
-            idea_text,
-            idea_summary,
-            phase0_summary,
-            core_snapshot,
-            failure_notes,
-            resources_used,
-            no_budget_limit,
             best_branch=best_branch,
+            resources_used=resources_used,
+            no_budget_limit=no_budget_limit,
         )
 
         if artifacts_index:
@@ -3595,6 +3544,54 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         if not idea_path.exists():
             idea_path = Path(_cfg_get(self.config, "desc_file", "")) if _cfg_get(self.config, "desc_file", "") else idea_path
 
+        # Extract data from 3-tier memory for writeup_memory
+        branch_chain = self._branch_chain(best_branch)
+
+        # Get idea text from archival memory
+        idea_text = ""
+        idea_summary = ""
+        for bid in branch_chain:
+            idea_rows = self._conn.execute(
+                "SELECT text FROM archival WHERE branch_id=? AND tags LIKE '%IDEA_MD%' LIMIT 1",
+                (bid,),
+            ).fetchall()
+            if idea_rows:
+                idea_text = idea_rows[0]["text"] or ""
+                idea_summary = idea_text[:500] if idea_text else ""
+                break
+
+        # Get phase0 summary from core memory
+        phase0_summary = ""
+        for bid in branch_chain:
+            core_row = self._conn.execute(
+                "SELECT value FROM core_kv WHERE branch_id=? AND key='phase0_summary' LIMIT 1",
+                (bid,),
+            ).fetchone()
+            if core_row:
+                phase0_summary = core_row["value"] or ""
+                break
+
+        # Get core snapshot from core memory (results)
+        core_snapshot = ""
+        for bid in branch_chain:
+            for key_name in ("results", "experimental_results", "core_snapshot"):
+                core_row = self._conn.execute(
+                    "SELECT value FROM core_kv WHERE branch_id=? AND key=? LIMIT 1",
+                    (bid, key_name),
+                ).fetchone()
+                if core_row and core_row["value"]:
+                    core_snapshot = core_row["value"]
+                    break
+            if core_snapshot:
+                break
+
+        # Get failure notes from recall memory
+        failure_notes: list[str] = []
+        event_rows_for_failures = self._fetch_events(branch_chain, 100)
+        for row in event_rows_for_failures:
+            if str(row["kind"]).lower() == "error_encountered":
+                failure_notes.append(row["text"] or "")
+
         resources_section = {
             "resource_file": {
                 "path": resource_snapshot.get("resource_file") or resource_index.get("resource_file", ""),
@@ -3605,7 +3602,6 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             "items": resource_snapshot.get("items") or resource_index.get("items", []),
             "used": resources_used,
         }
-        branch_chain = self._branch_chain(best_branch)
         provenance = []
         for bid in branch_chain:
             row = self._conn.execute(
@@ -3683,13 +3679,13 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         )
         archival_memory_list: list[dict[str, Any]] = []
         for row in archival_memory_data:
-            text = row.get("text", "") or ""
+            text = _row_get(row, "text", "") or ""
             if not no_budget_limit and len(text) > self.writeup_archival_text_max_chars:
                 text = self._compress(text, self.writeup_archival_text_max_chars, "archival entry", branch_id=best_branch)
             archival_memory_list.append({
-                "id": row.get("id"),
+                "id": _row_get(row, "id"),
                 "text": text,
-                "tags": row.get("tags"),
+                "tags": _row_get(row, "tags"),
             })
 
         writeup_memory = {
@@ -3726,32 +3722,192 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         writeup_path = memory_dir / "final_writeup_memory.json"
         writeup_path.write_text(json.dumps(writeup_memory, indent=2), encoding="utf-8")
 
-        # Generate markdown dynamically from sections
+        # Extract best node data from artifacts_index
+        best_node_data = artifacts_index.get("best_node_data") if artifacts_index else None
+        top_nodes_data = artifacts_index.get("top_nodes_data", []) if artifacts_index else []
+
+        # Generate comprehensive markdown for paper writeup
         md_sections = ["# Final Memory For Paper", ""]
 
+        # ===== Section 1: Executive Summary =====
+        md_sections.append("## Executive Summary")
+        md_sections.append("")
+        if best_node_data:
+            metric_info = best_node_data.get("metric", {})
+            md_sections.append(f"**Best Result Metric**: {metric_info.get('value', 'N/A')} ({metric_info.get('name', 'metric')})")
+            md_sections.append("")
+            if best_node_data.get("analysis"):
+                md_sections.append("**Analysis Summary**:")
+                md_sections.append(best_node_data["analysis"])
+                md_sections.append("")
+        else:
+            md_sections.append("No best node data available.")
+            md_sections.append("")
+
+        # ===== Section 2: Best Node Details =====
+        md_sections.append("## Best Node Details")
+        md_sections.append("")
+        if best_node_data:
+            md_sections.append(f"**Node ID**: `{best_node_data.get('id', 'N/A')}`")
+            md_sections.append(f"**Branch ID**: `{best_node_data.get('branch_id', 'N/A')}`")
+            if best_node_data.get("workspace_path"):
+                md_sections.append(f"**Workspace**: `{best_node_data['workspace_path']}`")
+            if best_node_data.get("exp_results_dir"):
+                md_sections.append(f"**Results Directory**: `{best_node_data['exp_results_dir']}`")
+            md_sections.append("")
+
+            # Overall Plan
+            if best_node_data.get("overall_plan"):
+                md_sections.append("### Overall Plan")
+                md_sections.append("```")
+                md_sections.append(best_node_data["overall_plan"])
+                md_sections.append("```")
+                md_sections.append("")
+
+            # Implementation Plan
+            if best_node_data.get("plan"):
+                md_sections.append("### Implementation Plan")
+                md_sections.append("```")
+                md_sections.append(best_node_data["plan"])
+                md_sections.append("```")
+                md_sections.append("")
+
+            # Code Implementation
+            if best_node_data.get("code"):
+                md_sections.append("### Code Implementation")
+                md_sections.append("```python")
+                md_sections.append(best_node_data["code"])
+                md_sections.append("```")
+                md_sections.append("")
+
+            # Phase Artifacts
+            phase_artifacts = best_node_data.get("phase_artifacts", {})
+            if phase_artifacts:
+                md_sections.append("### Phase Artifacts")
+                md_sections.append("")
+                for phase_name, artifact in phase_artifacts.items():
+                    md_sections.append(f"#### {phase_name}")
+                    if isinstance(artifact, dict):
+                        for key, value in artifact.items():
+                            if isinstance(value, str) and len(value) > 500:
+                                md_sections.append(f"**{key}**:")
+                                md_sections.append("```")
+                                md_sections.append(value[:2000] + "..." if len(value) > 2000 else value)
+                                md_sections.append("```")
+                            else:
+                                md_sections.append(f"- **{key}**: {value}")
+                    else:
+                        md_sections.append(str(artifact))
+                    md_sections.append("")
+        else:
+            md_sections.append("No best node data available.")
+            md_sections.append("")
+
+        # ===== Section 3: VLM Analysis & Visual Feedback =====
+        md_sections.append("## VLM Analysis & Visual Feedback")
+        md_sections.append("")
+        if best_node_data:
+            # Plot analyses
+            plot_analyses = best_node_data.get("plot_analyses", [])
+            if plot_analyses:
+                md_sections.append("### Plot Analyses")
+                for i, analysis in enumerate(plot_analyses, 1):
+                    md_sections.append(f"#### Analysis {i}")
+                    md_sections.append(analysis)
+                    md_sections.append("")
+
+            # VLM feedback summary
+            vlm_feedback = best_node_data.get("vlm_feedback_summary", [])
+            if vlm_feedback:
+                md_sections.append("### VLM Feedback Summary")
+                for i, feedback in enumerate(vlm_feedback, 1):
+                    md_sections.append(f"{i}. {feedback}")
+                md_sections.append("")
+
+            # Datasets tested
+            datasets_tested = best_node_data.get("datasets_successfully_tested", [])
+            if datasets_tested:
+                md_sections.append("### Datasets Successfully Tested")
+                for dataset in datasets_tested:
+                    md_sections.append(f"- {dataset}")
+                md_sections.append("")
+
+            # Plot paths
+            plot_paths = best_node_data.get("plot_paths", [])
+            if plot_paths:
+                md_sections.append("### Generated Plots")
+                for path in plot_paths:
+                    md_sections.append(f"- `{path}`")
+                md_sections.append("")
+
+            if not (plot_analyses or vlm_feedback or datasets_tested or plot_paths):
+                md_sections.append("No VLM analysis data available.")
+                md_sections.append("")
+        else:
+            md_sections.append("No VLM analysis data available.")
+            md_sections.append("")
+
+        # ===== Section 4: Top Nodes Comparison =====
+        md_sections.append("## Top Nodes Comparison")
+        md_sections.append("")
+        if top_nodes_data:
+            md_sections.append("| Rank | Node ID | Metric | Key Findings |")
+            md_sections.append("|------|---------|--------|--------------|")
+            for i, node in enumerate(top_nodes_data, 1):
+                node_id = node.get("id", "N/A")[:8] + "..."
+                metric_val = node.get("metric", {}).get("value", "N/A")
+                analysis = node.get("analysis", "")[:100] + "..." if len(node.get("analysis", "")) > 100 else node.get("analysis", "N/A")
+                analysis = analysis.replace("\n", " ").replace("|", "/")
+                md_sections.append(f"| {i} | `{node_id}` | {metric_val} | {analysis} |")
+            md_sections.append("")
+
+            # Detailed breakdown for each top node
+            md_sections.append("### Top Nodes Details")
+            md_sections.append("")
+            for i, node in enumerate(top_nodes_data, 1):
+                md_sections.append(f"#### Rank {i}: `{node.get('id', 'N/A')}`")
+                md_sections.append(f"- **Metric**: {node.get('metric', {}).get('value', 'N/A')}")
+                if node.get("plan"):
+                    plan_preview = node["plan"][:500] + "..." if len(node["plan"]) > 500 else node["plan"]
+                    md_sections.append(f"- **Plan**: {plan_preview}")
+                if node.get("analysis"):
+                    md_sections.append(f"- **Analysis**: {node['analysis']}")
+                vlm_summary = node.get("vlm_feedback_summary", [])
+                if vlm_summary:
+                    md_sections.append(f"- **VLM Feedback**: {'; '.join(vlm_summary[:3])}")
+                md_sections.append("")
+        else:
+            md_sections.append("No top nodes data available.")
+            md_sections.append("")
+
+        # ===== Section 5: LLM-Generated Sections (from 3-tier memory) =====
+        md_sections.append("## Memory-Based Analysis")
+        md_sections.append("")
         # Convert section keys to readable headers and add content
         for key, value in sections.items():
-            if key == "resources_used":
-                # Handle resources separately below
+            if key in ("resources_used", "artifacts_index"):
+                # Handle separately
                 continue
 
             # Convert snake_case to Title Case for headers
-            header = " / ".join(word.capitalize() for word in key.replace("_", " ").split())
+            header = " ".join(word.capitalize() for word in key.replace("_", " ").split())
 
-            md_sections.append(f"## {header}")
+            md_sections.append(f"### {header}")
 
             # Handle different value types
             if isinstance(value, str):
                 md_sections.append(value)
             elif isinstance(value, (list, dict)):
                 # For complex types, convert to readable format
+                md_sections.append("```json")
                 md_sections.append(json.dumps(value, indent=2))
+                md_sections.append("```")
             else:
                 md_sections.append(str(value))
 
             md_sections.append("")
 
-        # Add resources section with improved formatting
+        # ===== Section 6: Resources Used =====
         md_sections.append("## Resources Used")
         md_sections.append("")
         if resources_used:
@@ -3796,8 +3952,47 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         else:
             md_sections.append("No explicit resource usage recorded.")
             md_sections.append("")
+
+        # ===== Section 7: Execution Feedback =====
+        md_sections.append("## Execution Feedback")
+        md_sections.append("")
+        if best_node_data and best_node_data.get("exec_time_feedback"):
+            md_sections.append(best_node_data["exec_time_feedback"])
+        else:
+            md_sections.append("No execution time feedback recorded.")
+        md_sections.append("")
+
+        # ===== Section 8: Negative Results & Failures =====
+        md_sections.append("## Negative Results & Lessons Learned")
+        md_sections.append("")
+        if failure_notes:
+            for i, note in enumerate(failure_notes, 1):
+                md_sections.append(f"### Failure {i}")
+                md_sections.append(note)
+                md_sections.append("")
+        else:
+            md_sections.append("No significant failures recorded.")
+            md_sections.append("")
+
+        # ===== Section 9: Provenance =====
+        md_sections.append("## Provenance Chain")
+        md_sections.append("")
+        if provenance:
+            md_sections.append("```")
+            md_sections.append(" -> ".join(provenance))
+            md_sections.append("```")
+        else:
+            md_sections.append("No provenance information available.")
+        md_sections.append("")
+
+        # Write outputs
         md_path = memory_dir / str(_cfg_get(self.config, "final_memory_filename_md", "final_memory_for_paper.md"))
         json_path = memory_dir / str(_cfg_get(self.config, "final_memory_filename_json", "final_memory_for_paper.json"))
+
+        # Add node data to sections for JSON output
+        sections["best_node_data"] = best_node_data
+        sections["top_nodes_data"] = top_nodes_data
+
         md_path.write_text("\n".join(md_sections), encoding="utf-8")
         json_path.write_text(json.dumps(sections, indent=2), encoding="utf-8")
         return sections

@@ -1,0 +1,62 @@
+You are provided with a 3-tier memory system containing all research data. Your task is to autonomously search through this memory and extract relevant information to generate comprehensive paper sections.
+
+## Memory Structure
+
+The memory is organized into three tiers:
+1. **Core Memory**: Key-value pairs of essential context (always-injected information)
+2. **Recall Memory**: Event timeline recording what happened during research
+3. **Archival Memory**: Long-term storage with detailed information (tagged entries)
+
+## Memory Data
+
+{memory_summary}
+
+## Instructions
+
+Analyze the memory data above and generate content for each paper section. You should:
+
+1. **Search Core Memory** for:
+   - phase0_summary (experimental setup)
+   - results, experimental_results (quantitative outcomes)
+   - Any other relevant key-value context
+
+2. **Search Recall Memory** for:
+   - node_created events (method changes)
+   - node_result events (experimental outcomes)
+   - error_encountered events (failures and debugging)
+   - metric_extracted events (performance metrics)
+
+3. **Search Archival Memory** for:
+   - Entries tagged with IDEA_MD or ROOT_IDEA (research idea)
+   - Entries tagged with PHASE0_INTERNAL (detailed setup)
+   - Entries tagged with code:* (implementation details)
+   - Entries tagged with results:* (detailed results)
+   - Any other relevant archived information
+
+## Required Output Sections
+
+Return a JSON object with these keys (use snake_case):
+
+- `title_candidates`: Suggested paper titles based on the research
+- `abstract_material`: Key points for the abstract
+- `problem_statement`: Research problem and motivation
+- `hypothesis`: Research hypothesis being tested
+- `method`: Methodology and approach
+- `experimental_setup`: Hardware, software, and experimental configuration
+- `phase0_internal_info_summary`: Summary of phase 0 planning
+- `results`: Quantitative results and findings
+- `ablations_negative`: Ablation studies and negative results
+- `failure_modes_timeline`: Failures encountered and how they were addressed
+- `threats_to_validity`: Potential threats to the validity of results
+- `reproducibility_checklist`: Steps needed to reproduce the research
+- `narrative_bullets`: Key narrative points for the paper
+
+## Guidelines
+
+- Extract and synthesize ALL relevant information from the memory
+- Do NOT limit the length of any section - include all relevant details
+- If information is not found in memory, indicate "Not found in memory"
+- Be comprehensive - this is for generating a complete research paper
+- Preserve technical details, metrics, and specific values
+
+Return ONLY a valid JSON object, no additional text or markdown formatting.

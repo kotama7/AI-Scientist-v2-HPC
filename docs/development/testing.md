@@ -8,10 +8,7 @@ by feature area so you can target the parts you changed.
 ```bash
 python -m unittest tests/test_smoke_split.py
 python -m unittest tests/test_resource.py
-python -m unittest tests/test_resource_memory.py
 python -m unittest tests/test_memgpt_branch_inheritance.py
-python -m unittest tests/test_phase0_internal_persisted.py
-python -m unittest tests/test_idea_md_persisted_and_injected.py
 python -m unittest tests/test_final_memory_generation.py
 python -m unittest tests/test_worker_parallelism.py
 python -m unittest tests/test_llm_compression.py
@@ -23,10 +20,7 @@ python -m unittest tests/test_writeup_memory_loading.py
 
 - `test_smoke_split`: split-mode smoke test.
 - `test_resource`: resource file validation and staging.
-- `test_resource_memory`: resource snapshots in memory.
 - `test_memgpt_branch_inheritance`: memory behavior across branches.
-- `test_phase0_internal_persisted`: Phase 0 persistence hooks.
-- `test_idea_md_persisted_and_injected`: idea memory injection.
 - `test_final_memory_generation`: final memory artifacts.
 - `test_worker_parallelism`: worker count and GPU assignment.
 - `test_llm_compression`: LLM-based memory compression.

@@ -27,10 +27,6 @@ from .utils.config import load_task_desc, prep_agent_workspace, load_cfg
 from .utils.run_io import save_run
 from .agent_manager import AgentManager
 from ai_scientist.memory import MemoryManager
-from ai_scientist.memory.resource_memory import (
-    build_resource_snapshot,
-    update_resource_snapshot_if_changed,
-)
 from pathlib import Path
 from .agent_manager import Stage
 from .log_summarization import overall_summarize
@@ -81,34 +77,47 @@ def perform_experiments_bfts(config_path: str):
     memory_cfg = getattr(cfg, "memory", None)
     memory_manager = None
     root_branch_id = None
-    if memory_cfg and getattr(memory_cfg, "enabled", False):
-        run_dir = Path(cfg.workspace_dir)
-        memory_dir = run_dir / "memory"
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        if not getattr(memory_cfg, "run_id", None):
-            memory_cfg.run_id = run_dir.name
-        memory_cfg.workspace_root = str(run_dir)
-        memory_cfg.ai_scientist_root = os.environ.get("AI_SCIENTIST_ROOT")
-        memory_cfg.phase_mode = getattr(cfg.exec, "phase_mode", "single")
-        memory_cfg.memory_log_dir = str(Path(cfg.log_dir) / "memory")
-        db_path = (
-            Path(memory_cfg.db_path)
-            if getattr(memory_cfg, "db_path", None)
-            else memory_dir / "memory.sqlite"
-        )
-        memory_cfg.db_path = str(db_path)
-        memory_manager = MemoryManager(db_path, memory_cfg)
-        root_branch_id = getattr(memory_cfg, "root_branch_id", None)
-        if not root_branch_id:
-            root_branch_id = uuid.uuid4().hex
-            memory_manager.mem_node_fork(None, root_branch_id)
-            memory_manager.update_branch_node_uid(root_branch_id, "root")
-            memory_manager.set_root_branch_id(root_branch_id)
-            memory_cfg.root_branch_id = root_branch_id
-        else:
-            memory_manager.set_root_branch_id(root_branch_id)
-        # NOTE: idea_md and resource snapshot are written to child branches only,
-        # not to the virtual root branch (to keep root branch memory-free)
+    memory_enabled = memory_cfg and getattr(memory_cfg, "enabled", False)
+    logger.info(f"Memory config: enabled={memory_enabled}, memory_cfg={memory_cfg is not None}")
+    if memory_enabled:
+        try:
+            run_dir = Path(cfg.workspace_dir)
+            memory_dir = run_dir / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created memory directory: {memory_dir}")
+            if not getattr(memory_cfg, "run_id", None):
+                memory_cfg.run_id = run_dir.name
+            memory_cfg.workspace_root = str(run_dir)
+            memory_cfg.ai_scientist_root = os.environ.get("AI_SCIENTIST_ROOT")
+            memory_cfg.phase_mode = getattr(cfg.exec, "phase_mode", "single")
+            memory_cfg.memory_log_dir = str(Path(cfg.log_dir) / "memory")
+            db_path = (
+                Path(memory_cfg.db_path)
+                if getattr(memory_cfg, "db_path", None)
+                else memory_dir / "memory.sqlite"
+            )
+            memory_cfg.db_path = str(db_path)
+            logger.info(f"Initializing MemoryManager with db_path={db_path}")
+            memory_manager = MemoryManager(db_path, memory_cfg)
+            root_branch_id = getattr(memory_cfg, "root_branch_id", None)
+            if not root_branch_id:
+                root_branch_id = uuid.uuid4().hex
+                memory_manager.mem_node_fork(None, root_branch_id)
+                memory_manager.update_branch_node_uid(root_branch_id, "root")
+                memory_manager.set_root_branch_id(root_branch_id)
+                memory_cfg.root_branch_id = root_branch_id
+                logger.info(f"Created root branch: {root_branch_id}")
+            else:
+                memory_manager.set_root_branch_id(root_branch_id)
+                logger.info(f"Using existing root branch: {root_branch_id}")
+            # NOTE: idea_md and resource snapshot are written to child branches only,
+            # not to the virtual root branch (to keep root branch memory-free)
+            print(f"[Memory] Initialized: db_path={db_path}, root_branch_id={root_branch_id}")
+        except Exception as exc:
+            logger.error(f"Failed to initialize memory: {exc}", exc_info=True)
+            print(f"[Memory] ERROR: Failed to initialize memory: {exc}")
+            memory_manager = None
+            root_branch_id = None
 
     def cleanup():
         if global_step == 0:
@@ -123,6 +132,13 @@ def perform_experiments_bfts(config_path: str):
         memory_manager=memory_manager,
         root_branch_id=root_branch_id,
     )
+
+    # Verify memory config is properly set before workers start
+    if memory_cfg:
+        print(f"[Memory] Config after AgentManager creation: "
+              f"enabled={getattr(memory_cfg, 'enabled', None)}, "
+              f"db_path={getattr(memory_cfg, 'db_path', None)}, "
+              f"root_branch_id={getattr(memory_cfg, 'root_branch_id', None)}")
 
     prog = Progress(
         TextColumn("[progress.description]{task.description}"),
@@ -211,6 +227,7 @@ def perform_experiments_bfts(config_path: str):
                         "ts": _time.time(),
                         "run_id": getattr(memory_manager, "run_id", ""),
                         "node_id": branch_id,
+                        "branch_id": branch_id,
                         "phase": stage.name,
                         "kind": "stage_summary",
                         "summary": summary_text,
@@ -309,10 +326,65 @@ def perform_experiments_bfts(config_path: str):
                         continue
                     if best_node is None or node.metric > best_node.metric:
                         best_node = node
+
+            # Collect top N nodes for comprehensive paper generation
+            top_nodes = []
+            for journal in manager.journals.values():
+                for node in journal.nodes:
+                    if node.is_buggy:
+                        continue
+                    if node.metric is None:
+                        continue
+                    top_nodes.append(node)
+            # Sort by metric (descending) and take top 5
+            top_nodes.sort(key=lambda n: n.metric.value if n.metric else 0, reverse=True)
+            top_nodes = top_nodes[:5]
+
+            # Extract comprehensive node data for paper generation
+            best_node_data = None
+            if best_node:
+                best_node_data = {
+                    "id": best_node.id,
+                    "branch_id": best_node.branch_id,
+                    "plan": best_node.plan or "",
+                    "overall_plan": best_node.overall_plan or "",
+                    "code": best_node.code or "",
+                    "phase_artifacts": best_node.phase_artifacts or {},
+                    "analysis": best_node.analysis or "",
+                    "metric": {
+                        "value": best_node.metric.value if best_node.metric else None,
+                        "name": getattr(best_node.metric, "name", "") if best_node.metric else "",
+                    },
+                    "exp_results_dir": best_node.exp_results_dir or "",
+                    "plot_analyses": best_node.plot_analyses or [],
+                    "vlm_feedback_summary": best_node.vlm_feedback_summary or [],
+                    "datasets_successfully_tested": best_node.datasets_successfully_tested or [],
+                    "plot_paths": best_node.plot_paths or [],
+                    "exec_time_feedback": best_node.exec_time_feedback or "",
+                    "workspace_path": best_node.workspace_path or "",
+                }
+
+            # Extract data from top N nodes for comparative analysis
+            top_nodes_data = []
+            for node in top_nodes:
+                top_nodes_data.append({
+                    "id": node.id,
+                    "branch_id": node.branch_id,
+                    "plan": node.plan or "",
+                    "metric": {
+                        "value": node.metric.value if node.metric else None,
+                        "name": getattr(node.metric, "name", "") if node.metric else "",
+                    },
+                    "analysis": node.analysis or "",
+                    "vlm_feedback_summary": node.vlm_feedback_summary or [],
+                })
+
             artifacts_index = {
                 "log_dir": str(cfg.log_dir),
                 "workspace_dir": str(cfg.workspace_dir),
                 "best_node_id": getattr(best_node, "id", None),
+                "best_node_data": best_node_data,
+                "top_nodes_data": top_nodes_data,
             }
             try:
                 memory_manager.generate_final_memory_for_paper(
