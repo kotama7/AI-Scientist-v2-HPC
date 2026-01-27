@@ -1,0 +1,15 @@
+Analyze the following memory data and generate optimal search keywords to extract information for the paper section "{section_title}".
+
+Section description: {section_focus}
+
+Memory Sample:
+{memory_sample}
+
+Requirements:
+- Generate 5-15 keywords that are likely to appear in the memory
+- Include both general terms and specific technical terms
+- Include synonyms and abbreviations (e.g., "OpenMP" and "omp")
+- Focus on terms that actually exist in the memory sample
+- Prioritize keywords that match the section's focus
+
+Return a JSON array: ["keyword1", "keyword2", ...]

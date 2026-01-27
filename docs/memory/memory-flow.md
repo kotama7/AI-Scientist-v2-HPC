@@ -128,6 +128,115 @@ When `_inject_memory()` is called, it adds a "Memory" section to the prompt cont
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Phase 1 Iterative Memory Flow
+
+Phase 1 (download/install) is unique because it runs as a multi-iteration loop with
+command execution between LLM calls. Each iteration can have its own memory operations.
+
+**Prompt Selection:**
+
+```python
+# parallel_agent.py (Phase 1 prompt selection)
+phase1_intro = PHASE1_ITERATIVE_INSTALLER_PROMPT
+if memory_cfg and getattr(memory_cfg, "enabled", False):
+    phase1_intro = PHASE1_ITERATIVE_INSTALLER_PROMPT_WITH_MEMORY
+```
+
+| `memory.enabled` | Prompt File |
+|------------------|-------------|
+| `true` (default) | `prompt/config/phases/phase1_installer_with_memory.txt` |
+| `false` | `prompt/config/phases/phase1_installer.txt` |
+
+**Iteration Flow with Memory:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    PHASE 1 ITERATIVE FLOW (memory.enabled=true)                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Iteration 1                                                                     │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ 1. Build prompt: Introduction + Task + Phase0 guidance + History + Memory  │ │
+│  │ 2. LLM Query → <memory_update> + JSON {command, done, notes}               │ │
+│  │ 3. Apply memory updates (writes immediately, reads trigger re-query)       │ │
+│  │ 4. Parse JSON → Execute command in container                               │ │
+│  │ 5. Record result to history                                                │ │
+│  │ 6. Check done flag → false, continue                                       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                                   │
+│                              ▼                                                   │
+│  Iteration 2                                                                     │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ History now includes: step 1 command, exit_code, stdout/stderr summary     │ │
+│  │ LLM sees previous results and decides next action                          │ │
+│  │ May use "archival_search" to recall error recovery from earlier runs       │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                              │                                                   │
+│                              ▼                                                   │
+│  ... (up to phase1_max_steps iterations)                                         │
+│                              │                                                   │
+│                              ▼                                                   │
+│  Final Iteration (done=true)                                                     │
+│  ┌────────────────────────────────────────────────────────────────────────────┐ │
+│  │ LLM returns: {"command": "", "done": true, "notes": "All deps installed"}  │ │
+│  │ Memory update: {"core": {"phase1_status": "completed"}, ...}               │ │
+│  │ → Exit Phase 1 loop                                                        │ │
+│  └────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Memory Operations in Phase 1:**
+
+| Operation | Purpose | Example |
+|-----------|---------|---------|
+| **Write to Core** | Track installation state | `"core": {"numpy_version": "1.24.0"}` |
+| **Write to Archival** | Log details for future reference | `"archival": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` |
+| **Read from Core** | Check previous installation state | `"core_get": ["python_deps_path"]` |
+| **Search Archival** | Find error recovery strategies | `"archival_search": {"query": "PHASE1_ERROR", "k": 3}` |
+
+**Read Operation Re-Query (within each iteration):**
+
+```
+LLM Response: <memory_update>{"archival_search": {"query": "...", "k": 3}}</memory_update>
+                          {"command": "pip install numpy", "done": false}
+        │
+        ▼
+apply_llm_memory_updates() → memory_results with read data
+        │
+        ▼
+_has_memory_read_results(memory_results) == True?
+        │
+   ┌────┴────┐
+  Yes       No
+   │         │
+   ▼         ▼
+Re-query   Parse JSON
+  Loop     & Execute
+   │
+   ▼
+_run_memory_update_phase() with max_rounds from cfg.memory.max_memory_read_rounds
+   │
+   ▼
+After read loop completes → Continue to JSON parse & command execution
+```
+
+**Code Location (parallel_agent.py):**
+
+```python
+# Apply memory updates from Phase 1 response if present
+if response_text and worker_agent.memory_manager and child_branch_id:
+    memory_updates = extract_memory_updates(response_text)
+    if memory_updates:
+        memory_results = worker_agent.memory_manager.apply_llm_memory_updates(...)
+
+        # Handle memory read operations with re-query loop
+        if _has_memory_read_results(memory_results):
+            max_rounds = getattr(memory_cfg, "max_memory_read_rounds", 2)
+            if max_rounds > 0:
+                _run_memory_update_phase(...)  # Re-query for read results
+```
+
 ## Multi-Turn Memory Read Flow
 
 When memory is enabled and LLM uses read operations:

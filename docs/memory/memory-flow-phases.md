@@ -135,6 +135,48 @@ a structured JSON response (`phase_artifacts`).
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Phase 2/3/4 Prompt Selection
+
+When `memory.enabled=true`, the system automatically selects memory-enabled prompts
+that include `<memory_update>` instructions and examples.
+
+### Prompt Switching Table
+
+| Task | `memory.enabled=false` | `memory.enabled=true` |
+|------|------------------------|----------------------|
+| **Draft** | `tasks/draft/introduction.txt` | `tasks/draft/introduction_with_memory.txt` |
+| **Debug** | `tasks/debug/introduction.txt` | `tasks/debug/introduction_with_memory.txt` |
+| **Improve** | `tasks/improve/introduction.txt` | `tasks/improve/introduction_with_memory.txt` |
+| **Hyperparam** | `nodes/hyperparam/introduction.txt` | `nodes/hyperparam/introduction_with_memory.txt` |
+| **Ablation** | `nodes/ablation/introduction.txt` | `nodes/ablation/introduction_with_memory.txt` |
+| **Execution Review** | `tasks/execution_review/introduction.txt` | `tasks/execution_review/introduction_with_memory.txt` |
+| **Summary** | `tasks/summary/introduction.txt` | `tasks/summary/introduction_with_memory.txt` |
+| **Parse Metrics** | `tasks/parse_metrics/introduction.txt` | `tasks/parse_metrics/introduction_with_memory.txt` |
+| **VLM Analysis** | `vlm_analysis.txt` | `vlm_analysis_with_memory.txt` |
+
+### Code Implementation
+
+```python
+# Example from _draft() in parallel_agent.py
+def _draft(self) -> Node:
+    # Select prompt based on memory configuration
+    draft_intro = DRAFT_INTRO_WITH_MEMORY if self._is_memory_enabled else DRAFT_INTRO
+    prompt: Any = {
+        "Introduction": draft_intro,
+        "Research idea": self.task_desc,
+        ...
+    }
+```
+
+### Memory-Enabled Prompt Features
+
+Memory-enabled prompts include:
+
+1. **Memory Operations Section**: Instructions for `<memory_update>` blocks
+2. **Write Examples**: How to write to `core` and `archival` memory
+3. **Read Examples**: How to use `core_get` and `archival_search`
+4. **Task-Specific Guidelines**: What information to record for each task type
+
 ## Detailed Flow by Node Type
 
 ### Draft Node (`_generate_draft_prompt`)
@@ -244,6 +286,91 @@ _inject_memory(prompt, "ablation_node", branch_id=node.branch_id)
 ## Phase Execution Details
 
 ### Phase 1: Download/Install
+
+Phase 1 has two modes: **iterative** (default) and **batch**.
+
+#### Iterative Mode (Default)
+
+In iterative mode, Phase 1 runs as a multi-step loop with LLM-driven decision making.
+Each iteration queries the LLM for the next command to execute.
+
+**Function**: `phase1_iterative_driver()` in `parallel_agent.py`
+
+**Prompt Selection**:
+```python
+phase1_intro = PHASE1_ITERATIVE_INSTALLER_PROMPT
+if memory_cfg and getattr(memory_cfg, "enabled", False):
+    phase1_intro = PHASE1_ITERATIVE_INSTALLER_PROMPT_WITH_MEMORY
+```
+
+| `memory.enabled` | Prompt File |
+|------------------|-------------|
+| `true` (default) | `prompt/config/phases/phase1_installer_with_memory.txt` |
+| `false` | `prompt/config/phases/phase1_installer.txt` |
+
+**Iteration Flow**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                 PHASE 1 ITERATIVE LOOP                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  for step_idx in range(phase1_max_steps):                                    │
+│      │                                                                       │
+│      ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Build Prompt:                                                        │    │
+│  │   - Introduction (memory-enabled or standard)                       │    │
+│  │   - Task description                                                 │    │
+│  │   - Phase 0 guidance (targets, preferred_commands, done_conditions) │    │
+│  │   - Progress history (previous step results)                        │    │
+│  │   - Memory context (via _inject_memory())                           │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│      │                                                                       │
+│      ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ LLM Query → Response:                                                │    │
+│  │   <memory_update>                                                    │    │
+│  │   {"core": {"pkg_version": "1.0"}, "archival": [...]}               │    │
+│  │   </memory_update>                                                   │    │
+│  │   {"command": "pip install numpy", "done": false, "notes": "..."}   │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│      │                                                                       │
+│      ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ Memory Processing (if memory.enabled):                               │    │
+│  │   1. extract_memory_updates() - parse <memory_update> block         │    │
+│  │   2. apply_llm_memory_updates() - execute write/read operations     │    │
+│  │   3. If read results exist:                                          │    │
+│  │      - _run_memory_update_phase() - re-query loop                   │    │
+│  │      - up to max_memory_read_rounds iterations                      │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│      │                                                                       │
+│      ▼                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │ parse_phase1_iterative_response() → {command, done, notes}          │    │
+│  │                                                                      │    │
+│  │ if done == true:                                                     │    │
+│  │     break  # Exit loop                                               │    │
+│  │ else:                                                                │    │
+│  │     Execute command in container                                     │    │
+│  │     Record result to history                                         │    │
+│  │     continue  # Next iteration                                       │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**LLM-Driven Memory Operations (per iteration)**:
+
+| Operation | Example | Purpose |
+|-----------|---------|---------|
+| Write Core | `"core": {"numpy_version": "1.24.0"}` | Track installed versions |
+| Write Archival | `"archival": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` | Log installation details |
+| Read Core | `"core_get": ["python_deps_path"]` | Check previous state |
+| Search Archival | `"archival_search": {"query": "PHASE1_ERROR", "k": 3}` | Find error recovery strategies |
+
+#### Batch Mode (Legacy)
 
 **Function**: `run_commands_with_logging()`
 

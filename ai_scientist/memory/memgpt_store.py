@@ -180,6 +180,8 @@ PAPER_SECTION_OUTLINE_NAME = "config/memory/paper_section_outline"
 PAPER_SECTION_OUTLINE_SYSTEM_MESSAGE_NAME = "config/memory/paper_section_outline_system_message"
 PAPER_SECTION_FILL_NAME = "config/memory/paper_section_fill"
 PAPER_SECTION_FILL_SYSTEM_MESSAGE_NAME = "config/memory/paper_section_fill_system_message"
+KEYWORD_EXTRACTION_NAME = "config/memory/keyword_extraction"
+KEYWORD_EXTRACTION_SYSTEM_MESSAGE_NAME = "config/memory/keyword_extraction_system_message"
 
 
 def _try_load_prompt(name: str, description: str = "prompt") -> str | None:
@@ -3992,12 +3994,16 @@ Guidelines:
             # Sample memory to avoid overwhelming the LLM
             memory_sample = self._sample_memory_for_keyword_generation(memory_context)
 
-            prompt = f"""Analyze the following memory data and generate optimal search keywords to extract information for the paper section "{section.get('title', '')}".
+            # Load prompt template from file
+            prompt_template = _try_load_prompt(KEYWORD_EXTRACTION_NAME, "keyword extraction prompt")
+            if prompt_template is None:
+                # Fallback to hardcoded prompt
+                prompt_template = """Analyze the following memory data and generate optimal search keywords to extract information for the paper section "{section_title}".
 
-Section description: {section.get('focus', '')}
+Section description: {section_focus}
 
 Memory Sample:
-{json.dumps(memory_sample, indent=2, ensure_ascii=False)}
+{memory_sample}
 
 Requirements:
 - Generate 5-15 keywords that are likely to appear in the memory
@@ -4008,11 +4014,21 @@ Requirements:
 
 Return a JSON array: ["keyword1", "keyword2", ...]"""
 
+            prompt = prompt_template.format(
+                section_title=section.get('title', ''),
+                section_focus=section.get('focus', ''),
+                memory_sample=json.dumps(memory_sample, indent=2, ensure_ascii=False),
+            )
+
+            system_message = _try_load_prompt(KEYWORD_EXTRACTION_SYSTEM_MESSAGE_NAME, "keyword extraction system message")
+            if system_message is None:
+                system_message = "You are a keyword extraction assistant. Generate search keywords in JSON array format."
+
             response, _ = get_response_from_llm(
                 prompt=prompt,
                 client=self._compression_client,
                 model=self._compression_model_name,
-                system_message="You are a keyword extraction assistant. Generate search keywords in JSON array format.",
+                system_message=system_message.strip(),
                 temperature=0.3,
             )
 

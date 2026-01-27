@@ -23,7 +23,7 @@ exec:
   # コンテナ内のワークスペースマウントポイント
   workspace_mount: /workspace
   # Phase 1の最大ステップ数
-  phase1_max_steps: 12
+  phase1_max_steps: 100
   # プロンプトのログ記録を有効化
   log_prompts: true
   # 各コード実行のタイムアウト時間（秒）
@@ -71,7 +71,7 @@ memory:
   datasets_tested_budget_chars: 8000
   metrics_extraction_budget_chars: 12000
   plotting_code_budget_chars: 8000
-  plot_selection_budget_chars: 4000
+  plot_selection_budget_chars: 8000
   vlm_analysis_budget_chars: 12000
   node_summary_budget_chars: 8000
   parse_metrics_budget_chars: 12000

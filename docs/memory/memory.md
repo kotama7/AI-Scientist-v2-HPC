@@ -103,7 +103,7 @@ memory:
   `PHASE0_INTERNAL`) and summarized into Core.
 - `idea.md` is archived at run start (tags `IDEA_MD`, `ROOT_IDEA`) and on updates
   per node; a short summary is always injected.
-- Run end generates `experiments/<run>/memory/final_memory-for-paper.md|json`.
+- Run end generates `experiments/<run>/memory/final_memory_for_paper.md|json`.
 
 ## Phase 1-4 Memory Operations
 
@@ -153,6 +153,162 @@ These split-phase events enable:
 - Tracking which phase caused issues
 - Learning from compilation/runtime errors
 - Optimizing build configurations across nodes
+
+### Phase 1 Iterative Memory Operations
+
+Phase 1 (download/install) runs as an iterative loop with LLM-driven memory operations.
+When `memory.enabled=true`, the system uses `phase1_installer_with_memory.txt` prompt
+which supports full `<memory_update>` blocks including read operations.
+
+**Execution Flow per Iteration:**
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    PHASE 1 ITERATION N                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. Prompt Assembly                                                          │
+│     ├─ Introduction (phase1_installer_with_memory.txt)                       │
+│     ├─ Task description                                                      │
+│     ├─ Phase 0 guidance (targets, preferred_commands, done_conditions)       │
+│     ├─ Progress history (previous steps + results)                           │
+│     └─ Memory injection via _inject_memory()                                 │
+│                                                                              │
+│  2. LLM Query                                                                │
+│     └─ Returns: <memory_update> block + JSON command                         │
+│                                                                              │
+│  3. Memory Update Processing                                                 │
+│     ├─ extract_memory_updates() parses <memory_update>                       │
+│     └─ apply_llm_memory_updates() processes operations:                      │
+│                                                                              │
+│         Write Operations (immediate):                                        │
+│         ├─ "core": {"key": "value"} → Core memory                            │
+│         ├─ "archival": [{...}] → Archival with tags                          │
+│         └─ "recall": {...} → Recall timeline                                 │
+│                                                                              │
+│         Read Operations (trigger re-query):                                  │
+│         ├─ "core_get": ["key1", "key2"]                                      │
+│         ├─ "archival_search": {"query": "...", "k": N}                       │
+│         └─ "recall_search": {"query": "...", "k": N}                         │
+│                                                                              │
+│  4. Read Operation Re-Query Loop (if read results exist)                     │
+│     ├─ _has_memory_read_results() checks for read results                    │
+│     ├─ _format_memory_results_for_llm() formats results                      │
+│     ├─ Inject "Memory Read Results" section into prompt                      │
+│     └─ _run_memory_update_phase() re-queries up to max_memory_read_rounds    │
+│                                                                              │
+│  5. JSON Parse & Command Execution                                           │
+│     ├─ parse_phase1_iterative_response() extracts {command, done, notes}     │
+│     └─ Execute command in Singularity container                              │
+│                                                                              │
+│  6. Loop Control                                                             │
+│     ├─ If done=true → Exit Phase 1                                           │
+│     └─ If done=false → Proceed to Iteration N+1                              │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Prompt Selection Logic (parallel_agent.py):**
+
+```python
+phase1_intro = PHASE1_ITERATIVE_INSTALLER_PROMPT
+if memory_cfg and getattr(memory_cfg, "enabled", False):
+    phase1_intro = PHASE1_ITERATIVE_INSTALLER_PROMPT_WITH_MEMORY
+```
+
+| `memory.enabled` | Prompt File |
+|------------------|-------------|
+| `true` (default) | `prompt/config/phases/phase1_installer_with_memory.txt` |
+| `false` | `prompt/config/phases/phase1_installer.txt` |
+
+**Common Phase 1 Memory Operations:**
+
+| Use Case | Memory Operation | Tags |
+|----------|------------------|------|
+| Record package version | `"core": {"numpy_version": "1.24.0"}` | - |
+| Record git commit SHA | `"core": {"cnpy_commit": "abc1234"}` | - |
+| Log installation details | `"archival": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` | `PHASE1_INSTALL` |
+| Log error recovery | `"archival": [{"text": "...", "tags": ["PHASE1_ERROR"]}]` | `PHASE1_ERROR` |
+| Record build config | `"archival": [{"text": "...", "tags": ["BUILD_CONFIG"]}]` | `BUILD_CONFIG` |
+| Retrieve previous error | `"archival_search": {"query": "PHASE1_ERROR", "k": 3}` | - |
+| Check installed packages | `"core_get": ["numpy_version", "python_deps_path"]` | - |
+
+**Read Operation Flow:**
+
+```
+LLM Response with read operation
+         │
+         v
+apply_llm_memory_updates()
+         │
+         ├─ Execute writes (core, archival, recall)
+         │
+         └─ Execute reads (core_get, archival_search, recall_search)
+                  │
+                  v
+         Return memory_results
+                  │
+                  v
+_has_memory_read_results(memory_results)?
+         │
+    ┌────┴────┐
+   Yes       No
+    │         │
+    v         v
+Re-query   Continue to
+  Loop     JSON parse
+    │
+    v
+Format results → Inject "Memory Read Results" → LLM Query
+         │
+         └─ Repeat up to max_memory_read_rounds times
+```
+
+### Phase 2/3/4 Memory-Enabled Prompts
+
+Similar to Phase 1, all Phase 2/3/4 tasks use memory-enabled prompts when `memory.enabled=true`.
+These prompts include `<memory_update>` instructions specific to each task type.
+
+**Prompt Selection Table:**
+
+| Task | `memory.enabled=false` | `memory.enabled=true` |
+|------|------------------------|----------------------|
+| **Draft** | `tasks/draft/introduction.txt` | `tasks/draft/introduction_with_memory.txt` |
+| **Debug** | `tasks/debug/introduction.txt` | `tasks/debug/introduction_with_memory.txt` |
+| **Improve** | `tasks/improve/introduction.txt` | `tasks/improve/introduction_with_memory.txt` |
+| **Hyperparam** | `nodes/hyperparam/introduction.txt` | `nodes/hyperparam/introduction_with_memory.txt` |
+| **Ablation** | `nodes/ablation/introduction.txt` | `nodes/ablation/introduction_with_memory.txt` |
+| **Execution Review** | `tasks/execution_review/introduction.txt` | `tasks/execution_review/introduction_with_memory.txt` |
+| **Summary** | `tasks/summary/introduction.txt` | `tasks/summary/introduction_with_memory.txt` |
+| **Parse Metrics** | `tasks/parse_metrics/introduction.txt` | `tasks/parse_metrics/introduction_with_memory.txt` |
+| **VLM Analysis** | `vlm_analysis.txt` | `vlm_analysis_with_memory.txt` |
+
+**Code Pattern (parallel_agent.py):**
+
+```python
+def _draft(self) -> Node:
+    # Select prompt based on memory configuration
+    draft_intro = DRAFT_INTRO_WITH_MEMORY if self._is_memory_enabled else DRAFT_INTRO
+    prompt: Any = {
+        "Introduction": draft_intro,
+        ...
+    }
+```
+
+**Task-Specific Memory Guidelines:**
+
+Each memory-enabled prompt includes task-specific guidelines:
+
+| Task | Core Keys | Archival Tags |
+|------|-----------|---------------|
+| Draft | `algorithm_approach`, `baseline_method` | `PHASE2_DRAFT`, `BASELINE` |
+| Debug | `last_bug_type`, `common_pitfalls` | `PHASE2_DEBUG`, `BUG_FIX` |
+| Improve | `improvement_count`, `best_metric_achieved` | `PHASE2_IMPROVE`, `OPTIMIZATION` |
+| Hyperparam | `tuning_method`, `best_params` | `HYPERPARAM`, `TUNING_RESULTS` |
+| Ablation | `critical_components`, `removable_components` | `ABLATION`, `COMPONENT_ANALYSIS` |
+| Summary | `iteration_number`, `key_metric` | `SUMMARY`, `ITERATION_N` |
+| VLM Analysis | `plots_analyzed`, `main_finding` | `VLM_ANALYSIS`, `PLOT_INSIGHTS` |
+| Metrics | `datasets_parsed`, `metric_names` | `METRICS_PARSE`, `RESULTS` |
 
 ### Metrics & Summary events
 
@@ -256,28 +412,27 @@ that align with the stated research goals.
 
 ### Section budgets
 
-Section budgets control per-section character limits. Configure via
-`memory.section_budgets.<key>` in `bfts_config.yaml`:
-
-| Section | Default chars | Purpose |
-| --- | --- | --- |
-| `idea_summary` | 9600 | Compressed research idea |
-| `idea_section_limit` | 4800 | Per-section limit for idea summary bullets |
-| `phase0_summary` | 5000 | Phase 0 configuration summary |
-| `archival_snippet` | 3000 | Archival memory excerpts |
-| `results` | 4000 | Result summaries |
-
-Additional per-section budget keys (configure directly under `memory`):
+Section budgets control per-section character limits. Configure directly under
+`memory` in `bfts_config.yaml` (flat structure):
 
 | Key | Default chars | Purpose |
 | --- | --- | --- |
-| `datasets_tested_budget_chars` | 4000 | Tested datasets summary |
-| `metrics_extraction_budget_chars` | 4000 | Metrics extraction |
-| `plotting_code_budget_chars` | 4000 | Plotting code summary |
+| `datasets_tested_budget_chars` | 8000 | Tested datasets summary |
+| `metrics_extraction_budget_chars` | 12000 | Metrics extraction |
+| `plotting_code_budget_chars` | 8000 | Plotting code summary |
 | `plot_selection_budget_chars` | 4000 | Plot selection summary |
-| `vlm_analysis_budget_chars` | 4000 | VLM analysis summary |
-| `node_summary_budget_chars` | 4000 | Node summaries |
-| `parse_metrics_budget_chars` | 4000 | Parsed metrics |
+| `vlm_analysis_budget_chars` | 12000 | VLM analysis summary |
+| `node_summary_budget_chars` | 8000 | Node summaries |
+| `parse_metrics_budget_chars` | 12000 | Parsed metrics |
+| `archival_snippet_budget_chars` | 12000 | Archival memory excerpts |
+| `results_budget_chars` | 12000 | Result summaries |
+
+Additional settings:
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `paper_section_mode` | `idea_then_memory` | Section generation mode (`memory_summary` or `idea_then_memory`) |
+| `paper_section_count` | 12 | Number of sections to generate for `idea_then_memory` mode |
+| `max_compression_iterations` | 5 | Maximum iterative compression attempts |
 
 The overall budget is controlled by `memory.memory_budget_chars` (default 24000).
 

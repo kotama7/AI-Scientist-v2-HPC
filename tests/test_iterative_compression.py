@@ -41,17 +41,19 @@ class TestIterativeCompression(unittest.TestCase):
         """Test that compression eventually truncates if it never fits."""
         max_chars = 10
         iters = 2
-        
+
         # Mock LLM behavior: always returns too long
         mock_client = MagicMock()
         mock_model = "gpt-model"
-        
+
         with patch("ai_scientist.llm.get_response_from_llm") as mock_get_response:
+            # First iteration: returns shorter than input but still too long
+            # Second iteration: returns same length or longer, triggers safety break
             mock_get_response.side_effect = [
-                ("A" * 20, None), 
-                ("B" * 20, None), 
+                ("A" * 20, None),  # Iter 1: shorter than original but > max_chars
+                ("B" * 20, None),  # Iter 2: same length as previous, safety break triggers
             ]
-            
+
             result = _compress_with_llm(
                 text="Initial text that is definitely longer than twenty characters",
                 max_chars=max_chars,
@@ -61,14 +63,12 @@ class TestIterativeCompression(unittest.TestCase):
                 max_iterations=iters,
                 use_cache=False
             )
-            
-            # Should fall back to truncation of the last result ("B" * 20) -> "B" * 10
-            # Wait, implementing checks: if len(compressed) > max_chars, it tries next iter.
-            # After max_iters loop finishes, "current_text" is the last response.
-            # Then we verify if len(current_text) > max_chars -> truncate.
-            # So expected is truncated last response.
-            # _truncate adds "..." if truncated. max_chars=10 -> 7 chars + "..."
-            expected = "B" * 7 + "..."
+
+            # The safety check breaks when LLM returns text >= current length AND > max_chars.
+            # In iter 2: len("B"*20) >= len("A"*20) AND len("B"*20) > 10, so it breaks
+            # BEFORE assigning "B"*20 to current_text. So current_text remains "A"*20.
+            # Final truncation happens on "A"*20 -> "A"*7 + "..."
+            expected = "A" * 7 + "..."
             self.assertEqual(result, expected)
             self.assertEqual(mock_get_response.call_count, 2)
 

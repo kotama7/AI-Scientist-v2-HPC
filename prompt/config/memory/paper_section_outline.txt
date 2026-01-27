@@ -1,0 +1,16 @@
+You are given a research idea. Propose exactly {section_count} paper sections that would be necessary to write the paper.
+
+Idea:
+{idea_text}
+
+Return a JSON array of objects. Each object must have:
+- key: snake_case identifier
+- title: human-readable section title
+- focus: 1-2 sentence description of what the section should cover
+- keywords: array of search keywords/phrases to retrieve memory
+
+Requirements:
+- Exactly {section_count} sections
+- Include at least 'experimental_setup' and 'results'
+- Avoid duplicates
+- Return ONLY valid JSON (no markdown fences)

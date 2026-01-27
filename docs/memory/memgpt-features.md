@@ -130,12 +130,19 @@ memory:
   use_llm_compression: true
   compression_model: gpt-5.2
   memory_budget_chars: 24000
-  section_budgets:
-    idea_summary: 9600
-    idea_section_limit: 4800
-    phase0_summary: 5000
-    archival_snippet: 3000
-    results: 4000
+  paper_section_mode: idea_then_memory  # memory_summary | idea_then_memory
+  paper_section_count: 12
+  max_compression_iterations: 5
+  # Per-section character budgets (flat keys under memory)
+  datasets_tested_budget_chars: 8000
+  metrics_extraction_budget_chars: 12000
+  plotting_code_budget_chars: 8000
+  plot_selection_budget_chars: 4000
+  vlm_analysis_budget_chars: 12000
+  node_summary_budget_chars: 8000
+  parse_metrics_budget_chars: 12000
+  archival_snippet_budget_chars: 12000
+  results_budget_chars: 12000
 ```
 
 ### Compression Flow
@@ -248,7 +255,7 @@ SQLite database at `experiments/<run>/memory/memory.sqlite`:
 ### Output Files
 
 End-of-run memory exports:
-- `experiments/<run>/memory/final_memory-for-paper.md`: Human-readable summary
+- `experiments/<run>/memory/final_memory_for_paper.md`: Human-readable summary
 - `experiments/<run>/memory/final_memory_for_paper.json`: Structured JSON
 - `experiments/<run>/memory/resource_snapshot.json`: Resource tracking data
 
@@ -259,20 +266,16 @@ Full memory configuration in `bfts_config.yaml`:
 ```yaml
 memory:
   # Core settings
-  enabled: true
-  db_path: null                    # Auto: experiments/<run>/memory/memory.sqlite
+  enabled: true                     # Memory is ENABLED by default
+  db_path: null                     # Auto: experiments/<run>/memory/memory.sqlite
   core_max_chars: 16000
   recall_max_events: 20
   retrieval_k: 8
-  use_fts: auto                    # auto/true/false
+  use_fts: auto                     # auto/true/false
 
   # Persistence toggles
-  persist_phase0_internal: true
-  always_inject_phase0_summary: true
-  persist_idea_md: true
-  always_inject_idea_summary: true
   final_memory_enabled: true
-  final_memory_filename_md: final_memory-for-paper.md
+  final_memory_filename_md: final_memory_for_paper.md
   final_memory_filename_json: final_memory_for_paper.json
   redact_secrets: true
 
@@ -280,27 +283,42 @@ memory:
   use_llm_compression: true
   compression_model: gpt-5.2
   memory_budget_chars: 24000
+  paper_section_mode: idea_then_memory  # memory_summary | idea_then_memory
+  paper_section_count: 12
+  max_compression_iterations: 5
 
-  # Section budgets
-  datasets_tested_budget_chars: 4000
-  metrics_extraction_budget_chars: 4000
-  plotting_code_budget_chars: 4000
+  # Section budgets (flat keys under memory)
+  datasets_tested_budget_chars: 8000
+  metrics_extraction_budget_chars: 12000
+  plotting_code_budget_chars: 8000
   plot_selection_budget_chars: 4000
-  vlm_analysis_budget_chars: 4000
-  node_summary_budget_chars: 4000
-  parse_metrics_budget_chars: 4000
+  vlm_analysis_budget_chars: 12000
+  node_summary_budget_chars: 8000
+  parse_metrics_budget_chars: 12000
+  archival_snippet_budget_chars: 12000
+  results_budget_chars: 12000
 
-  section_budgets:
-    idea_summary: 9600
-    idea_section_limit: 4800
-    phase0_summary: 5000
-    archival_snippet: 3000
-    results: 4000
+  # Writeup memory limits
+  writeup_recall_limit: 10
+  writeup_archival_limit: 10
+  writeup_core_value_max_chars: 5000
+  writeup_recall_text_max_chars: 5000
+  writeup_archival_text_max_chars: 5000
 
   # Logging
   memory_log_enabled: true
   memory_log_dir: null              # Auto: experiments/<run>/memory/
   memory_log_max_chars: 1600
+
+  # Memory Pressure Management
+  auto_consolidate: true
+  consolidation_trigger: high
+  recall_consolidation_threshold: 1.5
+  max_memory_read_rounds: 3
+  pressure_thresholds:
+    medium: 0.7
+    high: 0.85
+    critical: 0.95
 ```
 
 ## CLI Flags

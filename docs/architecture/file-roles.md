@@ -85,16 +85,24 @@ HPC-AutoResearch project.
 | `interpreter.py` | Code interpreter for executing generated Python/C++ code in isolation. |
 | `bfts_utils.py` | Utility functions for BFTS operations (idea to markdown, config editing). |
 | `worker_plan.py` | Worker planning utilities for parallel execution. |
-| `worker.py` | Worker management classes (`WorkerTask`, `WorkerResult`, `WorkerManager`) for parallel experiment execution. Handles task distribution and result collection. |
 | `gpu.py` | GPU management (`GPUManager`, `parse_cuda_visible_devices`). Handles GPU allocation and CUDA environment configuration. |
 | `ablation.py` | Ablation study configuration classes (`AblationConfig`, `AblationIdea`, `HyperparamTuningIdea`). Defines ablation and hyperparameter tuning experiments. |
-| `backend.py` | LLM backend interface. Provides `query()` function for LLM calls and `FunctionSpec` for structured output. |
+
+### treesearch/worker/
+
+| File | Role |
+|------|------|
+| `__init__.py` | Exports worker classes (`WorkerTask`, `WorkerResult`, `WorkerManager`). |
+| `manager.py` | Worker management implementation for parallel experiment execution. Handles task distribution and result collection. |
 
 ### treesearch/backend/
 
 | File | Role |
 |------|------|
-| Backend implementations for different execution environments (Singularity, local). |
+| `__init__.py` | LLM backend interface. Exports `query()` function and `FunctionSpec` class for structured LLM calls. |
+| `backend_openai.py` | OpenAI backend implementation. |
+| `backend_anthropic.py` | Anthropic backend implementation. |
+| `utils.py` | Backend utility functions. |
 
 ### treesearch/utils/
 

@@ -181,6 +181,9 @@ DOMAIN_NEUTRAL_PROMPT = load_prompt("core/domain_neutral").rstrip("\n")
 ENVIRONMENT_INJECTION_TEMPLATE = load_prompt("config/environment/injection").rstrip("\n")
 AI_OPTIONAL_PROMPT = load_prompt("core/ai_optional").rstrip("\n")
 PHASE1_ITERATIVE_INSTALLER_PROMPT = load_prompt("config/phases/phase1_installer").rstrip("\n")
+PHASE1_ITERATIVE_INSTALLER_PROMPT_WITH_MEMORY = load_prompt(
+    "config/phases/phase1_installer_with_memory"
+).rstrip("\n")
 PHASE0_WHOLE_PLANNING_PROMPT = load_prompt("config/phases/phase0_planning").rstrip("\n")
 PHASE0_WHOLE_PLANNING_PROMPT_WITH_MEMORY = load_prompt(
     "config/phases/phase0_planning_with_memory"
@@ -219,19 +222,31 @@ RESPONSE_FORMAT_ABLATION = load_prompt(
 ).rstrip("\n")
 
 DRAFT_INTRO = load_prompt(PROMPT_BASE + "tasks/draft/introduction").rstrip("\n")
+DRAFT_INTRO_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "tasks/draft/introduction_with_memory"
+).rstrip("\n")
 DRAFT_EXP_GUIDELINES = tuple(
     load_prompt_lines(PROMPT_BASE + "tasks/draft/experiment_design_sketch_guideline")
 )
 
 DEBUG_INTRO = load_prompt(PROMPT_BASE + "tasks/debug/introduction").rstrip("\n")
+DEBUG_INTRO_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "tasks/debug/introduction_with_memory"
+).rstrip("\n")
 DEBUG_BUGFIX_GUIDELINES = tuple(
     load_prompt_lines(PROMPT_BASE + "tasks/debug/bugfix_improvement_sketch_guideline")
 )
 
 IMPROVE_INTRO = load_prompt(PROMPT_BASE + "tasks/improve/introduction").rstrip("\n")
+IMPROVE_INTRO_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "tasks/improve/introduction_with_memory"
+).rstrip("\n")
 
 HYPERPARAM_NODE_INTRO_PREFIX = load_prompt(
     PROMPT_BASE + "nodes/hyperparam/introduction"
+).rstrip("\n")
+HYPERPARAM_NODE_INTRO_PREFIX_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "nodes/hyperparam/introduction_with_memory"
 ).rstrip("\n")
 HYPERPARAM_NODE_INSTRUCTIONS = tuple(
     load_prompt_lines(PROMPT_BASE + "nodes/hyperparam/instructions")
@@ -240,12 +255,18 @@ HYPERPARAM_NODE_INSTRUCTIONS = tuple(
 ABLATION_NODE_INTRO_PREFIX = load_prompt(
     PROMPT_BASE + "nodes/ablation/introduction"
 ).rstrip("\n")
+ABLATION_NODE_INTRO_PREFIX_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "nodes/ablation/introduction_with_memory"
+).rstrip("\n")
 ABLATION_NODE_INSTRUCTIONS = tuple(
     load_prompt_lines(PROMPT_BASE + "nodes/ablation/instructions")
 )
 
 EXECUTION_REVIEW_INTRO = load_prompt(
     PROMPT_BASE + "tasks/execution_review/introduction"
+).rstrip("\n")
+EXECUTION_REVIEW_INTRO_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "tasks/execution_review/introduction_with_memory"
 ).rstrip("\n")
 
 PLOTTING_GUIDELINE_BASE = tuple(
@@ -267,6 +288,9 @@ SELECT_PLOTS_INTRO = load_prompt(
 ).rstrip("\n")
 
 SUMMARY_INTRO = load_prompt(PROMPT_BASE + "tasks/summary/introduction").rstrip("\n")
+SUMMARY_INTRO_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "tasks/summary/introduction_with_memory"
+).rstrip("\n")
 
 DEFINE_METRICS_INTRO = load_prompt(
     PROMPT_BASE + "tasks/define_metrics/introduction"
@@ -277,6 +301,9 @@ DEFINE_METRICS_INSTRUCTIONS = tuple(
 
 PARSE_METRICS_INTRO = load_prompt(
     PROMPT_BASE + "tasks/parse_metrics/introduction"
+).rstrip("\n")
+PARSE_METRICS_INTRO_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "tasks/parse_metrics/introduction_with_memory"
 ).rstrip("\n")
 PARSE_METRICS_INSTRUCTIONS = tuple(
     load_prompt_lines(PROMPT_BASE + "tasks/parse_metrics/instructions")
@@ -290,6 +317,9 @@ METRICS_PROMPT_INTRO = load_prompt(
     PROMPT_BASE + "tasks/metrics/introduction"
 ).rstrip("\n")
 VLM_ANALYSIS_PROMPT_TEMPLATE = load_prompt(PROMPT_BASE + "vlm_analysis")
+VLM_ANALYSIS_PROMPT_TEMPLATE_WITH_MEMORY = load_prompt(
+    PROMPT_BASE + "vlm_analysis_with_memory"
+)
 SEED_INJECTION_PROMPT = load_prompt(PROMPT_BASE + "seed_injection").rstrip("\n")
 
 
@@ -1816,8 +1846,10 @@ You can manage your memory by including a <memory_update> block at the end of yo
         return {"Response format": self._format_response_format(RESPONSE_FORMAT_ABLATION)}
 
     def _draft(self) -> Node:
+        # Select prompt based on memory configuration
+        draft_intro = DRAFT_INTRO_WITH_MEMORY if self._is_memory_enabled else DRAFT_INTRO
         prompt: Any = {
-            "Introduction": DRAFT_INTRO,
+            "Introduction": draft_intro,
             "Research idea": self.task_desc,
             "Instructions": {},
         }
@@ -1859,8 +1891,10 @@ You can manage your memory by including a <memory_update> block at the end of yo
         return Node(plan=plan, code=code)
 
     def _debug(self, parent_node: Node) -> Node:
+        # Select prompt based on memory configuration
+        debug_intro = DEBUG_INTRO_WITH_MEMORY if self._is_memory_enabled else DEBUG_INTRO
         prompt: Any = {
-            "Introduction": DEBUG_INTRO,
+            "Introduction": debug_intro,
             "Research idea": self.task_desc,
             "Previous (buggy) implementation": wrap_combined_code(parent_node.code, fallback_lang=self.code_language),
             "Execution output": wrap_code(parent_node.term_out, lang=""),
@@ -1896,8 +1930,10 @@ You can manage your memory by including a <memory_update> block at the end of yo
         return Node(plan=plan, code=code, parent=parent_node)
 
     def _improve(self, parent_node: Node) -> Node:
+        # Select prompt based on memory configuration
+        improve_intro = IMPROVE_INTRO_WITH_MEMORY if self._is_memory_enabled else IMPROVE_INTRO
         prompt: Any = {
-            "Introduction": IMPROVE_INTRO,
+            "Introduction": improve_intro,
             "Research idea": self.task_desc,
             "Feedback based on generated plots": parent_node.vlm_feedback_summary,
             "Feedback about execution time": parent_node.exec_time_feedback,
@@ -1953,7 +1989,12 @@ You can manage your memory by including a <memory_update> block at the end of yo
     def _generate_hyperparam_tuning_node(
         self, parent_node: Node, hyperparam_idea: HyperparamTuningIdea
     ):
-        intro_prefix = HYPERPARAM_NODE_INTRO_PREFIX
+        # Select prompt based on memory configuration
+        intro_prefix = (
+            HYPERPARAM_NODE_INTRO_PREFIX_WITH_MEMORY
+            if self._is_memory_enabled
+            else HYPERPARAM_NODE_INTRO_PREFIX
+        )
         prompt: Any = {
             "Introduction": intro_prefix + hyperparam_idea.name + ". " + hyperparam_idea.description,
             "Base code you are working on": wrap_combined_code(parent_node.code, fallback_lang=self.code_language),
@@ -1991,7 +2032,12 @@ You can manage your memory by including a <memory_update> block at the end of yo
         )
 
     def _generate_ablation_node(self, parent_node: Node, ablation_idea: AblationIdea):
-        intro_prefix = ABLATION_NODE_INTRO_PREFIX
+        # Select prompt based on memory configuration
+        intro_prefix = (
+            ABLATION_NODE_INTRO_PREFIX_WITH_MEMORY
+            if self._is_memory_enabled
+            else ABLATION_NODE_INTRO_PREFIX
+        )
         prompt: Any = {
             "Introduction": intro_prefix + ablation_idea.name + ". " + ablation_idea.description,
             "Base code you are working on": wrap_combined_code(parent_node.code, fallback_lang=self.code_language),
@@ -2365,8 +2411,14 @@ You can manage your memory by including a <memory_update> block at the end of yo
 
         node.absorb_exec_result(exec_result)
 
+        # Select prompt based on memory configuration
+        exec_review_intro = (
+            EXECUTION_REVIEW_INTRO_WITH_MEMORY
+            if self._is_memory_enabled
+            else EXECUTION_REVIEW_INTRO
+        )
         prompt = {
-            "Introduction": EXECUTION_REVIEW_INTRO,
+            "Introduction": exec_review_intro,
             "Research idea": self.task_desc,
             "Implementation": wrap_combined_code(node.code, fallback_lang=self.code_language),
             "Execution output": wrap_code(node.term_out, lang=""),
@@ -2723,7 +2775,9 @@ You can manage your memory by including a <memory_update> block at the end of yo
         memory_context_block = (
             f"Memory:\n{memory_context}\n\n" if memory_context else ""
         )
-        analysis_text = VLM_ANALYSIS_PROMPT_TEMPLATE.format(
+        # Select prompt template based on memory configuration
+        vlm_template = VLM_ANALYSIS_PROMPT_TEMPLATE_WITH_MEMORY if self._is_memory_enabled else VLM_ANALYSIS_PROMPT_TEMPLATE
+        analysis_text = vlm_template.format(
             memory_context_block=memory_context_block,
             task_desc=self.task_desc,
         )
@@ -2773,8 +2827,10 @@ You can manage your memory by including a <memory_update> block at the end of yo
 
     def _generate_node_summary(self, node: Node) -> dict:
         """Generate a summary of the node's experimental findings"""
+        # Select prompt based on memory configuration
+        summary_intro = SUMMARY_INTRO_WITH_MEMORY if self._is_memory_enabled else SUMMARY_INTRO
         summary_prompt = {
-            "Introduction": SUMMARY_INTRO,
+            "Introduction": summary_intro,
             "Research idea": self.task_desc,
             "Implementation": wrap_combined_code(node.code, fallback_lang=self.code_language),
             "Plan": node.plan,
@@ -3043,8 +3099,14 @@ class ParallelAgent:
         self, node: Node, branch_id: str | None
     ) -> tuple[str, bool]:
         """Run the execution review prompt for a timeout node to get LLM analysis."""
+        # Select prompt based on memory configuration
+        exec_review_intro = (
+            EXECUTION_REVIEW_INTRO_WITH_MEMORY
+            if self._is_memory_enabled
+            else EXECUTION_REVIEW_INTRO
+        )
         prompt = {
-            "Introduction": EXECUTION_REVIEW_INTRO,
+            "Introduction": exec_review_intro,
             "Research idea": self.task_desc,
             "Implementation": wrap_combined_code(node.code, fallback_lang=self.code_language),
             "Execution output": wrap_code(node.term_out, lang=""),
@@ -4360,8 +4422,12 @@ class ParallelAgent:
                     phase1_llm_log_path: Path | None = None
 
                     def phase1_iterative_driver(history: list[dict[str, Any]], step_idx: int, max_steps: int) -> dict[str, Any]:
+                        # Select prompt based on memory configuration
+                        phase1_intro = PHASE1_ITERATIVE_INSTALLER_PROMPT
+                        if memory_cfg and getattr(memory_cfg, "enabled", False):
+                            phase1_intro = PHASE1_ITERATIVE_INSTALLER_PROMPT_WITH_MEMORY
                         prompt: dict[str, Any] = {
-                            "Introduction": PHASE1_ITERATIVE_INSTALLER_PROMPT,
+                            "Introduction": phase1_intro,
                             "Task": task_desc,
                             "Phase plan": {
                                 "download_commands_seed": download_commands,
@@ -4447,12 +4513,46 @@ class ParallelAgent:
                                 memory_updates = extract_memory_updates(response_text)
                                 if memory_updates:
                                     try:
-                                        worker_agent.memory_manager.apply_llm_memory_updates(
+                                        memory_results = worker_agent.memory_manager.apply_llm_memory_updates(
                                             child_branch_id,
                                             memory_updates,
                                             node_id=child_node.id,
                                             phase="phase1_iterative",
                                         )
+                                        # Handle memory read operations with re-query loop
+                                        if (
+                                            memory_results
+                                            and _has_memory_read_results(memory_results)
+                                            and memory_cfg
+                                            and getattr(memory_cfg, "enabled", False)
+                                        ):
+                                            max_rounds = getattr(memory_cfg, "max_memory_read_rounds", 2)
+                                            if max_rounds > 0:
+                                                results_text = _format_memory_results_for_llm(memory_results)
+                                                followup_prompt = prompt.copy()
+                                                followup_prompt["Memory Read Results"] = (
+                                                    "Your memory read operations returned the following results:\n\n"
+                                                    f"{results_text}\n\n"
+                                                    "Based on this information, you may:\n"
+                                                    "1. Write additional insights to memory\n"
+                                                    "2. Search for more related information\n"
+                                                    "3. Complete with an empty update if done\n\n"
+                                                    "Respond with ONLY a <memory_update> block."
+                                                )
+                                                _run_memory_update_phase(
+                                                    prompt=followup_prompt,
+                                                    memory_manager=worker_agent.memory_manager,
+                                                    branch_id=child_branch_id,
+                                                    node_id=child_node.id,
+                                                    phase_name="phase1_iterative",
+                                                    model=cfg.agent.code.model,
+                                                    temperature=cfg.agent.code.temp,
+                                                    max_rounds=max(0, max_rounds - 1),
+                                                    task_description=(
+                                                        "You may update memory based on Phase 1 context and memory read results. "
+                                                        "Respond with ONLY a <memory_update> block."
+                                                    ),
+                                                )
                                     except Exception as exc:
                                         logger.warning("Failed to apply Phase 1 memory updates: %s", exc)
 
@@ -4884,8 +4984,14 @@ class ParallelAgent:
                                 "Below is the last parsing code that failed. Use this as reference and fix the issues:\n"
                                 f"{previous_error_code}"
                             )
+                        # Select prompt based on memory configuration
+                        parse_metrics_intro = (
+                            PARSE_METRICS_INTRO_WITH_MEMORY
+                            if worker_agent._is_memory_enabled
+                            else PARSE_METRICS_INTRO
+                        )
                         parse_metrics_prompt = {
-                            "Introduction": PARSE_METRICS_INTRO,
+                            "Introduction": parse_metrics_intro,
                             "Context": context_blocks,
                             "Instructions": list(PARSE_METRICS_INSTRUCTIONS),
                             "Example data loading code": [

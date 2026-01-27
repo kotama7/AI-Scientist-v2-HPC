@@ -1,0 +1,12 @@
+Write the content for the following paper section using ONLY the provided memory slice.
+
+Section Spec (JSON):
+{section_spec}
+
+Memory Slice (JSON):
+{memory_slice}
+
+Guidelines:
+- Use only the memory slice; do not invent details.
+- If relevant info is missing, say "Not found in memory." succinctly.
+- Return plain markdown text (no JSON).

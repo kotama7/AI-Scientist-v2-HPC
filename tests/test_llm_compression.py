@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 from ai_scientist.memory import MemoryManager
 from ai_scientist.memory.memgpt_store import (
     _compress_with_llm,
-    _load_compression_prompt,
+    _try_load_prompt,
     _truncate,
 )
 
@@ -17,18 +17,18 @@ from ai_scientist.memory.memgpt_store import (
 class TestCompressionPromptLoading(unittest.TestCase):
     """Test compression prompt file loading."""
 
-    def test_load_compression_prompt_file_not_found(self) -> None:
-        """Should return None for non-existent file."""
-        result = _load_compression_prompt("/nonexistent/path.txt")
+    def test_load_prompt_nonexistent_returns_none(self) -> None:
+        """Should return None for non-existent prompt name."""
+        result = _try_load_prompt("nonexistent/prompt/path")
         self.assertIsNone(result)
 
-    def test_load_compression_prompt_success(self) -> None:
+    def test_load_prompt_existing_returns_content(self) -> None:
         """Should load prompt from existing file."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            f.write("Test prompt template")
-            f.flush()
-            result = _load_compression_prompt(f.name)
-            self.assertEqual(result, "Test prompt template")
+        # Test with a known existing prompt
+        result = _try_load_prompt("config/memory/compression")
+        self.assertIsNotNone(result)
+        self.assertIsInstance(result, str)
+        self.assertGreater(len(result), 0)
 
 
 class TestCompressWithLLM(unittest.TestCase):
