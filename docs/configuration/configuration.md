@@ -21,16 +21,18 @@ exec:
   workspace_mount: /workspace       # Container mount point
   phase1_max_steps: 12              # Max Phase 1 installer iterations
   log_prompts: true                 # Log prompts as JSON/Markdown
+  timeout: 7200                     # Execution timeout in seconds
 
 agent:
   type: parallel                    # Agent type (parallel recommended)
   num_workers: 4                    # Parallel workers
   role_description: "HPC Researcher"  # Persona for prompts
   stages:
-    stage1_max_iters: 40            # Per-stage iteration limits
-    stage2_max_iters: 24
-    stage3_max_iters: 24
-    stage4_max_iters: 36
+    stage1_max_iters: 20            # Per-stage iteration limits
+    stage2_max_iters: 20
+    stage3_max_iters: 40
+    stage4_max_iters: 20
+  steps: 5                          # Fallback iteration count
   multi_seed_eval:
     num_seeds: 3                    # Seeds for multi-seed evaluation
   search:
@@ -58,19 +60,48 @@ experiment:
   dataset_source: auto              # local, huggingface, or auto
 
 memory:
-  enabled: true
+  enabled: true                     # Memory is ENABLED by default
   core_max_chars: 16000
   recall_max_events: 20
   retrieval_k: 8
+  use_fts: auto
+  final_memory_enabled: true
+  final_memory_filename_md: final_memory_for_paper.md
+  final_memory_filename_json: final_memory_for_paper.json
+  redact_secrets: true
+  memory_budget_chars: 24000
+  memory_log_enabled: true
+  memory_log_max_chars: 1600
   use_llm_compression: true
   compression_model: gpt-5.2
-  memory_budget_chars: 24000
-  section_budgets:
-    idea_summary: 9600
-    idea_section_limit: 4800
-    phase0_summary: 5000
-    archival_snippet: 3000
-    results: 4000
+  paper_section_mode: idea_then_memory  # memory_summary | idea_then_memory
+  paper_section_count: 12
+  max_compression_iterations: 5
+  # Per-section character budgets (flat structure)
+  datasets_tested_budget_chars: 8000
+  metrics_extraction_budget_chars: 12000
+  plotting_code_budget_chars: 8000
+  plot_selection_budget_chars: 4000
+  vlm_analysis_budget_chars: 12000
+  node_summary_budget_chars: 8000
+  parse_metrics_budget_chars: 12000
+  archival_snippet_budget_chars: 12000
+  results_budget_chars: 12000
+  # Writeup memory limits
+  writeup_recall_limit: 10
+  writeup_archival_limit: 10
+  writeup_core_value_max_chars: 5000
+  writeup_recall_text_max_chars: 5000
+  writeup_archival_text_max_chars: 5000
+  # Memory Pressure Management
+  auto_consolidate: true
+  consolidation_trigger: high
+  recall_consolidation_threshold: 1.5
+  max_memory_read_rounds: 3
+  pressure_thresholds:
+    medium: 0.7
+    high: 0.85
+    critical: 0.95
 
 report:
   model: gpt-5.2
@@ -111,8 +142,9 @@ The copy inside the experiment directory is the source of truth for the run.
 - `writable_tmpfs`, `container_overlay`, `writable_mode`: Phase 1 write access.
 - `container_extra_args`: extra Singularity args for instance start.
 - `per_worker_sif`, `keep_sandbox`, `use_fakeroot`: per-worker SIF behavior.
-- `phase1_max_steps`: max iterative installer steps.
+- `phase1_max_steps`: max iterative installer steps (default 12).
 - `log_prompts`: write prompt logs (JSON + Markdown) for split/single runs.
+- `timeout`: execution timeout in seconds (default 7200).
 - `resources`: optional path to a JSON/YAML resource file.
 
 ### `agent`
@@ -120,7 +152,7 @@ The copy inside the experiment directory is the source of truth for the run.
 - `type`: agent type (default `parallel` for parallel execution).
 - `num_workers`: parallel workers mapped to GPUs.
 - `role_description`: persona description injected into prompts (e.g., "HPC Researcher").
-  Replaces placeholders like `{persona}` and "AI researcher" in prompt templates.
+  Replaces `{persona}` tokens in prompt templates.
 - `steps`: fallback iteration count when stage-specific limits are not set.
 - `stages.*`: per-stage max iterations:
   - `stage1_max_iters`: Stage 1 (initial exploration) iterations.
@@ -152,7 +184,7 @@ The copy inside the experiment directory is the source of truth for the run.
 
 Core settings:
 
-- `enabled`: toggle memory (default false).
+- `enabled`: toggle memory (default **true**).
 - `db_path`: SQLite path (default under `experiments/<run>/memory/`).
 - `core_max_chars`, `recall_max_events`, `retrieval_k`: injection limits.
 - `use_fts`: full-text search mode (`auto`, `true`, or `false`).
@@ -171,35 +203,45 @@ LLM compression (for intelligent memory truncation):
 
 - `use_llm_compression`: enable LLM-based compression (default true).
 - `compression_model`: model for compression (default `gpt-5.2`).
-- `memory_budget_chars`: overall memory budget in characters.
-- Per-section character budgets for compression:
-  - `datasets_tested_budget_chars`: budget for tested datasets summary.
-  - `metrics_extraction_budget_chars`: budget for metrics extraction.
-  - `plotting_code_budget_chars`: budget for plotting code summary.
-  - `plot_selection_budget_chars`: budget for plot selection summary.
-  - `vlm_analysis_budget_chars`: budget for VLM analysis summary.
-  - `node_summary_budget_chars`: budget for node summaries.
-  - `parse_metrics_budget_chars`: budget for parsed metrics.
-- `section_budgets.*`: named section limits for compression:
-  - `idea_summary`: compressed research idea.
-  - `idea_section_limit`: per-section limit for idea summary bullets.
-  - `phase0_summary`: Phase 0 configuration summary.
-  - `archival_snippet`: archival memory excerpts.
-  - `results`: result summaries.
+- `memory_budget_chars`: overall memory budget in characters (default 24000).
+- `paper_section_mode`: section generation mode (`memory_summary` or `idea_then_memory`).
+- `paper_section_count`: number of sections to generate for `idea_then_memory` mode (default 12).
+- `max_compression_iterations`: max iterative compression attempts (default 5).
+- Per-section character budgets for compression (flat keys under `memory`):
+  - `datasets_tested_budget_chars`: budget for tested datasets summary (default 8000).
+  - `metrics_extraction_budget_chars`: budget for metrics extraction (default 12000).
+  - `plotting_code_budget_chars`: budget for plotting code summary (default 8000).
+  - `plot_selection_budget_chars`: budget for plot selection summary (default 4000).
+  - `vlm_analysis_budget_chars`: budget for VLM analysis summary (default 12000).
+  - `node_summary_budget_chars`: budget for node summaries (default 8000).
+  - `parse_metrics_budget_chars`: budget for parsed metrics (default 12000).
+  - `archival_snippet_budget_chars`: archival memory excerpts (default 12000).
+  - `results_budget_chars`: result summaries (default 12000).
 
 Memory logging (for debugging):
 
 - `memory_log_enabled`: write memory event logs (default true).
 - `memory_log_dir`: directory for memory logs (default under `experiments/<run>/memory/`).
-- `memory_log_max_chars`: max chars per log entry.
+- `memory_log_max_chars`: max chars per log entry (default 1600).
 
 Writeup memory limits (for `final_writeup_memory.json` generation):
 
 - `writeup_recall_limit`: maximum number of recall memory entries (default 10).
 - `writeup_archival_limit`: maximum number of archival memory entries (default 10).
 - `writeup_core_value_max_chars`: max characters per core memory value (default 5000).
-- `writeup_recall_text_max_chars`: max characters per recall memory text (default 3000).
-- `writeup_archival_text_max_chars`: max characters per archival memory text (default 4000).
+- `writeup_recall_text_max_chars`: max characters per recall memory text (default 5000).
+- `writeup_archival_text_max_chars`: max characters per archival memory text (default 5000).
+
+Memory Pressure Management (MemGPT-style):
+
+- `auto_consolidate`: enable automatic memory consolidation (default true).
+- `consolidation_trigger`: pressure level to trigger consolidation (`medium`, `high`, or `critical`).
+- `recall_consolidation_threshold`: multiplier for recall overflow threshold (default 1.5).
+- `max_memory_read_rounds`: maximum rounds for memory read operations (default 3).
+- `pressure_thresholds`: pressure level thresholds:
+  - `medium`: 70% usage (default 0.7).
+  - `high`: 85% usage (default 0.85).
+  - `critical`: 95% usage (default 0.95).
 
 
 ## Paths and run layout

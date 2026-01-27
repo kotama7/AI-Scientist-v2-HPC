@@ -9,6 +9,26 @@ class MalformedMemoryUpdateError(Exception):
     pass
 
 
+def sanitize_memory_update_tags(text: str) -> str:
+    """Remove invalid attributes from <memory_update> opening tags.
+
+    Some LLM outputs contain malformed tags with injected attributes like:
+        <memory_update  大发彩票官网_json_duplication="true">
+
+    This function sanitizes them to:
+        <memory_update>
+
+    Args:
+        text: The text containing memory_update tags.
+
+    Returns:
+        Text with sanitized memory_update opening tags.
+    """
+    if not text:
+        return text
+    return re.sub(r'<memory_update\s+[^>]*>', '<memory_update>', text)
+
+
 def wrap_code(code: str, lang: str | None = "python") -> str:
     """Wrap code with triple backticks and an optional language hint."""
     lang = lang or ""
@@ -107,6 +127,9 @@ def extract_memory_updates(text: str) -> dict | None:
     """
     if not text:
         return None
+
+    # Sanitize malformed opening tags (e.g., with injected attributes)
+    text = sanitize_memory_update_tags(text)
 
     pattern = r'<memory_update>\s*(.*?)\s*</memory_update>'
     match = re.search(pattern, text, re.DOTALL)

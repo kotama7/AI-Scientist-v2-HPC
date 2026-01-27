@@ -445,7 +445,7 @@ def export_final_memory(self, output_dir: Path) -> tuple[Path, Path]:
 
     # Write Markdown
     md_path = output_dir / self.config.get(
-        "final_memory_filename_md", "final_memory_for_paper.md"
+        "final_memory_filename_md", "final_memory-for-paper.md"
     )
     with open(md_path, "w") as f:
         f.write(self._format_final_markdown(final))

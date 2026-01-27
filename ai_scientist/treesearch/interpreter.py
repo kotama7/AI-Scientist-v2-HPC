@@ -284,7 +284,14 @@ class Interpreter:
             target=self._run_session,
             args=(self.code_inq, self.result_outq, self.event_outq),
         )
-        self.process.start()
+        try:
+            self.process.start()
+        except Exception as e:
+            # If start() fails, reset self.process to None to avoid
+            # 'NoneType' object has no attribute 'terminate' error in cleanup_session()
+            logger.error(f"Failed to start interpreter process: {e}")
+            self.process = None  # type: ignore
+            raise
 
     def _drain_queues(self):
         """Quickly drain all in-flight messages to prevent blocking."""
@@ -308,6 +315,13 @@ class Interpreter:
 
     def cleanup_session(self):
         if self.process is None:
+            return
+        # Check if the process was actually started (has a valid _popen handle)
+        # This prevents 'NoneType' object has no attribute 'terminate' error
+        # when Process.start() failed but self.process was already assigned
+        if getattr(self.process, '_popen', None) is None:
+            logger.warning("Process was never started (no _popen), skipping termination")
+            self.process = None  # type: ignore
             return
         # give the child process a chance to terminate gracefully
         self.process.terminate()

@@ -133,6 +133,8 @@ class MemoryConfig:
     writeup_core_value_max_chars: int = 500
     writeup_recall_text_max_chars: int = 300
     writeup_archival_text_max_chars: int = 400
+    paper_section_mode: str = "memory_summary"
+    paper_section_count: int = 12
     # Memory Pressure Management (MemGPT-style)
     auto_consolidate: bool = True
     consolidation_trigger: str = "high"

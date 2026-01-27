@@ -1,0 +1,134 @@
+You are running Phase 0 (whole planning) for a split-phase execution pipeline.
+Your response MUST follow this exact format with TWO parts:
+
+**PART 1: Memory Update (REQUIRED)**
+Start your response with a <memory_update> block containing your memory operations.
+You MUST include this block even if you have no updates (use empty object {}).
+
+<memory_update>
+{
+  "core": {"phase0_summary": "short"},
+  "archival": [{"text": "details", "tags": ["PHASE0_INTERNAL"]}]
+}
+</memory_update>
+
+**PART 2: Phase 0 Plan (JSON)**
+Immediately after the </memory_update> tag, output the Phase 0 JSON plan (no prose, no markdown).
+Use the schema below exactly.
+
+Goals:
+- Use the previous run history and environment context to decide what to implement now.
+- Propose dependencies needed for later phases, without installing anything.
+- Provide concrete guidance for Phase 1-4 (what to generate, what to verify, and done conditions).
+
+Constraints:
+- Singularity only. All runtime commands are executed inside the container by the runner.
+- Do not include host-only actions or wrap commands with singularity/apptainer.
+- Phase 1 is iterative (one command at a time until done=true).
+- Prompt files are stored in prompt/*.txt; do not embed code blocks in this plan.
+- Avoid bias toward Python or AI; list dependencies only if required by the design.
+
+TIME BUDGET CONSTRAINT (CRITICAL):
+- Check Environment.timeout_seconds for the total wall-clock time available.
+- Your experiment MUST complete within this time budget. If it times out, the run fails.
+- Estimate total execution time BEFORE designing the experiment:
+    estimated_time = num_configurations × num_repetitions × time_per_single_run
+- Keep estimated_time below 80% of timeout_seconds (safety margin for compilation, I/O, overhead).
+- If the sweep is too large, REDUCE:
+    * num_repetitions (e.g., 5-10 instead of 30-50)
+    * num_configurations (fewer parameter combinations)
+    * problem_sizes (start with SMALL only)
+- Add time_budget_estimate to the plan schema with your calculation.
+
+- Hard evidence gate for risks:
+  * The environment probe is authoritative. If a tool appears in system_performance_tools, it is AVAILABLE. Do not list availability risks for it.
+  * If system_performance_tools lists a tool (e.g., perf), you MUST NOT mention availability, permissions, kernel restrictions, or missing-package risks for that tool (including perf_event_paranoid or linux-tools availability).
+  * If any risk would mention such a tool's availability or permissions, omit that risk entirely.
+  * Evidence means a real command executed in this run that failed. Speculation or "might be unavailable" is not evidence.
+  * If you suspect a tool is unavailable or restricted, you MUST plan a concrete verification command (to be executed in Phase 1) and you MUST NOT list a risk unless that command actually fails in the run logs.
+  * risks_and_mitigations must be evidence-based. Each risk MUST cite explicit evidence from the prompt (e.g., tool missing in environment list, command failure log, or given kernel setting). If no evidence exists, OMIT the risk.
+  * If no evidence-backed risks exist, return an empty list for risks_and_mitigations.
+
+Schema:
+{
+  "plan": {
+    "goal_summary": "short",
+    "implementation_strategy": [
+      "short bullets describing the design approach"
+    ],
+    "dependencies": {
+      "apt": ["zlib1g-dev", "curl", "git"],
+      "pip": ["numpy", "huggingface_hub"],
+      "source": [
+        {
+          "name": "cnpy",
+          "fetch": "curl|git",
+          "urls": ["..."],
+          "dest": "/workspace/third_party/cnpy",
+          "verify": ["test -f /workspace/third_party/cnpy/README.md"]
+        }
+      ]
+    },
+    "phase_guidance": {
+      "phase1": {
+        "targets": ["dependencies to install or fetch"],
+        "preferred_commands": ["one command per line, ordered"],
+        "done_conditions": ["dpkg -s ...", "ls ...", "python -c ..."]
+      },
+      "phase2": {
+        "targets": ["files/tree to generate"],
+        "notes": "short"
+      },
+      "phase3": {
+        "compiler_selection_policy": "select from available_compilers",
+        "notes": "short"
+      },
+      "phase4": {
+        "output_policy": "must generate /workspace/working/experiment_data.npy",
+        "validation": ["numpy magic check", "file exists"]
+      }
+    },
+    "risks_and_mitigations": [
+      {"risk": "apt-get fails", "mitigation": "retry or build from source"}
+    ],
+    "time_budget_estimate": {
+      "timeout_seconds": "<from Environment.timeout_seconds>",
+      "num_configurations": "<int: your planned parameter combinations>",
+      "num_repetitions": "<int: runs per configuration>",
+      "estimated_time_per_run_seconds": "<int: estimated single run time>",
+      "total_estimated_seconds": "<int: num_configurations * num_repetitions * time_per_run>",
+      "utilization_percent": "<int: (total_estimated / timeout) * 100>",
+      "is_within_budget": "<bool: true if utilization_percent < 80>",
+      "notes": "<string: explanation if budget is tight or how you reduced scope>"
+    }
+  }
+}
+
+**Memory Operations:**
+
+Write operations (stored immediately):
+- "core": {"key": "value"} - Set key-value pairs in always-visible memory
+- "archival": [{"text": "...", "tags": ["TAG"]}] - Write to long-term searchable memory
+- "recall": {"kind": "...", "content": "..."} - Append to recent events timeline
+
+Read operations (results returned, then you re-output with the information):
+- "core_get": ["key1", "key2"] - Retrieve core memory values
+- "archival_search": {"query": "...", "k": 5} - Search long-term memory
+- "recall_search": {"query": "...", "k": 10} - Search recent events
+
+Management operations:
+- "core_delete": ["key"] - Delete keys from core memory
+- "recall_evict": {"oldest": N} - Move old recall events to archival
+- "consolidate": true - Trigger memory consolidation
+
+**Read Operation Flow:**
+If you include read operations (core_get, archival_search, recall_search), the system will:
+1. Execute all operations (writes + reads)
+2. Return read results to you in a <memory_results> block
+3. You then output your final response using the retrieved information
+
+**Memory Update Guidelines:**
+- Use "core" for: optimal parameters, key constraints, concise Phase 0 summary
+- Use "archival" for: detailed environment + reproduction details, lessons learned
+- Do NOT record: temporary debug info, system-logged info, trivial observations
+If any internal information relevant to this plan has not yet been saved, please save it now (e.g., environment details, commands, parameters, or assumptions). This includes details that would be referenced when reproducing the experiment.

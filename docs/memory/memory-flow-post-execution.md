@@ -130,7 +130,7 @@ the **two-phase pattern** with `_run_memory_update_phase()` helper:
 **Phase 1**: Memory update phase (free text, multi-round capable)
 **Phase 2**: Task execution with `func_spec` (structured JSON response)
 
-See [memory_flow.md](memory_flow.md#two-phase-pattern-for-structured-responses) for details.
+See [memory-flow.md](memory-flow.md#two-phase-pattern-for-structured-responses) for details.
 
 ## Detailed Function Flows
 
@@ -611,7 +611,7 @@ memory_manager.generate_final_memory_for_paper(
 ```
 
 **Output Files**:
-- `final_memory_for_paper.md` - Comprehensive markdown for paper writeup
+- `final_memory-for-paper.md` - Comprehensive markdown for paper writeup
 - `final_memory_for_paper.json` - Structured data with node information
 - `final_writeup_memory.json` - Complete writeup payload
 
@@ -625,11 +625,11 @@ memory_manager.generate_final_memory_for_paper(
 - Negative results and lessons learned
 - Provenance chain
 
-For detailed documentation, see [memory_for_paper.md](memory_for_paper.md).
+For detailed documentation, see [memory-for-paper.md](memory-for-paper.md).
 
 ## See Also
 
-- [memory_flow.md](memory_flow.md) - Overview
-- [memory_flow_phase0.md](memory_flow_phase0.md) - Phase 0 flow
-- [memory_flow_phases.md](memory_flow_phases.md) - Phase 1-4 flow
-- [memory_for_paper.md](memory_for_paper.md) - Final memory for paper generation
+- [memory-flow.md](memory-flow.md) - Overview
+- [memory-flow-phase0.md](memory-flow-phase0.md) - Phase 0 flow
+- [memory-flow-phases.md](memory-flow-phases.md) - Phase 1-4 flow
+- [memory-for-paper.md](memory-for-paper.md) - Final memory for paper generation

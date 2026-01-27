@@ -9,7 +9,7 @@ prompt.
 ![Memory flow](../images/memory_flow.png)
 
 For a detailed flow diagram of memory operations during node execution, see
-[memory_flow.md](memory_flow.md).
+[memory-flow.md](memory-flow.md).
 
 ## Enabling memory
 
@@ -103,7 +103,7 @@ memory:
   `PHASE0_INTERNAL`) and summarized into Core.
 - `idea.md` is archived at run start (tags `IDEA_MD`, `ROOT_IDEA`) and on updates
   per node; a short summary is always injected.
-- Run end generates `experiments/<run>/memory/final_memory_for_paper.md|json`.
+- Run end generates `experiments/<run>/memory/final_memory-for-paper.md|json`.
 
 ## Phase 1-4 Memory Operations
 
@@ -292,9 +292,13 @@ The overall budget is controlled by `memory.memory_budget_chars` (default 24000)
 - `experiments/<run>/memory/memory.sqlite` stores the persistent memory tables.
 - `experiments/<run>/memory/resource_snapshot.json` captures resolved resources.
 - `experiments/<run>/memory/final_memory_for_paper.*` summarizes end-state memory.
+- `experiments/<run>/logs/<run>/memory_database.html` interactive visualization.
 
 If you need a clean slate, delete the run directory or set a new
 `--memory_db` path for the next run.
+
+For details on the memory visualization tool, see
+[visualization.md](../visualization/visualization.md#memory_databasehtml).
 
 ## Performance notes
 
@@ -331,6 +335,61 @@ detects memory overflow conditions and consolidates memory to stay within limits
    - Summarized using LLM
    - Written to archival memory
    - Removed from recall
+
+5. **Inherited Memory Consolidation (Copy-on-Write)**: When the total inherited
+   events from ancestors exceed the threshold, the system uses Copy-on-Write
+   semantics to consolidate without modifying ancestor data:
+   - Older inherited events are summarized using LLM
+   - Summaries are stored in `inherited_summaries` table (local to this branch)
+   - Excluded event IDs are stored in `inherited_exclusions` table
+   - Ancestor branch data remains unchanged
+   - Child branches see consolidated view while siblings see original data
+
+### Inherited Memory Consolidation Details
+
+The inherited memory consolidation feature ensures that each branch can manage
+its inherited memory independently without affecting other branches. This is
+achieved through Copy-on-Write (CoW) semantics:
+
+#### How it works
+
+```
+Parent Branch (SQLite):      50 events (unchanged)
+Child Branch A (SQLite):     20 events (own)
+Child Branch B (SQLite):     15 events (own)
+
+Without CoW consolidation:
+  Child A sees: 50 (parent) + 20 (own) = 70 events
+  Child B sees: 50 (parent) + 15 (own) = 65 events
+
+With CoW consolidation (threshold=30):
+  Child A triggers consolidation:
+    - Summarizes 40 oldest parent events → stored in inherited_summaries
+    - Records excluded IDs in inherited_exclusions
+    - Effective view: summary + 10 recent parent + 20 own = ~30 events
+  Child B (unaffected):
+    - Still sees all 50 parent + 15 own = 65 events
+  Parent (unaffected):
+    - Still has all 50 events in SQLite
+```
+
+#### Database tables
+
+| Table | Purpose |
+|-------|---------|
+| `inherited_exclusions` | Event IDs excluded from inherited view for each branch |
+| `inherited_summaries` | LLM-generated summaries of consolidated inherited events |
+
+#### When consolidation triggers
+
+Inherited memory consolidation is triggered automatically when:
+1. A recall event is appended (`mem_recall_append`)
+2. The total inherited event count exceeds `recall_max_events * recall_consolidation_threshold`
+3. `auto_consolidate` is enabled
+
+The consolidation:
+1. First consolidates inherited memory (Copy-on-Write)
+2. Then consolidates own events if still over threshold (traditional deletion)
 
 ### Configuration
 
@@ -520,7 +579,7 @@ any combination of the following operations:
 Read operations (`core_get`, `archival_search`, `recall_search`) trigger a
 **multi-turn flow** when used in split-phase execution.
 
-For a complete flow diagram, see [memory_flow.md](memory_flow.md).
+For a complete flow diagram, see [memory-flow.md](memory-flow.md).
 
 #### How it works
 

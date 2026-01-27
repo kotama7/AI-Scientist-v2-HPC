@@ -4,9 +4,9 @@ This document describes the complete memory flow during experiment execution
 in the AI-Scientist system with MemGPT-style memory enabled.
 
 For detailed phase-by-phase documentation, see:
-- [Phase 0 Flow](memory_flow_phase0.md) - Setup and Planning
-- [Phase 1-4 Flow](memory_flow_phases.md) - Execution phases (Download/Coding/Compile/Run)
-- [Post-Execution Flow](memory_flow_post_execution.md) - Metrics, Plotting, VLM Analysis, Summary
+- [Phase 0 Flow](memory-flow-phase0.md) - Setup and Planning
+- [Phase 1-4 Flow](memory-flow-phases.md) - Execution phases (Download/Coding/Compile/Run)
+- [Post-Execution Flow](memory-flow-post-execution.md) - Metrics, Plotting, VLM Analysis, Summary
 
 ## High-Level Architecture
 
@@ -50,7 +50,7 @@ For detailed phase-by-phase documentation, see:
 │                                   ▼                                              │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │                        FINAL MEMORY EXPORT                               │    │
-│  │  • final_memory_for_paper.md                                            │    │
+│  │  • final_memory-for-paper.md                                            │    │
 │  │  • final_memory_for_paper.json                                          │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │                                                                                  │
@@ -289,6 +289,6 @@ All memory operations are logged to:
 ## See Also
 
 - [memory.md](memory.md) - General memory system documentation
-- [memory_flow_phase0.md](memory_flow_phase0.md) - Phase 0 detailed flow
-- [memory_flow_phases.md](memory_flow_phases.md) - Phase 1-4 detailed flow
-- [memory_flow_post_execution.md](memory_flow_post_execution.md) - Post-execution flow
+- [memory-flow-phase0.md](memory-flow-phase0.md) - Phase 0 detailed flow
+- [memory-flow-phases.md](memory-flow-phases.md) - Phase 1-4 detailed flow
+- [memory-flow-post-execution.md](memory-flow-post-execution.md) - Post-execution flow

@@ -337,7 +337,7 @@ def perform_experiments_bfts(config_path: str):
                         continue
                     top_nodes.append(node)
             # Sort by metric (descending) and take top 5
-            top_nodes.sort(key=lambda n: n.metric.value if n.metric else 0, reverse=True)
+            top_nodes.sort(key=lambda n: n.metric, reverse=True)
             top_nodes = top_nodes[:5]
 
             # Extract comprehensive node data for paper generation

@@ -182,6 +182,9 @@ ENVIRONMENT_INJECTION_TEMPLATE = load_prompt("config/environment/injection").rst
 AI_OPTIONAL_PROMPT = load_prompt("core/ai_optional").rstrip("\n")
 PHASE1_ITERATIVE_INSTALLER_PROMPT = load_prompt("config/phases/phase1_installer").rstrip("\n")
 PHASE0_WHOLE_PLANNING_PROMPT = load_prompt("config/phases/phase0_planning").rstrip("\n")
+PHASE0_WHOLE_PLANNING_PROMPT_WITH_MEMORY = load_prompt(
+    "config/phases/phase0_planning_with_memory"
+).rstrip("\n")
 ENVIRONMENT_RESOURCES_INJECTION_TEMPLATE = load_prompt("config/environment/resources_injection").rstrip("\n")
 
 IMPLEMENTATION_GUIDELINE_DATASET = tuple(
@@ -1626,6 +1629,9 @@ You can manage your memory by including a <memory_update> block at the end of yo
         # Common structure requirements
         impl_guideline.append("Keep the program self-contained and runnable as-is.")
         impl_guideline.append("Write outputs under ./working (create the directory if needed).")
+        impl_guideline.append(
+            "Only create or modify files under ./src or ./working; do not create new top-level directories."
+        )
 
         # Python-specific: GPU and model requirements
         if self.code_language == "python":
@@ -1736,6 +1742,7 @@ You can manage your memory by including a <memory_update> block at the end of yo
                 "In download/install, probe with `command -v ...`/`which ...` before installing (e.g., git, cmake); avoid redundant installs.",
                 "compile commands must honor build_plan.compiler_selected chosen from available_compilers (do not invent compilers or switch).",
                 "Run phase must generate /workspace/working/experiment_data.npy (Python uses numpy save; non-Python must use cnpy).",
+                "All generated code/scripts must live under /workspace/src or /workspace/working; do not create new top-level directories.",
                 "Do not rely on language adapters, interpreter adapters, or external routers; commands run directly in the worker.",
             ]
         }
@@ -3093,9 +3100,7 @@ class ParallelAgent:
             "Research idea": self.task_desc,
             "Instructions": list(DEFINE_METRICS_INSTRUCTIONS),
         }
-        memory_context = self._memory_context(self.root_branch_id, "define_metrics")
-        if memory_context:
-            prompt["Memory"] = memory_context
+        # NOTE: root branch has no memory data, so we skip memory injection for define_metrics.
 
         # LLM context (global metrics): Introduction + Research idea + metric-definition Instructions.
         response = query(
@@ -3553,6 +3558,24 @@ class ParallelAgent:
                         except Exception as exc:
                             logger.warning(f"Failed to copy {src} to {dst}: {exc}")
 
+                    # Verify and re-copy critical directories (src and its subdirectories)
+                    # This ensures source code is properly inherited across stages
+                    parent_src = parent_workspace / "src"
+                    dst_src = Path(workspace) / "src"
+                    if parent_src.exists():
+                        # Ensure src directory exists
+                        dst_src.mkdir(parents=True, exist_ok=True)
+                        # Check each subdirectory in parent's src
+                        for subdir in parent_src.iterdir():
+                            if subdir.is_dir():
+                                dst_subdir = dst_src / subdir.name
+                                if not dst_subdir.exists():
+                                    print(f"Re-copying missing src subdirectory: {subdir.name}")
+                                    try:
+                                        shutil.copytree(subdir, dst_subdir, dirs_exist_ok=True)
+                                    except Exception as subdir_exc:
+                                        logger.error(f"Failed to copy src/{subdir.name}: {subdir_exc}")
+
         worker_name = f"worker_{worker_id}" if worker_id is not None else f"worker_{multiprocessing.current_process().name}"
         print(f"Process {worker_name} using workspace: {workspace}")
         # Create process-specific working directory
@@ -3651,6 +3674,7 @@ class ParallelAgent:
 
         environment_context: dict[str, Any] = {}
         exec_env: ExecutionEnvironment | None = None
+        active_env: ExecutionEnvironment | None = None
         if getattr(cfg.exec, "phase_mode", "single") == "split":
             image_path = getattr(cfg.exec, "singularity_image", None)
             environment_context = {
@@ -3848,8 +3872,11 @@ class ParallelAgent:
                 f"The following system performance tools have been verified and are confirmed functional inside this container: {', '.join(performance_tools_names)}. "
                 "Use them directly without assuming availability issues."
             ) if performance_tools_names else "No system performance tools detected in this environment."
+            phase0_intro = PHASE0_WHOLE_PLANNING_PROMPT
+            if memory_cfg and getattr(memory_cfg, "enabled", False):
+                phase0_intro = PHASE0_WHOLE_PLANNING_PROMPT_WITH_MEMORY
             phase0_prompt: dict[str, Any] = {
-                "Introduction": PHASE0_WHOLE_PLANNING_PROMPT,
+                "Introduction": phase0_intro,
                 "Task": task_desc,
                 "History": history_injection,
                 "Environment": {
@@ -3874,15 +3901,8 @@ class ParallelAgent:
                     "timeout_seconds": environment_context.get("timeout_seconds", cfg.exec.timeout),
                 },
             }
-            if memory_manager and root_branch_id:
-                budget = getattr(
-                    getattr(cfg, "memory", None), "memory_budget_chars", 4000
-                )
-                memory_context = memory_manager.render_for_prompt(
-                    root_branch_id, "phase0_planning", budget_chars=budget
-                )
-                if memory_context:
-                    phase0_prompt["Memory"] = memory_context
+            # NOTE: root branch has no memory data, so we skip memory injection for phase0_planning.
+            # Memory context will be available in child branches after they are forked.
             resources_path = getattr(cfg.exec, "resources", None)
             if resources_path:
                 try:
@@ -3908,13 +3928,72 @@ class ParallelAgent:
                     model=cfg.agent.code.model,
                     temperature=cfg.agent.code.temp,
                 )
+                phase0_response_raw = phase0_response
                 try:
                     (plans_dir / "phase0_llm_output.txt").write_text(
-                        phase0_response,
+                        phase0_response_raw,
                         encoding="utf-8",
                     )
                 except Exception as exc:
                     logger.warning("Failed to write Phase 0 raw output: %s", exc)
+                if phase0_response_raw:
+                    if memory_cfg and getattr(memory_cfg, "enabled", False):
+                        if check_malformed_memory_update(phase0_response_raw):
+                            logger.warning("Phase 0 response contains malformed <memory_update>; attempting to strip.")
+                        memory_updates = extract_memory_updates(phase0_response_raw)
+                        memory_results = None
+                        if memory_updates:
+                            if memory_manager and root_branch_id:
+                                try:
+                                    memory_results = memory_manager.apply_llm_memory_updates(
+                                        root_branch_id,
+                                        memory_updates,
+                                        node_id=None,
+                                        phase="phase0",
+                                    )
+                                except Exception as exc:
+                                    logger.warning("Failed to apply Phase 0 memory updates: %s", exc)
+                            else:
+                                logger.warning("Phase 0 memory update ignored (memory disabled or root branch missing).")
+                        if (
+                            memory_results
+                            and _has_memory_read_results(memory_results)
+                            and memory_manager
+                            and root_branch_id
+                        ):
+                            try:
+                                results_text = _format_memory_results_for_llm(memory_results)
+                                followup_prompt = phase0_prompt.copy()
+                                followup_prompt["Memory Read Results"] = (
+                                    "Your memory read operations returned the following results:\n\n"
+                                    f"{results_text}\n\n"
+                                    "Based on this information, you may:\n"
+                                    "1. Write additional insights to memory\n"
+                                    "2. Search for more related information\n"
+                                    "3. Complete with an empty update if done\n\n"
+                                    "Respond with ONLY a <memory_update> block."
+                                )
+                                max_rounds_cfg = getattr(cfg.memory, "max_memory_read_rounds", 2)
+                                if max_rounds_cfg > 0:
+                                    _run_memory_update_phase(
+                                        prompt=followup_prompt,
+                                        memory_manager=memory_manager,
+                                        branch_id=root_branch_id,
+                                        node_id=None,
+                                        phase_name="phase0",
+                                        model=cfg.agent.code.model,
+                                        temperature=cfg.agent.code.temp,
+                                        max_rounds=max(0, max_rounds_cfg - 1),
+                                        task_description=(
+                                            "You may update memory based on the Phase 0 context and memory read results. "
+                                            "Respond with ONLY a <memory_update> block."
+                                        ),
+                                    )
+                            except Exception as exc:
+                                logger.warning("Failed to run Phase 0 memory read follow-up: %s", exc)
+                        phase0_response = remove_memory_update_tags(phase0_response_raw)
+                    else:
+                        phase0_response = phase0_response_raw
                 phase0_plan = _normalize_phase0_plan(
                     _parse_json_object(phase0_response, context="Phase 0 plan")
                 )
@@ -4732,8 +4811,9 @@ class ParallelAgent:
                             None,
                         )
                     finally:
-                        if isinstance(active_env, ExecutionEnvironment):
-                            active_env.stop()
+                        # NOTE: Do NOT stop active_env here - it's needed for metrics parsing and plotting
+                        # active_env will be stopped in the outer finally block (around line 5241)
+                        pass
             else:
                 exec_result = process_interpreter.run(child_node.code, True)
                 process_interpreter.cleanup_session()
@@ -5209,8 +5289,30 @@ class ParallelAgent:
                 except Exception as exc:
                     logger.warning("Failed to write node_result memory: %s", exc)
 
+            # Copy workspace to persistent log directory for cross-stage file inheritance
+            # This prevents race conditions where worker workspace is overwritten by another task
+            node_log_dir = Path(cfg.workspace_dir) / "node_logs" / f"node_{child_node.id}"
+            try:
+                if node_log_dir.exists():
+                    shutil.rmtree(node_log_dir)
+                node_log_dir.mkdir(parents=True, exist_ok=True)
+                # Copy essential directories (src, bin, input, working)
+                for item_name in ["src", "bin", "input", "working"]:
+                    src_item = workspace_path / item_name
+                    if src_item.exists():
+                        dst_item = node_log_dir / item_name
+                        if src_item.is_dir():
+                            shutil.copytree(src_item, dst_item, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src_item, dst_item)
+                print(f"Copied workspace to node log directory: {node_log_dir}")
+            except Exception as exc:
+                logger.warning(f"Failed to copy workspace to log directory: {exc}")
+                # Fall back to worker workspace path if copy fails
+                node_log_dir = workspace_path
+
             # Set workspace_path on child node for cross-stage file inheritance
-            child_node.workspace_path = str(workspace_path)
+            child_node.workspace_path = str(node_log_dir)
 
             # Save final intermediate result (for timeout recovery)
             _save_intermediate_result(child_node, stage="final")
@@ -5235,6 +5337,12 @@ class ParallelAgent:
                     exec_env.stop()
                 except Exception as exc:
                     logger.warning("Failed to stop execution environment: %s", exc)
+            # Stop active_env (used for metrics parsing and plotting in split mode)
+            if isinstance(active_env, ExecutionEnvironment):
+                try:
+                    active_env.stop()
+                except Exception as exc:
+                    logger.warning("Failed to stop active execution environment: %s", exc)
             if plot_interpreter:
                 plot_interpreter.cleanup_session()
             if process_interpreter:
@@ -5261,9 +5369,7 @@ class ParallelAgent:
             },
             "Response format": HYPERPARAM_PROMPT_RESPONSE,
         }
-        memory_context = self._memory_context(self.root_branch_id, "hyperparam_idea")
-        if memory_context:
-            hyperparam_tuning_prompt["Memory"] = memory_context
+        # NOTE: root branch has no memory data, so we skip memory injection for hyperparam_idea.
 
         retry_count = 0
         retry_limit = 5
@@ -5316,9 +5422,7 @@ class ParallelAgent:
             },
             "Response format": ABLATION_PROMPT_RESPONSE,
         }
-        memory_context = self._memory_context(self.root_branch_id, "ablation_idea")
-        if memory_context:
-            ablation_prompt["Memory"] = memory_context
+        # NOTE: root branch has no memory data, so we skip memory injection for ablation_idea.
 
         retry_count = 0
         retry_limit = 5
@@ -5502,11 +5606,11 @@ class ParallelAgent:
             else:
                 node_data_list.append(None)  # None means new draft
 
-        memory_context = self._memory_context(self.root_branch_id, "journal_summary")
+        # NOTE: root branch has no memory data, so we skip memory context for journal_summary.
         if self.cfg.agent.get("summary", None) is not None:
             memory_summary = self.journal.generate_summary(
                 include_code=False,
-                memory_context=memory_context,
+                memory_context=None,
                 **{
                     "model": self.cfg.agent.summary.model,
                     "temp": self.cfg.agent.summary.temp,
@@ -5514,11 +5618,8 @@ class ParallelAgent:
             )
         else:
             memory_summary = self.journal.generate_summary(
-                include_code=False, memory_context=memory_context
+                include_code=False, memory_context=None
             )
-
-        # NOTE: journal_summary is not written to root branch to keep it memory-free.
-        # The summary is generated and used in-memory but not persisted to root.
 
         print("Submitting tasks to workers")
         task_ids = []

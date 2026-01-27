@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
@@ -175,6 +176,10 @@ CONSOLIDATION_PROMPT_NAME = "config/memory/consolidation"
 CONSOLIDATION_SYSTEM_MESSAGE_NAME = "config/memory/consolidation_system_message"
 PAPER_SECTION_GENERATION_NAME = "config/memory/paper_section_generation"
 PAPER_SECTION_GENERATION_SYSTEM_MESSAGE_NAME = "config/memory/paper_section_generation_system_message"
+PAPER_SECTION_OUTLINE_NAME = "config/memory/paper_section_outline"
+PAPER_SECTION_OUTLINE_SYSTEM_MESSAGE_NAME = "config/memory/paper_section_outline_system_message"
+PAPER_SECTION_FILL_NAME = "config/memory/paper_section_fill"
+PAPER_SECTION_FILL_SYSTEM_MESSAGE_NAME = "config/memory/paper_section_fill_system_message"
 
 
 def _try_load_prompt(name: str, description: str = "prompt") -> str | None:
@@ -332,6 +337,17 @@ def _safe_json_value(value: Any) -> Any:
         return str(value)
 
 
+def _to_md_str(value: Any) -> str:
+    """Convert value to markdown-safe string for joining."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, indent=2, ensure_ascii=False)
+    return str(value)
+
+
 def _core_lines(entries: dict[str, str]) -> list[str]:
     return [f"{key}: {value}" for key, value in sorted(entries.items(), key=lambda kv: kv[0])]
 
@@ -466,6 +482,8 @@ class MemoryManager:
         self.writeup_core_value_max_chars = int(_cfg_get(self.config, "writeup_core_value_max_chars", 500))
         self.writeup_recall_text_max_chars = int(_cfg_get(self.config, "writeup_recall_text_max_chars", 300))
         self.writeup_archival_text_max_chars = int(_cfg_get(self.config, "writeup_archival_text_max_chars", 400))
+        self.paper_section_mode = str(_cfg_get(self.config, "paper_section_mode", "memory_summary")).strip().lower()
+        self.paper_section_count = int(_cfg_get(self.config, "paper_section_count", 12))
 
         # Memory pressure management settings
         pressure_thresholds_cfg = _cfg_get(self.config, "pressure_thresholds", {}) or {}
@@ -738,6 +756,39 @@ class MemoryManager:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_archival_branch ON archival(branch_id)"
         )
+
+        # Inherited memory management tables (Copy-on-Write for branch inheritance)
+        # Stores event IDs that are excluded from inherited view for a branch
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inherited_exclusions (
+                branch_id TEXT,
+                excluded_event_id INTEGER,
+                excluded_at REAL,
+                PRIMARY KEY (branch_id, excluded_event_id)
+            )
+            """
+        )
+        # Stores summaries of consolidated inherited events for a branch
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inherited_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                branch_id TEXT,
+                summary_text TEXT,
+                summarized_event_ids TEXT,
+                kind TEXT,
+                created_at REAL
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inherited_exclusions_branch ON inherited_exclusions(branch_id)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inherited_summaries_branch ON inherited_summaries(branch_id)"
+        )
+
         self._conn.commit()
 
     def _init_fts(self) -> bool:
@@ -933,16 +984,9 @@ class MemoryManager:
             (branch_id,),
         ).fetchall()
         importance_map = {row["key"]: _coerce_importance(row["importance"]) for row in meta_rows}
-        protected = {
-            RESOURCE_INDEX_KEY,
-            RESOURCE_DIGEST_KEY,
-            "idea_md_summary",
-            "phase0_summary",
-        }
         removable_keys = [
             (importance_map.get(key, 3), key)
             for key in entries
-            if key not in protected
         ]
         removable_keys.sort(key=lambda pair: (pair[0], pair[1]))
         for _, key in removable_keys:
@@ -979,19 +1023,14 @@ class MemoryManager:
                 )
             except Exception:
                 record_id = None
-        resource_index = entries.get(RESOURCE_INDEX_KEY, "")
         for key in list(entries.keys()):
-            if key == RESOURCE_INDEX_KEY:
-                continue
             self._delete_core_key(
                 branch_id,
                 key,
                 reason="digest",
                 op_name="core_digest_compact",
             )
-        available = self.core_max_chars - len(resource_index)
-        if resource_index:
-            available -= len("CoreDigest: ")
+        available = self.core_max_chars
         digest_body = self._compress(snapshot_text, max(0, available), "core memory digest")
         if digest_body:
             digest_value = digest_body
@@ -1005,18 +1044,44 @@ class MemoryManager:
     # Memory Pressure Management (MemGPT-style)
     # ==========================================================================
 
-    def _count_events(self, branch_id: str, include_ancestors: bool = True) -> int:
-        """Count the number of recall events for a branch."""
+    def _count_events(
+        self,
+        branch_id: str,
+        include_ancestors: bool = True,
+        respect_exclusions: bool = False,
+    ) -> int:
+        """Count the number of recall events for a branch.
+
+        Args:
+            branch_id: Branch ID to count events for
+            include_ancestors: If True, include events from ancestor branches
+            respect_exclusions: If True, exclude events in inherited_exclusions table
+
+        Returns:
+            Count of recall events
+        """
         if include_ancestors:
             branch_ids = self._branch_chain(branch_id)
         else:
             branch_ids = [branch_id]
         if not branch_ids:
             return 0
+
         placeholders = ",".join(["?"] * len(branch_ids))
+        params: list = list(branch_ids)
+
+        # Build exclusion clause if needed
+        exclusion_clause = ""
+        if respect_exclusions:
+            excluded_event_ids = self._get_inherited_exclusions(branch_id)
+            if excluded_event_ids:
+                exclusion_placeholders = ",".join(["?"] * len(excluded_event_ids))
+                exclusion_clause = f" AND id NOT IN ({exclusion_placeholders})"
+                params.extend(excluded_event_ids)
+
         row = self._conn.execute(
-            f"SELECT COUNT(*) as cnt FROM events WHERE branch_id IN ({placeholders})",
-            branch_ids,
+            f"SELECT COUNT(*) as cnt FROM events WHERE branch_id IN ({placeholders}){exclusion_clause}",
+            params,
         ).fetchone()
         return int(row["cnt"]) if row else 0
 
@@ -1067,7 +1132,7 @@ class MemoryManager:
             "entry_count": len(entries),
         }
 
-    def check_memory_pressure(self, branch_id: str) -> dict:
+    def check_memory_pressure(self, branch_id: str, *, phase: str | None = None) -> dict:
         """
         Check memory pressure and return status with recommendations.
 
@@ -1075,6 +1140,10 @@ class MemoryManager:
         - Core memory usage vs core_max_chars
         - Recall event count vs recall_max_events
         - Archival memory size (informational)
+
+        Args:
+            branch_id: The branch to check memory pressure for.
+            phase: Optional phase name for logging (e.g., "draft", "phase1_iterative").
 
         Returns:
             {
@@ -1163,6 +1232,7 @@ class MemoryManager:
             "check_memory_pressure",
             "pressure",
             branch_id=branch_id,
+            phase=phase,
             details={
                 "pressure_level": pressure_level,
                 "overall_ratio": result["overall_ratio"],
@@ -1490,6 +1560,217 @@ class MemoryManager:
 
         return consolidated_count
 
+    def consolidate_inherited_memory(
+        self,
+        branch_id: str,
+        max_events: int | None = None,
+    ) -> int:
+        """
+        Consolidate inherited recall events using Copy-on-Write semantics.
+
+        This method handles memory inheritance consolidation without modifying
+        ancestor branches. When the total inherited events exceed the threshold:
+        1. Older inherited events are summarized using LLM
+        2. Summaries are stored in inherited_summaries (local to this branch)
+        3. Excluded event IDs are stored in inherited_exclusions
+        4. Ancestor data remains unchanged (Copy-on-Write)
+
+        Args:
+            branch_id: Branch ID to consolidate inherited memory for
+            max_events: Maximum events to keep (default: recall_max_events)
+
+        Returns:
+            Number of inherited events consolidated (excluded from view)
+        """
+        if not branch_id:
+            return 0
+
+        max_events = max_events or self.recall_max_events
+        threshold = int(max_events * self.recall_consolidation_threshold)
+
+        # Get the full branch chain (ancestors)
+        branch_chain = self._branch_chain(branch_id)
+        if len(branch_chain) <= 1:
+            # No ancestors to inherit from
+            return 0
+
+        # Get IDs of ancestor branches (excluding self)
+        ancestor_branch_ids = branch_chain[1:]  # Skip self (first element)
+        if not ancestor_branch_ids:
+            return 0
+
+        # Get already excluded event IDs for this branch
+        existing_exclusions = set()
+        rows = self._conn.execute(
+            "SELECT excluded_event_id FROM inherited_exclusions WHERE branch_id = ?",
+            (branch_id,),
+        ).fetchall()
+        for row in rows:
+            existing_exclusions.add(row[0])
+
+        # Fetch all inherited events (from ancestors only, respecting existing exclusions)
+        placeholders = ",".join(["?"] * len(ancestor_branch_ids))
+        exclusion_clause = ""
+        params: list = list(ancestor_branch_ids)
+        if existing_exclusions:
+            exclusion_placeholders = ",".join(["?"] * len(existing_exclusions))
+            exclusion_clause = f" AND id NOT IN ({exclusion_placeholders})"
+            params.extend(existing_exclusions)
+
+        inherited_events = self._conn.execute(
+            f"""
+            SELECT id, branch_id, kind, text, tags, created_at
+            FROM events
+            WHERE branch_id IN ({placeholders}){exclusion_clause}
+            ORDER BY created_at DESC
+            """,
+            params,
+        ).fetchall()
+
+        if len(inherited_events) <= threshold:
+            return 0
+
+        # Events to keep (most recent)
+        events_to_keep = inherited_events[:max_events]
+        # Events to consolidate (older ones) - these are from ancestors
+        events_to_consolidate = inherited_events[max_events:]
+
+        if not events_to_consolidate:
+            return 0
+
+        # Group events by kind for better consolidation
+        event_groups: dict[str, list[dict]] = {}
+        for event in events_to_consolidate:
+            kind = event["kind"] or "general"
+            if kind not in event_groups:
+                event_groups[kind] = []
+            event_groups[kind].append({
+                "id": event["id"],
+                "branch_id": event["branch_id"],
+                "kind": kind,
+                "text": event["text"],
+                "created_at": event["created_at"],
+            })
+
+        consolidated_count = 0
+        event_ids_to_exclude: list[int] = []
+        now = time.time()
+
+        for kind, group_events in event_groups.items():
+            if not group_events:
+                continue
+
+            # Prepare entries for consolidation
+            entries = [
+                {
+                    "kind": e["kind"],
+                    "text": e["text"],
+                    "timestamp": e["created_at"],
+                }
+                for e in group_events
+            ]
+
+            # Create consolidated summary using LLM
+            context = f"inherited recall events of type '{kind}'"
+            summary = self._consolidate_with_llm(
+                entries,
+                context,
+                max_chars=self.archival_max_chars,
+            )
+
+            if summary:
+                # Write summary to inherited_summaries table (local to this branch)
+                time_range = ""
+                if group_events:
+                    oldest = min(e["created_at"] for e in group_events)
+                    newest = max(e["created_at"] for e in group_events)
+                    time_range = f" (from {oldest:.0f} to {newest:.0f})"
+
+                summary_text = (
+                    f"[Inherited Summary - {kind}]{time_range}\n"
+                    f"Consolidated {len(group_events)} events from ancestors:\n\n"
+                    f"{summary}"
+                )
+
+                event_ids_json = json.dumps([e["id"] for e in group_events])
+                self._conn.execute(
+                    """
+                    INSERT INTO inherited_summaries
+                    (branch_id, summary_text, summarized_event_ids, kind, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (branch_id, summary_text, event_ids_json, kind, now),
+                )
+
+            # Mark events for exclusion (Copy-on-Write: don't delete, just exclude)
+            event_ids_to_exclude.extend(e["id"] for e in group_events)
+            consolidated_count += len(group_events)
+
+        # Insert exclusions (these events will be filtered out for this branch)
+        if event_ids_to_exclude:
+            for event_id in event_ids_to_exclude:
+                try:
+                    self._conn.execute(
+                        """
+                        INSERT OR IGNORE INTO inherited_exclusions
+                        (branch_id, excluded_event_id, excluded_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (branch_id, event_id, now),
+                    )
+                except Exception:
+                    pass  # Ignore duplicate key errors
+            self._conn.commit()
+
+        self._log_memory_event(
+            "consolidate_inherited_memory",
+            "consolidation",
+            branch_id=branch_id,
+            details={
+                "total_inherited_events": len(inherited_events),
+                "events_kept": len(events_to_keep),
+                "events_consolidated": consolidated_count,
+                "groups_processed": len(event_groups),
+                "ancestor_branches": len(ancestor_branch_ids),
+            },
+        )
+
+        return consolidated_count
+
+    def _get_inherited_exclusions(self, branch_id: str) -> set[int]:
+        """Get the set of event IDs excluded from inheritance for a branch."""
+        if not branch_id:
+            return set()
+        rows = self._conn.execute(
+            "SELECT excluded_event_id FROM inherited_exclusions WHERE branch_id = ?",
+            (branch_id,),
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def _get_inherited_summaries(self, branch_id: str) -> list[dict]:
+        """Get inherited summaries for a branch."""
+        if not branch_id:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT id, summary_text, summarized_event_ids, kind, created_at
+            FROM inherited_summaries
+            WHERE branch_id = ?
+            ORDER BY created_at DESC
+            """,
+            (branch_id,),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "summary_text": row["summary_text"],
+                "summarized_event_ids": json.loads(row["summarized_event_ids"] or "[]"),
+                "kind": row["kind"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def auto_consolidate_memory(
         self,
         branch_id: str,
@@ -1548,8 +1829,6 @@ class MemoryManager:
                     RESOURCE_DIGEST_KEY,
                     RESOURCE_INDEX_JSON_KEY,
                     RESOURCE_USED_KEY,
-                    "idea_md_summary",
-                    "phase0_summary",
                     "CoreDigest",
                 }
                 eval_items = [
@@ -1603,7 +1882,7 @@ class MemoryManager:
         self._conn.commit()
 
         # Check new pressure level
-        new_pressure = self.check_memory_pressure(branch_id)
+        new_pressure = self.check_memory_pressure(branch_id, phase=task_hint)
 
         result = {
             "actions_taken": actions_taken,
@@ -1812,10 +2091,21 @@ class MemoryManager:
             recall_count = self._count_events(branch_id, include_ancestors=True)
             overflow_threshold = int(self.recall_max_events * self.recall_consolidation_threshold)
             if recall_count > overflow_threshold:
+                # First, try to consolidate inherited memory (Copy-on-Write)
+                # This preserves ancestor data while reducing the effective recall count
                 try:
-                    self.consolidate_recall_events(branch_id)
+                    self.consolidate_inherited_memory(branch_id)
                 except Exception as exc:
-                    logger.warning("Auto-consolidation of recall events failed: %s", exc)
+                    logger.warning("Auto-consolidation of inherited memory failed: %s", exc)
+
+                # Then consolidate own events if still over threshold
+                own_count = self._count_events(branch_id, include_ancestors=False)
+                own_threshold = int(self.recall_max_events * self.recall_consolidation_threshold)
+                if own_count > own_threshold:
+                    try:
+                        self.consolidate_recall_events(branch_id)
+                    except Exception as exc:
+                        logger.warning("Auto-consolidation of recall events failed: %s", exc)
 
         return True
 
@@ -1883,16 +2173,49 @@ class MemoryManager:
     def write_archival(self, branch_id: str, text: str, tags: Any = None) -> None:
         self._insert_archival(branch_id, text, tags=tags, op_name="write_archival")
 
-    def _fetch_events(self, branch_ids: Sequence[str], limit: int) -> list[sqlite3.Row]:
+    def _fetch_events(
+        self,
+        branch_ids: Sequence[str],
+        limit: int,
+        current_branch_id: str | None = None,
+    ) -> list[sqlite3.Row]:
+        """Fetch recall events from branches with inherited exclusion support.
+
+        Args:
+            branch_ids: List of branch IDs to fetch events from (typically branch chain)
+            limit: Maximum number of events to return
+            current_branch_id: If provided, exclude events that have been consolidated
+                              for this branch via inherited_exclusions table
+
+        Returns:
+            List of event rows ordered by created_at DESC
+        """
         if not branch_ids:
             return []
+
+        # Get inherited exclusions if current_branch_id is provided
+        excluded_event_ids: set[int] = set()
+        if current_branch_id:
+            excluded_event_ids = self._get_inherited_exclusions(current_branch_id)
+
         placeholders = ",".join(["?"] * len(branch_ids))
+        params: list = list(branch_ids)
+
+        # Build exclusion clause if needed
+        exclusion_clause = ""
+        if excluded_event_ids:
+            exclusion_placeholders = ",".join(["?"] * len(excluded_event_ids))
+            exclusion_clause = f" AND id NOT IN ({exclusion_placeholders})"
+            params.extend(excluded_event_ids)
+
+        params.append(limit)
+
         query = (
-            f"SELECT kind, text, tags, created_at FROM events "
-            f"WHERE branch_id IN ({placeholders}) "
+            f"SELECT id, kind, text, tags, created_at FROM events "
+            f"WHERE branch_id IN ({placeholders}){exclusion_clause} "
             "ORDER BY created_at DESC LIMIT ?"
         )
-        rows = self._conn.execute(query, [*branch_ids, limit]).fetchall()
+        rows = self._conn.execute(query, params).fetchall()
         return rows
 
     def retrieve_archival(
@@ -2577,6 +2900,8 @@ class MemoryManager:
             event["node_id"] = node_id
             event["branch_id"] = branch_id
             event["source"] = "llm"
+            if "phase" not in event and use_phase:
+                event["phase"] = use_phase
             if "kind" not in event:
                 event["kind"] = "llm_insight"
             self.mem_recall_append(event)
@@ -2782,9 +3107,30 @@ class MemoryManager:
         return core_text, resource_index or "", core_items
 
     def _render_recall_memory(self, branch_ids: list[str]) -> tuple[str, list]:
-        """Render recall memory section."""
-        recall_rows = self._fetch_events(branch_ids, self.recall_max_events)
+        """Render recall memory section with inherited memory consolidation support.
+
+        This method:
+        1. Fetches recall events, excluding those consolidated via inherited_exclusions
+        2. Includes inherited summaries from consolidated ancestor events
+        3. Returns combined recall text and row data
+        """
+        # Current branch is the first in the chain
+        current_branch_id = branch_ids[0] if branch_ids else None
+
+        # Fetch events with inherited exclusion support
+        recall_rows = self._fetch_events(
+            branch_ids, self.recall_max_events, current_branch_id=current_branch_id
+        )
+
         recall_lines = []
+
+        # First, add inherited summaries (consolidated ancestor events)
+        if current_branch_id:
+            inherited_summaries = self._get_inherited_summaries(current_branch_id)
+            for summary in inherited_summaries:
+                recall_lines.append(f"- [inherited_summary] {summary['summary_text']}")
+
+        # Then add regular recall events
         for row in recall_rows:
             tags = ""
             try:
@@ -2794,6 +3140,7 @@ class MemoryManager:
             except json.JSONDecodeError:
                 tags = ""
             recall_lines.append(f"- [{row['kind']}] {row['text']}{tags}")
+
         recall_text = "\n".join(recall_lines).strip()
         return recall_text, recall_rows
 
@@ -2991,12 +3338,14 @@ class MemoryManager:
         """Get idea text and summary."""
         idea_text = ""
         if no_budget_limit:
-            idea_path = run_dir / "idea.md"
-            if idea_path.exists():
-                try:
-                    idea_text = idea_path.read_text(encoding="utf-8")
-                except Exception:
-                    pass
+            idea_paths = [run_dir / "idea.md", run_dir.parent / "idea.md"]
+            for idea_path in idea_paths:
+                if idea_path.exists():
+                    try:
+                        idea_text = idea_path.read_text(encoding="utf-8")
+                        break
+                    except Exception:
+                        pass
 
         if not idea_text:
             idea_archival = self.retrieve_archival(
@@ -3203,6 +3552,7 @@ class MemoryManager:
 
     def _build_paper_sections(
         self,
+        run_dir: Path,
         best_branch: str,
         resources_used: list[dict[str, Any]],
         no_budget_limit: bool,
@@ -3256,6 +3606,8 @@ class MemoryManager:
                 "tags": _row_get(row, "tags", []),
             })
 
+        idea_text, idea_summary = self._get_idea_text_and_summary(run_dir, best_branch, no_budget_limit)
+
         # Build memory context for LLM
         memory_context = {
             "core_memory": core_memory,
@@ -3263,6 +3615,8 @@ class MemoryManager:
             "archival_memory": archival_memory,
             "resources_used": resources_used,
             "best_branch": best_branch,
+            "idea_text": idea_text,
+            "idea_summary": idea_summary,
         }
 
         # Generate sections using LLM
@@ -3285,6 +3639,13 @@ class MemoryManager:
             logger.warning("LLM compression not enabled. Using fallback section structure.")
             return self._build_fallback_sections(memory_context)
 
+        if self.paper_section_mode == "idea_then_memory":
+            return self._generate_sections_from_idea(memory_context)
+
+        return self._generate_sections_from_memory_summary(memory_context)
+
+    def _generate_sections_from_memory_summary(self, memory_context: dict[str, Any]) -> dict[str, Any]:
+        """Generate sections by letting the LLM decide from a memory summary (current default)."""
         try:
             from ai_scientist.llm import get_response_from_llm
 
@@ -3333,16 +3694,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
 
             # Parse JSON response
             try:
-                # Try to extract JSON from response if it's wrapped in markdown code blocks
-                response = response.strip()
-                if response.startswith("```json"):
-                    response = response[7:]
-                if response.startswith("```"):
-                    response = response[3:]
-                if response.endswith("```"):
-                    response = response[:-3]
-                response = response.strip()
-
+                response = self._extract_json_payload(response)
                 sections = json.loads(response)
 
                 # Validate that we got a dictionary
@@ -3364,6 +3716,619 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             logger.warning(f"Section generation with LLM failed: {exc}. Using fallback.")
             return self._build_fallback_sections(memory_context)
 
+    def _generate_sections_from_idea(self, memory_context: dict[str, Any]) -> dict[str, Any]:
+        """Generate a fixed number of sections from the idea, then fill each via memory search."""
+        idea_text = (memory_context.get("idea_text") or memory_context.get("idea_summary") or "").strip()
+        if not idea_text:
+            logger.warning("Idea text not found; falling back to memory-summary section generation.")
+            return self._generate_sections_from_memory_summary(memory_context)
+
+        section_count = max(3, int(self.paper_section_count))
+
+        try:
+            from ai_scientist.llm import get_response_from_llm
+
+            outline_prompt = _try_load_prompt(PAPER_SECTION_OUTLINE_NAME, "paper section outline prompt")
+            if outline_prompt is None:
+                outline_prompt = """You are given a research idea. Propose exactly {section_count} paper sections that would be necessary to write the paper.
+
+Idea:
+{idea_text}
+
+Return a JSON array of objects. Each object must have:
+- key: snake_case identifier
+- title: human-readable section title
+- focus: 1-2 sentence description of what the section should cover
+- keywords: array of search keywords/phrases to retrieve memory
+
+Requirements:
+- Exactly {section_count} sections
+- Include at least 'experimental_setup' and 'results'
+- Avoid duplicates
+- Return ONLY valid JSON (no markdown fences)
+"""
+
+            outline_prompt = outline_prompt.format(
+                idea_text=idea_text,
+                section_count=section_count,
+            )
+
+            system_message = _try_load_prompt(PAPER_SECTION_OUTLINE_SYSTEM_MESSAGE_NAME, "paper section outline system message")
+            if system_message is None:
+                system_message = "You are a research paper planning assistant. Produce section outlines in JSON."
+
+            outline_response, _ = get_response_from_llm(
+                prompt=outline_prompt,
+                client=self._compression_client,
+                model=self._compression_model_name,
+                system_message=system_message.strip(),
+                temperature=0.2,
+            )
+
+            if not outline_response:
+                logger.warning("LLM returned empty outline response. Falling back to memory-summary mode.")
+                return self._generate_sections_from_memory_summary(memory_context)
+
+            outline_payload = self._extract_json_payload(outline_response)
+            try:
+                parsed = json.loads(outline_payload)
+            except json.JSONDecodeError as exc:
+                logger.warning(f"Failed to parse outline JSON: {exc}. Falling back to memory-summary mode.")
+                return self._generate_sections_from_memory_summary(memory_context)
+
+            sections_list = parsed.get("sections", []) if isinstance(parsed, dict) else parsed
+            if not isinstance(sections_list, list):
+                logger.warning("Outline response is not a list. Falling back to memory-summary mode.")
+                return self._generate_sections_from_memory_summary(memory_context)
+
+            normalized_sections = self._normalize_section_outline(sections_list, section_count, memory_context)
+            if not normalized_sections:
+                logger.warning("Outline normalization failed. Falling back to memory-summary mode.")
+                return self._generate_sections_from_memory_summary(memory_context)
+
+            filled_sections: dict[str, Any] = {}
+            for section in normalized_sections:
+                content = self._fill_section_from_memory(section, memory_context)
+                filled_sections[section["key"]] = content
+
+            filled_sections["resources_used"] = memory_context.get("resources_used", [])
+            logger.info(
+                "Generated %d sections from idea outline with memory fill.",
+                len(filled_sections),
+            )
+            return filled_sections
+
+        except Exception as exc:
+            logger.warning(f"Idea-based section generation failed: {exc}. Using fallback.")
+            return self._build_fallback_sections(memory_context)
+
+    def _fill_section_from_memory(self, section: dict[str, Any], memory_context: dict[str, Any]) -> str:
+        """Fill a single section using memory search and LLM synthesis."""
+        memory_slice = self._filter_memory_for_section(section, memory_context)
+        try:
+            from ai_scientist.llm import get_response_from_llm
+
+            prompt_template = _try_load_prompt(PAPER_SECTION_FILL_NAME, "paper section fill prompt")
+            if prompt_template is None:
+                prompt_template = """Write the content for the following paper section using ONLY the provided memory slice.
+
+Section Spec (JSON):
+{section_spec}
+
+Memory Slice (JSON):
+{memory_slice}
+
+Guidelines:
+- Use only the memory slice; do not invent details.
+- If relevant info is missing, say \"Not found in memory.\" succinctly.
+- Return plain markdown text (no JSON).
+"""
+
+            prompt = prompt_template.format(
+                section_spec=json.dumps(section, ensure_ascii=True, indent=2),
+                memory_slice=json.dumps(memory_slice, ensure_ascii=True, indent=2),
+            )
+
+            system_message = _try_load_prompt(PAPER_SECTION_FILL_SYSTEM_MESSAGE_NAME, "paper section fill system message")
+            if system_message is None:
+                system_message = "You are a research paper writing assistant."
+
+            response, _ = get_response_from_llm(
+                prompt=prompt,
+                client=self._compression_client,
+                model=self._compression_model_name,
+                system_message=system_message.strip(),
+                temperature=0.3,
+            )
+            content = response.strip() if response else "Not found in memory."
+            if str(section.get("key", "")) == "experimental_setup":
+                content = self._append_experimental_setup_facts(content, memory_slice)
+            return content
+        except Exception as exc:
+            logger.warning("Failed to fill section %s: %s", section.get("key"), exc)
+            return "Not found in memory."
+
+    def _append_experimental_setup_facts(self, content: str, memory_slice: dict[str, Any]) -> str:
+        """Append deterministic environment facts if present in memory."""
+        core = memory_slice.get("core_memory", {}) or {}
+        facts: list[str] = []
+
+        compiler = core.get("selected_compiler")
+        if not compiler:
+            compiler = self._get_core_any_branch("selected_compiler")
+        if compiler:
+            facts.append(f"- Compiler (core): {compiler}")
+
+        omp_smoke = core.get("omp_smoke_build")
+        if not omp_smoke:
+            omp_smoke = self._get_core_any_branch("omp_smoke_build")
+        parsed = None
+        if omp_smoke:
+            if isinstance(omp_smoke, dict):
+                parsed = omp_smoke
+            elif isinstance(omp_smoke, str):
+                try:
+                    parsed = ast.literal_eval(omp_smoke)
+                except Exception:
+                    parsed = None
+        if isinstance(parsed, dict):
+            flags = parsed.get("flags")
+            if flags:
+                facts.append(f"- Compiler flags (omp_smoke_build): `{flags}`")
+            compiler_used = parsed.get("compiler")
+            if compiler_used and not compiler:
+                facts.append(f"- Compiler (omp_smoke_build): {compiler_used}")
+
+        env_verified = core.get("ablation_studies_1_first_attempt_environment_verified")
+        if not env_verified:
+            env_verified = self._get_core_any_branch("ablation_studies_1_first_attempt_environment_verified")
+        if env_verified:
+            facts.append(f"- Environment verified: {env_verified}")
+
+        if not facts:
+            return content
+
+        return f"{content}\n\n### Extracted environment facts\n" + "\n".join(facts)
+
+    def _get_core_any_branch(self, key: str) -> Any:
+        """Fetch a core_kv value across all branches (latest by updated_at)."""
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM core_kv WHERE key=? ORDER BY updated_at DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+            if row:
+                return row["value"]
+        except Exception:
+            return None
+        return None
+
+    def _sample_memory_for_keyword_generation(self, memory_context: dict[str, Any]) -> dict[str, Any]:
+        """
+        Sample memory data for LLM keyword generation.
+        Returns a representative subset to avoid overwhelming the LLM.
+        """
+        core_memory = memory_context.get("core_memory", {}) or {}
+        recall_memory = memory_context.get("recall_memory", []) or []
+        archival_memory = memory_context.get("archival_memory", []) or []
+
+        # Sample core memory keys (up to 10 entries)
+        core_sample = {}
+        for i, (key, value) in enumerate(core_memory.items()):
+            if i >= 10:
+                break
+            value_str = str(value)
+            # Truncate long values
+            if len(value_str) > 200:
+                value_str = value_str[:200] + "..."
+            core_sample[key] = value_str
+
+        # Sample recall events (up to 15 entries, distributed across timeline)
+        recall_sample = []
+        if len(recall_memory) > 15:
+            # Take samples from beginning, middle, and end
+            indices = [0, 1, 2, len(recall_memory)//3, len(recall_memory)//2,
+                      2*len(recall_memory)//3, -3, -2, -1]
+            for idx in indices[:15]:
+                if 0 <= idx < len(recall_memory) or idx < 0:
+                    event = recall_memory[idx]
+                    text = str(event.get("text", ""))
+                    if len(text) > 150:
+                        text = text[:150] + "..."
+                    recall_sample.append({
+                        "kind": event.get("kind", ""),
+                        "text": text,
+                    })
+        else:
+            for event in recall_memory[:15]:
+                text = str(event.get("text", ""))
+                if len(text) > 150:
+                    text = text[:150] + "..."
+                recall_sample.append({
+                    "kind": event.get("kind", ""),
+                    "text": text,
+                })
+
+        # Sample archival memory (up to 10 entries)
+        archival_sample = []
+        for i, entry in enumerate(archival_memory[:10]):
+            text = str(entry.get("text", ""))
+            if len(text) > 150:
+                text = text[:150] + "..."
+            archival_sample.append({
+                "tags": entry.get("tags", []),
+                "text": text,
+            })
+
+        return {
+            "core_memory_sample": core_sample,
+            "recall_memory_sample": recall_sample,
+            "archival_memory_sample": archival_sample,
+        }
+
+    def _generate_section_keywords_with_llm(
+        self,
+        section: dict[str, Any],
+        memory_context: dict[str, Any]
+    ) -> list[str]:
+        """
+        Use LLM to dynamically generate optimal keywords for a section based on memory content.
+
+        Args:
+            section: Section definition (key, title, focus)
+            memory_context: Full memory data (core, recall, archival)
+
+        Returns:
+            List of generated keywords (5-15 items)
+        """
+        # Check if LLM compression is available
+        if not self.use_llm_compression or self._compression_client is None:
+            logger.warning("LLM not available for keyword generation. Using title/focus-based keywords.")
+            return self._section_keywords(section)
+
+        try:
+            from ai_scientist.llm import get_response_from_llm
+
+            # Sample memory to avoid overwhelming the LLM
+            memory_sample = self._sample_memory_for_keyword_generation(memory_context)
+
+            prompt = f"""Analyze the following memory data and generate optimal search keywords to extract information for the paper section "{section.get('title', '')}".
+
+Section description: {section.get('focus', '')}
+
+Memory Sample:
+{json.dumps(memory_sample, indent=2, ensure_ascii=False)}
+
+Requirements:
+- Generate 5-15 keywords that are likely to appear in the memory
+- Include both general terms and specific technical terms
+- Include synonyms and abbreviations (e.g., "OpenMP" and "omp")
+- Focus on terms that actually exist in the memory sample
+- Prioritize keywords that match the section's focus
+
+Return a JSON array: ["keyword1", "keyword2", ...]"""
+
+            response, _ = get_response_from_llm(
+                prompt=prompt,
+                client=self._compression_client,
+                model=self._compression_model_name,
+                system_message="You are a keyword extraction assistant. Generate search keywords in JSON array format.",
+                temperature=0.3,
+            )
+
+            if not response:
+                logger.warning(f"LLM returned empty response for keyword generation (section: {section.get('key')}). Using fallback.")
+                return self._section_keywords(section)
+
+            # Parse JSON response
+            try:
+                response_clean = self._extract_json_payload(response)
+                keywords = json.loads(response_clean)
+
+                if not isinstance(keywords, list):
+                    logger.warning(f"LLM returned non-list response for keywords (section: {section.get('key')}). Using fallback.")
+                    return self._section_keywords(section)
+
+                # Filter and validate keywords
+                valid_keywords = []
+                for kw in keywords:
+                    if isinstance(kw, str) and kw.strip():
+                        valid_keywords.append(kw.strip())
+
+                if not valid_keywords:
+                    logger.warning(f"No valid keywords generated (section: {section.get('key')}). Using fallback.")
+                    return self._section_keywords(section)
+
+                logger.info(f"Generated {len(valid_keywords)} keywords for section '{section.get('key')}' using LLM.")
+                return valid_keywords[:15]  # Limit to 15 keywords
+
+            except json.JSONDecodeError as exc:
+                logger.warning(f"Failed to parse LLM keyword response as JSON (section: {section.get('key')}): {exc}. Using fallback.")
+                return self._section_keywords(section)
+
+        except Exception as exc:
+            logger.warning(f"Keyword generation with LLM failed (section: {section.get('key')}): {exc}. Using fallback.")
+            return self._section_keywords(section)
+
+    def _filter_memory_for_section(self, section: dict[str, Any], memory_context: dict[str, Any]) -> dict[str, Any]:
+        """Search memory for section-relevant content using simple keyword matching."""
+        keywords = self._section_keywords(section)
+        keywords_lower = [k.lower() for k in keywords if k]
+
+        def matches(text: str) -> bool:
+            text_lower = text.lower()
+            return any(k in text_lower for k in keywords_lower)
+
+        core_memory = memory_context.get("core_memory", {}) or {}
+        recall_memory = memory_context.get("recall_memory", []) or []
+        archival_memory = memory_context.get("archival_memory", []) or []
+
+        filtered_core: dict[str, Any] = {}
+        for key, value in core_memory.items():
+            value_str = str(value)
+            if not keywords_lower or matches(key) or matches(value_str):
+                filtered_core[key] = _truncate(value_str, 2000)
+            if len(filtered_core) >= 20:
+                break
+
+        filtered_recall = []
+        for event in recall_memory:
+            text = str(event.get("text", ""))
+            kind = str(event.get("kind", ""))
+            if not keywords_lower or matches(text) or matches(kind):
+                filtered_recall.append({
+                    "ts": event.get("ts", ""),
+                    "kind": kind,
+                    "text": _truncate(text, 1500),
+                })
+            if len(filtered_recall) >= 30:
+                break
+
+        filtered_archival = []
+        for entry in archival_memory:
+            text = str(entry.get("text", ""))
+            tags = entry.get("tags", [])
+            tags_text = " ".join(tags) if isinstance(tags, list) else str(tags)
+            if not keywords_lower or matches(text) or matches(tags_text):
+                filtered_archival.append({
+                    "id": entry.get("id", ""),
+                    "tags": tags,
+                    "text": _truncate(text, 1500),
+                })
+            if len(filtered_archival) >= 20:
+                break
+
+        section_key = str(section.get("key", "") or "")
+        if section_key == "experimental_setup":
+            for core_key in (
+                "selected_compiler",
+                "omp_smoke_build",
+                "phase1_complete_reason",
+                "ablation_studies_1_first_attempt_environment_verified",
+            ):
+                if core_key in core_memory and core_key not in filtered_core:
+                    filtered_core[core_key] = _truncate(str(core_memory.get(core_key, "")), 2000)
+
+        return {
+            "idea_summary": memory_context.get("idea_summary", ""),
+            "section_key": section.get("key"),
+            "core_memory": filtered_core,
+            "recall_memory": filtered_recall,
+            "archival_memory": filtered_archival,
+        }
+
+    def _section_keywords(self, section: dict[str, Any]) -> list[str]:
+        keywords = []
+        for item in section.get("keywords", []) or []:
+            if isinstance(item, str) and item.strip():
+                keywords.append(item.strip())
+        if not keywords:
+            title = str(section.get("title", ""))
+            focus = str(section.get("focus", ""))
+            keywords.extend(self._tokenize_keywords(title))
+            keywords.extend(self._tokenize_keywords(focus))
+        # Deduplicate while preserving order
+        seen = set()
+        deduped = []
+        for kw in keywords:
+            kw_norm = kw.strip()
+            if not kw_norm or kw_norm.lower() in seen:
+                continue
+            seen.add(kw_norm.lower())
+            deduped.append(kw_norm)
+        return deduped[:12]
+
+    def _tokenize_keywords(self, text: str) -> list[str]:
+        tokens = re.split(r"[^A-Za-z0-9]+", text)
+        return [t for t in tokens if len(t) >= 3]
+
+    def _normalize_section_outline(
+        self,
+        sections: list[dict[str, Any]],
+        section_count: int,
+        memory_context: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            key = section.get("key") or section.get("name") or ""
+            title = section.get("title") or section.get("name") or key
+            focus = section.get("focus") or ""
+            key = self._to_snake_case(str(key or title))
+            if not key or key in seen_keys:
+                continue
+            normalized.append({
+                "key": key,
+                "title": str(title),
+                "focus": str(focus),
+                "keywords": section.get("keywords", []) if isinstance(section.get("keywords", []), list) else [],
+            })
+            seen_keys.add(key)
+
+        # Required sections with minimal static keywords
+        # Keywords will be dynamically generated by LLM based on memory content
+        required = {
+            "experimental_setup": {
+                "key": "experimental_setup",
+                "title": "Experimental Setup",
+                "focus": "Hardware/software environment, datasets, and evaluation protocol.",
+                "keywords": [],  # Will be generated by LLM
+            },
+            "results": {
+                "key": "results",
+                "title": "Results",
+                "focus": "Key results, metrics, and comparative findings.",
+                "keywords": [],  # Will be generated by LLM
+            },
+        }
+        indexed = {sec["key"]: sec for sec in normalized}
+        for key, spec in required.items():
+            if key in indexed:
+                existing = indexed[key]
+                if not existing.get("title"):
+                    existing["title"] = spec.get("title", existing.get("title", ""))
+                if not existing.get("focus"):
+                    existing["focus"] = spec.get("focus", existing.get("focus", ""))
+                merged_keywords = []
+                for kw in existing.get("keywords", []) or []:
+                    if isinstance(kw, str) and kw.strip():
+                        merged_keywords.append(kw.strip())
+                for kw in spec.get("keywords", []) or []:
+                    if isinstance(kw, str) and kw.strip() and kw.strip() not in merged_keywords:
+                        merged_keywords.append(kw.strip())
+                existing["keywords"] = merged_keywords
+            else:
+                normalized.append(spec)
+                seen_keys.add(key)
+                indexed[key] = spec
+
+        fallback_order = [
+            {
+                "key": "title_candidates",
+                "title": "Title Candidates",
+                "focus": "Possible paper titles.",
+                "keywords": ["title", "name"],
+            },
+            {
+                "key": "abstract_material",
+                "title": "Abstract Material",
+                "focus": "Summary of the idea, approach, and results.",
+                "keywords": ["abstract", "summary", "goal"],
+            },
+            {
+                "key": "problem_statement",
+                "title": "Problem Statement",
+                "focus": "What problem is being solved and why it matters.",
+                "keywords": ["problem", "motivation", "challenge"],
+            },
+            {
+                "key": "hypothesis",
+                "title": "Hypothesis",
+                "focus": "Key hypothesis or expected outcome.",
+                "keywords": ["hypothesis", "expectation"],
+            },
+            {
+                "key": "method",
+                "title": "Method",
+                "focus": "Method description and implementation details.",
+                "keywords": ["method", "implementation", "algorithm"],
+            },
+            {
+                "key": "ablations_negative",
+                "title": "Ablations / Negative Results",
+                "focus": "Ablations, failure cases, or negative results.",
+                "keywords": ["ablation", "negative", "failure"],
+            },
+            {
+                "key": "threats_to_validity",
+                "title": "Threats To Validity",
+                "focus": "Limitations and threats to validity.",
+                "keywords": ["limitations", "threats", "validity"],
+            },
+            {
+                "key": "reproducibility_checklist",
+                "title": "Reproducibility Checklist",
+                "focus": "Reproducibility details and checklist items.",
+                "keywords": ["reproducibility", "checklist"],
+            },
+            {
+                "key": "narrative_bullets",
+                "title": "Narrative Bullets",
+                "focus": "Narrative framing or positioning.",
+                "keywords": ["narrative", "positioning", "related work"],
+            },
+            {
+                "key": "failure_modes_timeline",
+                "title": "Failure Modes Timeline",
+                "focus": "Timeline of failures or debugging notes.",
+                "keywords": ["failure", "timeline", "debug"],
+            },
+        ]
+
+        if len(normalized) < section_count:
+            for spec in fallback_order:
+                if len(normalized) >= section_count:
+                    break
+                if spec["key"] not in seen_keys:
+                    normalized.append(spec)
+                    seen_keys.add(spec["key"])
+
+        if len(normalized) > section_count:
+            required_keys = ["experimental_setup", "results"]
+            trimmed: list[dict[str, Any]] = []
+            for key in required_keys:
+                for sec in normalized:
+                    if sec["key"] == key and sec not in trimmed:
+                        trimmed.append(sec)
+                        break
+            for sec in normalized:
+                if len(trimmed) >= section_count:
+                    break
+                if sec["key"] in required_keys:
+                    continue
+                trimmed.append(sec)
+            normalized = trimmed[:section_count]
+
+        # Generate keywords dynamically using LLM if memory_context is provided
+        logger.info(f"[Keyword Gen] _normalize_section_outline called with {len(normalized)} sections, memory_context={'provided' if memory_context is not None else 'None'}")
+        if memory_context is not None:
+            logger.info(f"[Keyword Gen] Processing {len(normalized)} sections for keyword generation/validation...")
+            for section in normalized:
+                # Only generate keywords if section has no keywords or empty keywords
+                existing_keywords = section.get("keywords", [])
+                section_key = section.get("key", "unknown")
+                logger.info(f"[Keyword Gen] Checking section '{section_key}': has {len(existing_keywords) if existing_keywords else 0} existing keywords")
+
+                if not existing_keywords or (isinstance(existing_keywords, list) and len(existing_keywords) == 0):
+                    logger.info(f"[Keyword Gen] Generating keywords for section '{section_key}' using LLM (empty keywords detected)...")
+                    generated_keywords = self._generate_section_keywords_with_llm(section, memory_context)
+                    section["keywords"] = generated_keywords
+                    logger.info(f"[Keyword Gen] Successfully generated {len(generated_keywords)} keywords for section '{section_key}': {generated_keywords[:5] if len(generated_keywords) > 0 else '[]'}...")
+                else:
+                    preview = existing_keywords[:3] if len(existing_keywords) > 3 else existing_keywords
+                    logger.info(f"[Keyword Gen] Section '{section_key}' already has {len(existing_keywords)} keywords (from LLM outline): {preview}...")
+        else:
+            logger.info("[Keyword Gen] memory_context is None, skipping keyword generation")
+
+        return normalized
+
+    def _to_snake_case(self, text: str) -> str:
+        text = re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")
+        return text.lower()
+
+    def _extract_json_payload(self, response: str) -> str:
+        response = response.strip()
+        if response.startswith("```json"):
+            response = response[7:]
+        if response.startswith("```"):
+            response = response[3:]
+        if response.endswith("```"):
+            response = response[:-3]
+        return response.strip()
+
     def _prepare_memory_summary(self, memory_context: dict[str, Any]) -> str:
         """Prepare a formatted summary of 3-tier memory for LLM analysis.
 
@@ -3371,6 +4336,16 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         relevant information for paper sections.
         """
         parts = []
+
+        idea_text = memory_context.get("idea_text", "") or ""
+        idea_summary = memory_context.get("idea_summary", "") or ""
+        if idea_text or idea_summary:
+            idea_lines = ["## Idea"]
+            if idea_summary:
+                idea_lines.append(f"Summary:\n{idea_summary[:4000]}")
+            if idea_text and idea_text != idea_summary:
+                idea_lines.append(f"Text:\n{idea_text[:4000]}")
+            parts.append("\n\n".join(idea_lines))
 
         # Core Memory (always-injected key-value context)
         core_memory = memory_context.get("core_memory", {})
@@ -3514,6 +4489,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
 
         # Build paper sections using LLM self-retrieval from 3-tier memory
         sections = self._build_paper_sections(
+            run_dir=run_dir,
             best_branch=best_branch,
             resources_used=resources_used,
             no_budget_limit=no_budget_limit,
@@ -3738,7 +4714,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             md_sections.append("")
             if best_node_data.get("analysis"):
                 md_sections.append("**Analysis Summary**:")
-                md_sections.append(best_node_data["analysis"])
+                md_sections.append(_to_md_str(best_node_data["analysis"]))
                 md_sections.append("")
         else:
             md_sections.append("No best node data available.")
@@ -3760,7 +4736,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             if best_node_data.get("overall_plan"):
                 md_sections.append("### Overall Plan")
                 md_sections.append("```")
-                md_sections.append(best_node_data["overall_plan"])
+                md_sections.append(_to_md_str(best_node_data["overall_plan"]))
                 md_sections.append("```")
                 md_sections.append("")
 
@@ -3768,7 +4744,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             if best_node_data.get("plan"):
                 md_sections.append("### Implementation Plan")
                 md_sections.append("```")
-                md_sections.append(best_node_data["plan"])
+                md_sections.append(_to_md_str(best_node_data["plan"]))
                 md_sections.append("```")
                 md_sections.append("")
 
@@ -3776,7 +4752,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
             if best_node_data.get("code"):
                 md_sections.append("### Code Implementation")
                 md_sections.append("```python")
-                md_sections.append(best_node_data["code"])
+                md_sections.append(_to_md_str(best_node_data["code"]))
                 md_sections.append("```")
                 md_sections.append("")
 
@@ -3813,7 +4789,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
                 md_sections.append("### Plot Analyses")
                 for i, analysis in enumerate(plot_analyses, 1):
                     md_sections.append(f"#### Analysis {i}")
-                    md_sections.append(analysis)
+                    md_sections.append(_to_md_str(analysis))
                     md_sections.append("")
 
             # VLM feedback summary
@@ -3957,7 +4933,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         md_sections.append("## Execution Feedback")
         md_sections.append("")
         if best_node_data and best_node_data.get("exec_time_feedback"):
-            md_sections.append(best_node_data["exec_time_feedback"])
+            md_sections.append(_to_md_str(best_node_data["exec_time_feedback"]))
         else:
             md_sections.append("No execution time feedback recorded.")
         md_sections.append("")
@@ -3968,7 +4944,7 @@ Return ONLY a valid JSON object, no additional text or formatting."""
         if failure_notes:
             for i, note in enumerate(failure_notes, 1):
                 md_sections.append(f"### Failure {i}")
-                md_sections.append(note)
+                md_sections.append(_to_md_str(note))
                 md_sections.append("")
         else:
             md_sections.append("No significant failures recorded.")

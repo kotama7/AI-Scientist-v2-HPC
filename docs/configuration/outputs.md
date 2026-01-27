@@ -22,6 +22,27 @@ artifacts, and optional memory snapshots.
 - `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/`
   (workspace with `input/` and `working/`)
 
+## Node logs and stage best (workspace inheritance)
+
+Node workspaces are persisted for cross-stage file inheritance:
+
+- `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/node_logs/node_<id>/`
+  (temporary: node workspace copied after processing, deleted after stage completion)
+- `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/stage_best/<stage_name>/`
+  (permanent: best node's workspace preserved for next stage inheritance)
+
+Structure within each node log or stage best directory:
+```
+node_logs/node_<id>/
+├── src/           # Source code
+├── bin/           # Compiled binaries
+├── input/         # Input data (excluding mounted data)
+└── working/       # Working directory with experiment outputs
+```
+
+These directories enable safe workspace inheritance without race conditions
+between parallel workers. See [../architecture/execution-flow.md](../architecture/execution-flow.md#workspace-inheritance) for details.
+
 ## Plotting and writeups
 
 - `experiments/<timestamp>_<idea>_attempt_<id>/figures/` (plot aggregation output)
@@ -41,7 +62,7 @@ artifacts, and optional memory snapshots.
 
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/memory.sqlite`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/resource_snapshot.json`
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory_for_paper.md`
+- `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory-for-paper.md`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory_for_paper.json`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_writeup_memory.json`
 
@@ -69,6 +90,17 @@ experiments/2024-09-12_himeno_attempt_0/
   logs/0-run/
     unified_tree_viz.html
     phase_logs/
+  0-run/
+    worker_0/              # Temporary worker workspace
+    worker_1/
+    node_logs/             # Temporary node workspaces (cleaned after stage)
+      node_abc123/
+        src/
+        bin/
+        working/
+    stage_best/            # Permanent best node workspaces
+      1_creative_research_1_first_attempt/
+      2_hyperparam_tuning/
   figures/
   memory/
   2024-09-12_himeno_attempt_0.pdf

@@ -43,56 +43,56 @@ HPC-AutoResearch targets HPC environments with a Singularity-based, split-phase 
 3) **Iterate locally**: use `--phase_mode single` for quick iteration without Singularity.
 4) **Custom persona**: set `agent.role_description` in config to customize the agent's role (e.g., "HPC Researcher").
 5) **Enable memory**: use `--enable_memgpt` or set `memory.enabled=true` for hierarchical context management.
-   - **Note**: Without MemGPT, there is **no context budget management**. Idea/task descriptions are injected as full text, which may exceed LLM context limits for complex experiments. See [docs/memory.md](docs/memory.md) for details.
+   - **Note**: Without MemGPT, there is **no context budget management**. Idea/task descriptions are injected as full text, which may exceed LLM context limits for complex experiments. See [docs/memory/memory.md](docs/memory/memory.md) for details.
 6) **Parallel experiments**: adjust `--num_workers` to scale across available GPUs.
 
 ## Where to start
 
-- If you are new: start with `docs/requirements.md`, `docs/installation.md`, and `docs/quickstart.md`.
-- If you are operating on HPC: read `docs/execution-modes.md`, `docs/configuration.md`, and `docs/outputs.md`.
-- If you are extending prompts/resources: read `docs/llm-context.md` and `docs/resource-files.md`.
+- If you are new: start with `docs/getting-started/requirements.md`, `docs/getting-started/installation.md`, and `docs/getting-started/quickstart.md`.
+- If you are operating on HPC: read `docs/configuration/execution-modes.md`, `docs/configuration/configuration.md`, and `docs/configuration/outputs.md`.
+- If you are extending prompts/resources: read `docs/architecture/llm-context.md` and `docs/architecture/resource-files.md`.
 
 ## Documentation
 
 Detailed guides live in `docs/`. Start with
 [docs/README.md](docs/README.md) for the full index.
 
-- Requirements: [docs/requirements.md](docs/requirements.md) (host + container
+- Requirements: [docs/getting-started/requirements.md](docs/getting-started/requirements.md) (host + container
   dependencies, optional tools); related: [requirements.txt](requirements.txt),
   [bfts_config.yaml](bfts_config.yaml), [template/README.md](template/README.md).
-- Installation: [docs/installation.md](docs/installation.md) (conda/pip/torch
+- Installation: [docs/getting-started/installation.md](docs/getting-started/installation.md) (conda/pip/torch
   setup, image prep); related: [requirements.txt](requirements.txt),
   [template/README.md](template/README.md).
-- Credentials: [docs/credentials.md](docs/credentials.md) (model provider API
+- Credentials: [docs/getting-started/credentials.md](docs/getting-started/credentials.md) (model provider API
   keys and scope); related: [bfts_config.yaml](bfts_config.yaml),
   [ai_scientist/llm/](ai_scientist/llm/).
-- CLI entry points: [docs/cli-entry-points.md](docs/cli-entry-points.md) (what
+- CLI entry points: [docs/configuration/cli-entry-points.md](docs/configuration/cli-entry-points.md) (what
   each script does); related: [launch_scientist_bfts.py](launch_scientist_bfts.py),
   [generate_paper.py](generate_paper.py),
   [ai_scientist/perform_ideation_temp_free.py](ai_scientist/perform_ideation_temp_free.py).
-- Quickstart: [docs/quickstart.md](docs/quickstart.md) (minimal end-to-end run);
+- Quickstart: [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) (minimal end-to-end run);
   related: [template/README.md](template/README.md),
   [data_resources.json](data_resources.json).
-- Configuration: [docs/configuration.md](docs/configuration.md) (how
+- Configuration: [docs/configuration/configuration.md](docs/configuration/configuration.md) (how
   `bfts_config.yaml` is applied); related: [bfts_config.yaml](bfts_config.yaml),
   [launch_scientist_bfts.py](launch_scientist_bfts.py).
-- Execution modes: [docs/execution-modes.md](docs/execution-modes.md) (split vs
+- Execution modes: [docs/configuration/execution-modes.md](docs/configuration/execution-modes.md) (split vs
   single, worker behavior); related:
   [prompt/execution_split_schema.txt](prompt/execution_split_schema.txt),
   [ai_scientist/treesearch/parallel_agent.py](ai_scientist/treesearch/parallel_agent.py).
-- LLM context: [docs/llm-context.md](docs/llm-context.md) (prompt assembly and
+- LLM context: [docs/architecture/llm-context.md](docs/architecture/llm-context.md) (prompt assembly and
   stage inputs); related: [prompt/](prompt/), [prompt/base_system.txt](prompt/base_system.txt).
-- MemGPT-style memory: [docs/memory.md](docs/memory.md) (hierarchical memory +
+- MemGPT-style memory: [docs/memory/memory.md](docs/memory/memory.md) (hierarchical memory +
   persistence); related: [ai_scientist/memory/memgpt_store.py](ai_scientist/memory/memgpt_store.py),
   [ai_scientist/memory/resource_memory.py](ai_scientist/memory/resource_memory.py).
-- Resource files: [docs/resource-files.md](docs/resource-files.md) (JSON/YAML
+- Resource files: [docs/architecture/resource-files.md](docs/architecture/resource-files.md) (JSON/YAML
   schema and staging rules); related: [data_resources.json](data_resources.json),
   [tests/test_resource.py](tests/test_resource.py).
-- Outputs: [docs/outputs.md](docs/outputs.md) (run directories, logs, artifacts);
+- Outputs: [docs/configuration/outputs.md](docs/configuration/outputs.md) (run directories, logs, artifacts);
   related: [ai_scientist/treesearch/utils/viz_templates/template.html](ai_scientist/treesearch/utils/viz_templates/template.html).
-- Testing: [docs/testing.md](docs/testing.md) (unit tests and scope); related:
+- Testing: [docs/development/testing.md](docs/development/testing.md) (unit tests and scope); related:
   [tests/](tests/).
-- Troubleshooting: [docs/troubleshooting.md](docs/troubleshooting.md) (common
+- Troubleshooting: [docs/development/troubleshooting.md](docs/development/troubleshooting.md) (common
   failures and fixes); related: [bfts_config.yaml](bfts_config.yaml),
   [template/README.md](template/README.md).
 - Citation: [docs/citation.md](docs/citation.md) (bibtex and paper link);

@@ -1,7 +1,8 @@
 # Standard Execution Flow (Memory Disabled)
 
-This document describes the execution flow when `memory.enabled=false` (default).
-For the memory-enabled flow, see [../memory/memory_flow.md](../memory/memory_flow.md).
+This document describes the execution flow when `memory.enabled=false`.
+Note: Memory is **enabled by default** (`memory.enabled=true`). For the
+memory-enabled flow (default), see [../memory/memory-flow.md](../memory/memory-flow.md).
 
 ## Overview
 
@@ -49,7 +50,7 @@ Without memory, the execution flow is simpler:
 
 **Function**: `_process_node_wrapper()` (within each worker process)
 
-**Location**: `parallel_agent.py:3609-3800`
+**Location**: `parallel_agent.py`
 
 **Execution**: Once per node (same as Phase 1-4)
 
@@ -364,6 +365,81 @@ When memory is disabled, the LLM uses `execution_split.txt` format:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Workspace Inheritance
+
+**Location**: `parallel_agent.py`, `agent_manager.py`
+
+Each node's workspace is persisted to a log directory to enable safe cross-stage
+file inheritance without race conditions.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     WORKSPACE INHERITANCE FLOW                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  1. NODE PROCESSING COMPLETE                                                 │
+│     │                                                                        │
+│     ├── Copy workspace to: node_logs/node_<id>/                              │
+│     │   (src/, bin/, input/, working/ directories)                           │
+│     │                                                                        │
+│     └── Set node.workspace_path = "node_logs/node_<id>/"                     │
+│                                                                              │
+│  2. CHILD NODE STARTS                                                        │
+│     │                                                                        │
+│     ├── Read parent_workspace_path from parent node                          │
+│     │   (points to node_logs/node_<parent_id>/)                              │
+│     │                                                                        │
+│     └── Copy files from node_logs/ to worker workspace                       │
+│         (Safe: node_logs/ is persistent, not overwritten)                    │
+│                                                                              │
+│  3. STAGE COMPLETE                                                           │
+│     │                                                                        │
+│     ├── Copy best node's workspace to: stage_best/<stage_name>/              │
+│     │                                                                        │
+│     ├── Update best_node.workspace_path = "stage_best/<stage_name>/"         │
+│     │                                                                        │
+│     └── Delete all node_logs/node_* directories (cleanup)                    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Directory Structure
+
+```
+workspace_dir/
+├── worker_0/              # Temporary worker workspace (reused per task)
+├── worker_1/
+├── worker_2/
+├── worker_3/
+├── node_logs/             # Persistent node workspaces (during stage)
+│   ├── node_<id_1>/       # ← node.workspace_path points here
+│   │   ├── src/
+│   │   ├── bin/
+│   │   ├── input/
+│   │   └── working/
+│   ├── node_<id_2>/
+│   └── ...                # Cleaned up after stage completion
+└── stage_best/            # Best node workspace per stage (permanent)
+    ├── 1_creative_research_1_first_attempt/
+    ├── 2_hyperparam_tuning/
+    ├── 3_plotting/
+    └── 4_ablation/
+```
+
+### Why This Design?
+
+Previously, `workspace_path` pointed to worker directories (e.g., `worker_3/`).
+This caused race conditions when:
+
+1. Worker 3 processes Node A → `workspace_path = "worker_3/"`
+2. Node A's child (Node B) is assigned to Worker 1
+3. Worker 1 tries to copy from `worker_3/`
+4. But Worker 3 is now processing Node C, overwriting its workspace
+5. Result: `[Errno 2] No such file or directory`
+
+The new design uses persistent `node_logs/` directories that are not overwritten
+by other workers, eliminating race conditions.
+
 ## Key Differences: Memory Disabled vs Enabled
 
 | Aspect | Memory Disabled | Memory Enabled |
@@ -377,11 +453,11 @@ When memory is disabled, the LLM uses `execution_split.txt` format:
 
 ## Configuration
 
-When memory is disabled (default), these settings are ignored:
+When memory is disabled, these settings are ignored:
 
 ```yaml
 memory:
-  enabled: false  # Default
+  enabled: false  # Note: default is true (memory enabled)
   # Below settings have no effect when disabled:
   # db_path, budget_chars, max_memory_read_rounds, etc.
 ```
@@ -390,4 +466,4 @@ memory:
 
 - [execution-modes.md](../configuration/execution-modes.md) - Split vs single execution
 - [llm-context.md](llm-context.md) - Prompt assembly details
-- [../memory/memory_flow.md](../memory/memory_flow.md) - Memory-enabled flow
+- [../memory/memory-flow.md](../memory/memory-flow.md) - Memory-enabled flow

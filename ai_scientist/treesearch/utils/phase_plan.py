@@ -3,6 +3,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
+from ai_scientist.treesearch.utils.response import sanitize_memory_update_tags
+
 
 class PhasePlanError(ValueError):
     """Raised when the LLM phase plan is missing required structure."""
@@ -24,6 +26,9 @@ def extract_memory_update_block(raw_text: str) -> Tuple[Optional[Dict[str, Any]]
     """
     if not raw_text:
         return None, raw_text
+
+    # Sanitize malformed opening tags (e.g., with injected attributes)
+    raw_text = sanitize_memory_update_tags(raw_text)
 
     pattern = r'<memory_update>\s*(.*?)\s*</memory_update>'
     match = re.search(pattern, raw_text, re.DOTALL)

@@ -1,3 +1,4 @@
+import warnings
 from dataclasses import dataclass, field
 from functools import total_ordering
 from typing import Any
@@ -184,6 +185,17 @@ class MetricValue(DataClassJsonMixin):
 
         # Determine if we should maximize or minimize
         should_maximize = self._should_maximize()
+        other_should_maximize = other._should_maximize()
+
+        # Warn if optimization directions differ
+        if should_maximize != other_should_maximize:
+            warnings.warn(
+                f"Comparing metrics with different optimization directions: "
+                f"self.maximize={should_maximize}, other.maximize={other_should_maximize}. "
+                f"Using self's direction for comparison.",
+                stacklevel=2
+            )
+
         comp = self_val > other_val
         return comp if should_maximize else not comp
 

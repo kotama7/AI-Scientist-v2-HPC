@@ -85,16 +85,20 @@ environment_context = {
 **Injected when `memory.enabled=true`**:
 ```python
 memory_context = {
+    "resource_index": "...",        # Separate "Resource Index" section (auto-saved)
     "core": {
-        "IDEA_SUMMARY": "...",      # Compressed idea summary
-        "PHASE0_SUMMARY": "...",    # Phase 0 config summary
-        "RESOURCE_INDEX": "...",    # Resource digest
-        # ... pinned core entries
+        # All keys are LLM-managed via <memory_update> (no reserved keys)
+        "optimal_threads": "8",
+        "best_compiler": "-O3",
+        # ...
     },
     "recall": [...],                # Recent events (window)
     "archival": [...]               # Retrieved archival hits
 }
 ```
+
+**Note**: `RESOURCE_INDEX` is auto-saved but injected as a separate "Resource Index"
+section, not within "Core Memory". All Core Memory keys are LLM-managed.
 
 **Character budgets** (from `memory.section_budgets`):
 | Section | Budget | Purpose |
@@ -183,16 +187,21 @@ history_context = {
 
 ```python
 context = {
-    "introduction": load_prompt("config/phases/phase0_planning"),
+    "introduction": load_prompt("config/phases/phase0_planning")  # or phase0_planning_with_memory when enabled,
     "task": idea_markdown,
     "environment": environment_snapshot,
     "history": prior_phase_summaries,  # From previous attempts
-    "memory": memory_context,          # If enabled
     "resources": resources_context     # If available
 }
 ```
 
-**Output schema** (JSON):
+**Output schema**:
+When memory is enabled, the response begins with a required
+`<memory_update>...</memory_update>` block, followed immediately by the Phase 0
+plan JSON. When memory is disabled, the response is JSON only. The JSON plan
+follows the schema documented in `prompt/config/phases/phase0_planning.txt`.
+
+Legacy example (plan fields only):
 ```json
 {
     "goal_summary": "...",

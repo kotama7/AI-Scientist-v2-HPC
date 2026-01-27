@@ -19,21 +19,40 @@ HPC-AutoResearch system.
 
 ### Core Memory
 
-**Purpose**: Always-injected essential context that persists across all prompts.
+**Purpose**: Key-value store for essential context that persists across prompts.
 
 **Characteristics**:
 - Bounded by `memory.core_max_chars` (default 16000)
-- Contains pinned entries with importance levels (1-5)
+- Contains entries with importance levels (1-5)
 - Automatic eviction when budget exceeded (lowest importance first)
 - Entries can have TTL (time-to-live)
 
-**Default Pinned Entries**:
-| Key | Content | Importance |
-|-----|---------|------------|
-| `IDEA_SUMMARY` | Compressed research idea bullets | 5 |
-| `PHASE0_SUMMARY` | Phase 0 planning summary | 5 |
-| `RESOURCE_INDEX` | Resource file digest | 4 |
-| `CURRENT_STAGE` | Current tree search stage | 3 |
+**Database Keys** (stored in `core_kv` table):
+| Key | Content | Save Method | Prompt Injection |
+|-----|---------|-------------|------------------|
+| `RESOURCE_INDEX` | Resource digest and paths | Auto-saved | Separate "Resource Index" section |
+| (LLM-defined keys) | e.g., `optimal_threads`, `best_flags` | LLM-managed | "Core Memory" section |
+
+**Prompt Injection Structure** (system message内):
+```
+## Memory
+
+Resource Index:                    ← RESOURCE_INDEX (auto-saved, 別セクション)
+{digest: "sha256...", items: [...]}
+
+Core Memory:                       ← LLMが保存したキーのみ
+- optimal_threads: 8               ← LLMが保存した任意のキー
+- best_compiler: -O3               ← LLMが保存した任意のキー
+
+Recall Memory:
+...
+```
+
+**Note**:
+- `RESOURCE_INDEX` は自動保存されるが、「Core Memory」セクションではなく
+  別の「Resource Index」セクションとして注入される
+- Core Memory のキーはすべて LLM が `<memory_update>` で保存する（予約キーなし）
+- LLM が保存しなかった場合、Core Memory セクションは空になる
 
 ### Recall Memory
 
@@ -229,7 +248,7 @@ SQLite database at `experiments/<run>/memory/memory.sqlite`:
 ### Output Files
 
 End-of-run memory exports:
-- `experiments/<run>/memory/final_memory_for_paper.md`: Human-readable summary
+- `experiments/<run>/memory/final_memory-for-paper.md`: Human-readable summary
 - `experiments/<run>/memory/final_memory_for_paper.json`: Structured JSON
 - `experiments/<run>/memory/resource_snapshot.json`: Resource tracking data
 
@@ -253,7 +272,7 @@ memory:
   persist_idea_md: true
   always_inject_idea_summary: true
   final_memory_enabled: true
-  final_memory_filename_md: final_memory_for_paper.md
+  final_memory_filename_md: final_memory-for-paper.md
   final_memory_filename_json: final_memory_for_paper.json
   redact_secrets: true
 

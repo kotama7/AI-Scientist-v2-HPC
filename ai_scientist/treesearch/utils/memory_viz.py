@@ -191,6 +191,37 @@ def load_memory_database(db_path: Path) -> dict:
         }
         archival[row["branch_id"]].append(archival_data)
 
+    # Load inherited_exclusions (Copy-on-Write exclusions for inherited events)
+    inherited_exclusions: dict[str, set[int]] = defaultdict(set)
+    try:
+        cursor.execute("SELECT branch_id, excluded_event_id FROM inherited_exclusions")
+        for row in cursor.fetchall():
+            inherited_exclusions[row["branch_id"]].add(row["excluded_event_id"])
+    except sqlite3.OperationalError:
+        pass  # Table doesn't exist in older databases
+
+    # Load inherited_summaries (consolidated summaries of inherited events)
+    inherited_summaries: dict[str, list[dict]] = defaultdict(list)
+    try:
+        cursor.execute(
+            "SELECT id, branch_id, summary_text, summarized_event_ids, kind, created_at "
+            "FROM inherited_summaries ORDER BY created_at"
+        )
+        for row in cursor.fetchall():
+            try:
+                summarized_ids = json.loads(row["summarized_event_ids"] or "[]")
+            except json.JSONDecodeError:
+                summarized_ids = []
+            inherited_summaries[row["branch_id"]].append({
+                "id": row["id"],
+                "summary_text": row["summary_text"],
+                "summarized_event_ids": summarized_ids,
+                "kind": row["kind"],
+                "created_at": row["created_at"],
+            })
+    except sqlite3.OperationalError:
+        pass  # Table doesn't exist in older databases
+
     conn.close()
 
     return {
@@ -198,6 +229,8 @@ def load_memory_database(db_path: Path) -> dict:
         "core_kv": dict(core_kv),
         "events": dict(events),
         "archival": dict(archival),
+        "inherited_exclusions": {k: list(v) for k, v in inherited_exclusions.items()},
+        "inherited_summaries": dict(inherited_summaries),
     }
 
 
@@ -392,6 +425,7 @@ def collect_inherited_data(
     archival: dict,
     branch_to_index: dict,
     exclude_virtual_root: bool = False,
+    own_core_keys: set[str] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     """Collect inherited data from ancestors.
 
@@ -403,19 +437,24 @@ def collect_inherited_data(
         archival: Archival data by branch_id.
         branch_to_index: Mapping of branch_id to index.
         exclude_virtual_root: If True, exclude data from virtual root nodes (node_uid == "root").
+        own_core_keys: Set of keys that exist in this node's own core_kv.
+                       These keys are excluded from inherited data since they've been overridden.
 
     Returns:
         Tuple of (inherited_core_kv, inherited_events, inherited_archival, ancestors_info)
     """
     ancestors = get_ancestor_chain(branch_id, branches)
 
-    inherited_core_kv = []
     inherited_events = []
     inherited_archival = []
     ancestors_info = []
 
-    # Track keys already seen (for core_kv, later values override earlier ones)
-    seen_keys = set()
+    # For core_kv: collect all values first, then select the most recent for each key
+    # This matches the actual memory system behavior (_render_core_memory)
+    core_kv_candidates: dict[str, list[dict]] = {}
+
+    # Keys that are overridden by this node should not appear in inherited data
+    excluded_keys = own_core_keys or set()
 
     # Collect data from each ancestor (root to parent order)
     for ancestor in ancestors:
@@ -438,13 +477,13 @@ def collect_inherited_data(
         if exclude_virtual_root and is_virtual:
             continue
 
-        # Collect core_kv (key-value pairs)
+        # Collect core_kv candidates (we'll select the most recent later)
         for kv in core_kv.get(ancestor_id, []):
-            # For core_kv, we want the most recent value, so track seen keys
             key = kv.get("key")
-            if key not in seen_keys:
-                inherited_core_kv.append(kv)
-                seen_keys.add(key)
+            if key and key not in excluded_keys:
+                if key not in core_kv_candidates:
+                    core_kv_candidates[key] = []
+                core_kv_candidates[key].append(kv)
 
         # Collect events
         for event in events.get(ancestor_id, []):
@@ -453,6 +492,13 @@ def collect_inherited_data(
         # Collect archival
         for arch in archival.get(ancestor_id, []):
             inherited_archival.append(arch)
+
+    # Select the most recent value for each key (matching actual memory system behavior)
+    inherited_core_kv = []
+    for key, candidates in core_kv_candidates.items():
+        # Sort by updated_at descending and take the most recent
+        candidates.sort(key=lambda kv: kv.get("updated_at") or "", reverse=True)
+        inherited_core_kv.append(candidates[0])
 
     return inherited_core_kv, inherited_events, inherited_archival, ancestors_info
 
@@ -710,6 +756,10 @@ def generate_memory_database_html(
         own_archival = memory_data["archival"].get(branch_id, [])
         own_memory_calls = memory_calls_by_branch.get(branch_id, [])
 
+        # Extract keys from own_core_kv to exclude from inherited data
+        # (keys that are overridden by this node should not appear in inherited)
+        own_core_keys = {kv.get("key") for kv in own_core_kv if kv.get("key")}
+
         # Get inherited data from ancestors (excluding virtual root's data)
         inherited_core_kv, inherited_events, inherited_archival, ancestors_info = collect_inherited_data(
             branch_id,
@@ -719,6 +769,7 @@ def generate_memory_database_html(
             memory_data["archival"],
             branch_to_index,
             exclude_virtual_root=True,
+            own_core_keys=own_core_keys,
         )
 
         # Collect inherited memory calls from ancestors
@@ -730,10 +781,42 @@ def generate_memory_database_html(
             if ancestor_branch_id:
                 inherited_memory_calls.extend(memory_calls_by_branch.get(ancestor_branch_id, []))
 
+        # Get inherited exclusions and summaries for this branch (Copy-on-Write data)
+        branch_exclusions = set(memory_data.get("inherited_exclusions", {}).get(branch_id, []))
+        branch_summaries = memory_data.get("inherited_summaries", {}).get(branch_id, [])
+
+        # Filter inherited events based on exclusions (Copy-on-Write semantics)
+        # Events that have been consolidated are excluded from inherited view
+        filtered_inherited_events = [
+            event for event in inherited_events
+            if event.get("id") not in branch_exclusions
+        ]
+
         # Combine own and inherited for phase detection
-        all_events = own_events + inherited_events
+        all_events = own_events + filtered_inherited_events
         all_archival = own_archival + inherited_archival
         phases = get_phases_for_branch_accumulated(all_events, all_archival)
+
+        # Build effective memory (what LLM actually sees)
+        # For core_kv: own values override inherited (matching actual memory system)
+        effective_core_kv = list(own_core_kv)  # Start with own
+        inherited_keys = own_core_keys  # Keys we already have from own
+        for kv in inherited_core_kv:
+            if kv.get("key") not in inherited_keys:
+                effective_core_kv.append(kv)
+        # Sort by key for consistency
+        effective_core_kv.sort(key=lambda kv: kv.get("key", ""))
+
+        # For events: combine own + filtered inherited + inherited summaries (sorted by created_at)
+        # Inherited summaries represent consolidated ancestor events
+        effective_events = sorted(
+            all_events,
+            key=lambda e: e.get("created_at") or "",
+        )
+        effective_archival = sorted(
+            all_archival,
+            key=lambda a: a.get("created_at") or "",
+        )
 
         nodes_data.append({
             "index": i,
@@ -747,11 +830,18 @@ def generate_memory_database_html(
             "own_events": own_events,
             "own_archival": own_archival,
             "own_memory_calls": own_memory_calls,
-            # Inherited data (from ancestors)
+            # Inherited data (from ancestors, with Copy-on-Write exclusions applied)
             "inherited_core_kv": inherited_core_kv,
-            "inherited_events": inherited_events,
+            "inherited_events": filtered_inherited_events,  # Filtered by exclusions
             "inherited_archival": inherited_archival,
             "inherited_memory_calls": inherited_memory_calls,
+            # Inherited memory consolidation (Copy-on-Write)
+            "inherited_exclusions": list(branch_exclusions),
+            "inherited_summaries": branch_summaries,
+            # Effective memory (what LLM actually sees = own + inherited merged)
+            "effective_core_kv": effective_core_kv,
+            "effective_events": effective_events,
+            "effective_archival": effective_archival,
             # Ancestor information
             "ancestors": ancestors_info,
             # Legacy fields for backwards compatibility

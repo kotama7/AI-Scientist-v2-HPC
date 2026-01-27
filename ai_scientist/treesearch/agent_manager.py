@@ -1,5 +1,6 @@
 from typing import List, Optional, Dict, Callable, Any, Tuple
 import pickle
+import shutil
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -266,6 +267,8 @@ class AgentManager:
         return self.root_branch_id
 
     def _memory_context(self, journal: Journal | None, task_hint: str) -> str:
+        if task_hint == "best_node_selection":
+            return ""
         if not self.memory_manager:
             return ""
         branch_id = self._select_branch_id(journal)
@@ -279,7 +282,7 @@ class AgentManager:
 
         if auto_consolidate and hasattr(self.memory_manager, "check_memory_pressure"):
             try:
-                pressure = self.memory_manager.check_memory_pressure(branch_id)
+                pressure = self.memory_manager.check_memory_pressure(branch_id, phase=task_hint)
                 trigger_levels = {"medium": ["medium", "high", "critical"], "high": ["high", "critical"], "critical": ["critical"]}
                 should_consolidate = pressure["pressure_level"] in trigger_levels.get(consolidation_trigger, ["high", "critical"])
 
@@ -847,6 +850,53 @@ class AgentManager:
             return copied_node
         return None
 
+    def _cleanup_stage_node_logs(self, stage_name: str, best_node: Optional[Node] = None) -> None:
+        """Cleanup node logs after stage completion.
+
+        Copies the best node's workspace to a permanent location and removes
+        all node logs from this stage to save disk space.
+
+        Args:
+            stage_name: Name of the completed stage
+            best_node: The best node from this stage (optional)
+        """
+        workspace_dir = Path(self.cfg.workspace_dir)
+        node_logs_dir = workspace_dir / "node_logs"
+        stage_best_dir = workspace_dir / "stage_best" / stage_name
+
+        if not node_logs_dir.exists():
+            return
+
+        try:
+            # Copy best node's workspace to permanent location if available
+            if best_node and hasattr(best_node, 'workspace_path') and best_node.workspace_path:
+                best_workspace = Path(best_node.workspace_path)
+                if best_workspace.exists():
+                    # Create stage_best directory
+                    if stage_best_dir.exists():
+                        shutil.rmtree(stage_best_dir)
+                    stage_best_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Copy best node's workspace
+                    shutil.copytree(best_workspace, stage_best_dir, dirs_exist_ok=True)
+                    print(f"Copied best node workspace to {stage_best_dir}")
+
+                    # Update best node's workspace_path to point to permanent location
+                    best_node.workspace_path = str(stage_best_dir)
+
+            # Remove all node logs for this stage
+            for node_dir in list(node_logs_dir.iterdir()):
+                if node_dir.is_dir() and node_dir.name.startswith("node_"):
+                    try:
+                        shutil.rmtree(node_dir)
+                    except Exception as exc:
+                        logging.warning(f"Failed to remove node log {node_dir}: {exc}")
+
+            print(f"Cleaned up node logs for stage {stage_name}")
+
+        except Exception as exc:
+            logging.warning(f"Error during stage cleanup for {stage_name}: {exc}")
+
     def _generate_substage_goal(self, main_stage_goal: str, journal: Journal) -> str:
         """Generate the next sub-stage goal based on what has been done so far.
 
@@ -1100,6 +1150,13 @@ class AgentManager:
                                 current_substage = None
                             break
             self._save_checkpoint()
+
+            # Cleanup node logs after stage completion to save disk space
+            # Get best node from completed stage and cleanup logs
+            completed_stage_name = self.stages[-1].name
+            best_node_for_cleanup = self._get_best_implementation(completed_stage_name)
+            self._cleanup_stage_node_logs(completed_stage_name, best_node_for_cleanup)
+
             # Main stage complete - create next main stage
             if self.current_stage:
                 next_main_stage = self._create_next_main_stage(

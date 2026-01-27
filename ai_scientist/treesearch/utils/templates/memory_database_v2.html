@@ -37,6 +37,7 @@
             <!-- View Mode Tabs -->
             <div class="tabs" id="view-tabs">
                 <button class="tab active" data-view="summary" onclick="switchView('summary')">Summary</button>
+                <button class="tab" data-view="effective" onclick="switchView('effective')">Effective Memory</button>
                 <button class="tab" data-view="memory-flow" onclick="switchView('memory-flow')">Memory Flow</button>
                 <button class="tab" data-view="by-phase" onclick="switchView('by-phase')">By Phase</button>
                 <button class="tab" data-view="timeline" onclick="switchView('timeline')">Timeline</button>
@@ -147,6 +148,9 @@
         switch (currentView) {
             case 'summary':
                 renderSummaryView(container, nodeData);
+                break;
+            case 'effective':
+                renderEffectiveMemoryView(container, nodeData);
                 break;
             case 'memory-flow':
                 renderMemoryFlowView(container, nodeData);
@@ -661,6 +665,113 @@
             }
             html += '</div>';
         }
+
+        container.innerHTML = html;
+    }
+
+    // Effective Memory View - Shows what the LLM actually sees (own + inherited merged)
+    function renderEffectiveMemoryView(container, nodeData) {
+        const effectiveCoreKV = nodeData.effective_core_kv || [];
+        const effectiveEvents = nodeData.effective_events || [];
+        const effectiveArchival = nodeData.effective_archival || [];
+        const ancestors = nodeData.ancestors || [];
+
+        // Separate own vs inherited for visual distinction
+        const ownCoreKeys = new Set((nodeData.own_core_kv || []).map(kv => kv.key));
+        const ownEventIds = new Set((nodeData.own_events || []).map(e => e.id));
+        const ownArchivalIds = new Set((nodeData.own_archival || []).map(a => a.id));
+
+        let html = '';
+
+        // Header with explanation
+        html += `
+            <div class="effective-memory-header" style="margin-bottom: 20px; padding: 15px; background: linear-gradient(135deg, #1a472a 0%, #16213e 100%); border-radius: 8px; border-left: 4px solid #51cf66;">
+                <h3 style="margin: 0 0 8px 0; color: #51cf66;">Effective Memory State</h3>
+                <p style="color: #aaa; font-size: 0.85rem; margin: 0;">
+                    This is the <strong style="color: #51cf66;">actual memory</strong> that the LLM sees at this node.
+                    Own data is shown in <span style="color: #4dabf7;">blue</span>, inherited data in <span style="color: #888;">gray</span>.
+                </p>
+            </div>`;
+
+        // Stats summary
+        html += `
+            <div class="stats-bar" style="margin-bottom: 20px;">
+                <div class="stat-item">
+                    <div class="stat-value" style="color: #51cf66;">${effectiveCoreKV.length}</div>
+                    <div class="stat-label">Core KV Entries</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" style="color: #51cf66;">${effectiveEvents.length}</div>
+                    <div class="stat-label">Recall Events</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" style="color: #51cf66;">${effectiveArchival.length}</div>
+                    <div class="stat-label">Archival Records</div>
+                </div>
+            </div>`;
+
+        // Core Memory Section
+        html += `<div class="data-group"><div class="data-group-header" style="background: #1a472a; border-color: #51cf66;">Effective Core Memory</div>`;
+        if (effectiveCoreKV.length === 0) {
+            html += '<div class="empty-state"><div class="empty-state-text">No core memory entries</div></div>';
+        } else {
+            html += '<div class="section-content">';
+            for (const item of effectiveCoreKV) {
+                const isOwn = ownCoreKeys.has(item.key);
+                const sourceLabel = isOwn ? '<span style="color: #4dabf7; font-size: 0.7rem; margin-left: 8px;">[own]</span>' : '<span style="color: #888; font-size: 0.7rem; margin-left: 8px;">[inherited]</span>';
+                html += `
+                    <div class="kv-item ${isOwn ? '' : 'inherited'}" style="${isOwn ? 'border-left: 3px solid #4dabf7;' : ''}">
+                        <span class="kv-key">${MemoryDB.escapeHtml(item.key)}${sourceLabel}</span>
+                        <span class="kv-value">${MemoryDB.escapeHtml(item.value)}</span>
+                    </div>`;
+            }
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // Recall Events Section
+        html += `<div class="data-group"><div class="data-group-header" style="background: #1a472a; border-color: #51cf66;">Effective Recall Events</div>`;
+        if (effectiveEvents.length === 0) {
+            html += '<div class="empty-state"><div class="empty-state-text">No recall events</div></div>';
+        } else {
+            html += '<div class="section-content" style="max-height: 400px; overflow-y: auto;">';
+            for (const item of effectiveEvents) {
+                const isOwn = ownEventIds.has(item.id);
+                const isMemoryInjection = item.kind === 'memory_injected';
+                const kindClass = isMemoryInjection ? 'memory-injection' : '';
+                const sourceLabel = isOwn ? '<span style="color: #4dabf7; font-size: 0.7rem;">[own]</span>' : '<span style="color: #888; font-size: 0.7rem;">[inherited]</span>';
+                html += `
+                    <div class="event-item ${isOwn ? '' : 'inherited'} ${kindClass}" style="${isOwn ? 'border-left: 3px solid #4dabf7;' : ''}">
+                        <div class="event-kind" ${isMemoryInjection ? 'style="color: #b197fc;"' : ''}>${MemoryDB.escapeHtml(item.kind)} ${sourceLabel}</div>
+                        <div class="event-text">${MemoryDB.escapeHtml(item.text)}</div>
+                        <div class="event-meta">Phase: ${item.phase || 'N/A'} | Tags: ${(item.tags || []).join(', ')}</div>
+                    </div>`;
+            }
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // Archival Records Section
+        html += `<div class="data-group"><div class="data-group-header" style="background: #1a472a; border-color: #51cf66;">Effective Archival Records</div>`;
+        if (effectiveArchival.length === 0) {
+            html += '<div class="empty-state"><div class="empty-state-text">No archival records</div></div>';
+        } else {
+            html += '<div class="section-content" style="max-height: 400px; overflow-y: auto;">';
+            for (const item of effectiveArchival) {
+                const isOwn = ownArchivalIds.has(item.id);
+                const sourceLabel = isOwn ? '<span style="color: #4dabf7; font-size: 0.7rem;">[own]</span>' : '<span style="color: #888; font-size: 0.7rem;">[inherited]</span>';
+                html += `
+                    <div class="archival-item ${isOwn ? '' : 'inherited'}" style="${isOwn ? 'border-left: 3px solid #4dabf7;' : ''}">
+                        <div class="archival-tags">
+                            ${sourceLabel}
+                            ${(item.tags || []).map(t => `<span class="archival-tag">${MemoryDB.escapeHtml(t)}</span>`).join('')}
+                        </div>
+                        <div class="archival-text">${MemoryDB.escapeHtml(item.text)}</div>
+                    </div>`;
+            }
+            html += '</div>';
+        }
+        html += '</div>';
 
         container.innerHTML = html;
     }

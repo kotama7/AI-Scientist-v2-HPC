@@ -89,9 +89,14 @@ class WorkerManager:
                 name=f"Worker-{i}",
                 daemon=True
             )
-            p.start()
-            self.workers.append(p)
-            logger.info(f"Started worker process {p.name} (PID: {p.pid})")
+            try:
+                p.start()
+                self.workers.append(p)
+                logger.info(f"Started worker process {p.name} (PID: {p.pid})")
+            except Exception as e:
+                logger.error(f"Failed to start worker process Worker-{i}: {e}")
+                # Don't append failed process to workers list
+                # Continue trying to start remaining workers
 
     def submit(self, func: Callable, *args) -> int:
         """Submit a task and return a task_id.
@@ -154,6 +159,10 @@ class WorkerManager:
 
         # Terminate all existing workers
         for worker in self.workers:
+            # Check if process was actually started (has valid _popen handle)
+            if getattr(worker, '_popen', None) is None:
+                logger.warning(f"Worker {worker.name} was never started, skipping termination")
+                continue
             if worker.is_alive():
                 logger.info(f"Terminating worker {worker.name} (PID: {worker.pid})")
                 worker.terminate()
@@ -217,6 +226,9 @@ class WorkerManager:
 
         # Force terminate any remaining workers
         for worker in self.workers:
+            # Check if process was actually started (has valid _popen handle)
+            if getattr(worker, '_popen', None) is None:
+                continue
             if worker.is_alive():
                 logger.info(f"Force terminating worker {worker.name}")
                 worker.terminate()

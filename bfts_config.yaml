@@ -60,18 +60,25 @@ memory:
   use_llm_compression: true
   # 圧縮に使用するLLMモデル
   compression_model: gpt-5.2
+  # セクション生成モード: memory_summary | idea_then_memory
+  paper_section_mode: idea_then_memory
+  # 生成するセクション数（idea_then_memory時）
+  paper_section_count: 12
+  # 圧縮の最大試行回数
+  max_compression_iterations: 5
   # セクション別の文字数予算（圧縮時の上限）
-  datasets_tested_budget_chars: 4000
-  metrics_extraction_budget_chars: 4000
-  plotting_code_budget_chars: 4000
+  # 注: 入力サイズ平均72,000文字に対し、圧縮率5-10倍を想定
+  datasets_tested_budget_chars: 8000
+  metrics_extraction_budget_chars: 12000
+  plotting_code_budget_chars: 8000
   plot_selection_budget_chars: 4000
-  vlm_analysis_budget_chars: 4000
-  node_summary_budget_chars: 4000
-  parse_metrics_budget_chars: 4000
+  vlm_analysis_budget_chars: 12000
+  node_summary_budget_chars: 8000
+  parse_metrics_budget_chars: 12000
   # アーカイブメモリ取り出し時の各エントリの文字数上限
-  archival_snippet_budget_chars: 6000
+  archival_snippet_budget_chars: 12000
   # 最終結果取得時の文字数上限
-  results_budget_chars: 4000
+  results_budget_chars: 12000
 
   # Writeup用メモリ制限（final_writeup_memory.json生成時）
   # no_budget_limit=Falseの場合に適用される
@@ -123,7 +130,7 @@ agent:
   stages:
     stage1_max_iters: 20
     stage2_max_iters: 20
-    stage3_max_iters: 20
+    stage3_max_iters: 40
     stage4_max_iters: 20
   # 改善反復の実行回数（ステージ別max_itersが未指定の場合に使用）
   steps: 5
