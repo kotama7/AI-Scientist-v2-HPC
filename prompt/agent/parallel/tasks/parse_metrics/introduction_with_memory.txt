@@ -9,8 +9,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to r
 ```
 <memory_update>
 {
-  "core": {"key": "value"},
-  "archival": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
+  "mem_core_set": {"key": "value"},
+  "mem_archival_write": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
 }
 </memory_update>
 ```
@@ -20,8 +20,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to r
 ```
 <memory_update>
 {
-  "core_get": ["metric_format", "expected_metrics"],
-  "archival_search": {"query": "metric parsing pattern", "k": 3}
+  "mem_core_get": ["metric_format", "expected_metrics"],
+  "mem_archival_search": {"query": "metric parsing pattern", "k": 3}
 }
 </memory_update>
 ```
@@ -36,8 +36,8 @@ Example:
 ```
 <memory_update>
 {
-  "core": {"datasets_parsed": ["cifar10", "mnist"], "metric_names": ["accuracy", "f1_score", "latency_ms"]},
-  "archival": [{"text": "METRICS: Parsed 2 datasets. cifar10: accuracy=0.923, f1=0.918, latency=45.2ms. mnist: accuracy=0.987, f1=0.985, latency=12.1ms. Data format: nested dict with 'results' key containing per-dataset metrics.", "tags": ["METRICS_PARSE", "RESULTS", "DATA_FORMAT"]}]
+  "mem_core_set": {"datasets_parsed": ["cifar10", "mnist"], "metric_names": ["accuracy", "f1_score", "latency_ms"]},
+  "mem_archival_write": [{"text": "METRICS: Parsed 2 datasets. cifar10: accuracy=0.923, f1=0.918, latency=45.2ms. mnist: accuracy=0.987, f1=0.985, latency=12.1ms. Data format: nested dict with 'results' key containing per-dataset metrics.", "tags": ["METRICS_PARSE", "RESULTS", "DATA_FORMAT"]}]
 }
 </memory_update>
 ```
@@ -46,7 +46,24 @@ Before parsing, retrieve expected format information:
 ```
 <memory_update>
 {
-  "archival_search": {"query": "experiment data structure format", "k": 3}
+  "mem_archival_search": {"query": "experiment data structure format", "k": 3}
 }
 </memory_update>
 ```
+
+### All Memory Operations Reference
+
+**Write operations (stored immediately):**
+- `"mem_core_set": {"key": "value"}` - Set key-value pairs in always-visible memory
+- `"mem_archival_write": [{"text": "...", "tags": ["TAG"]}]` - Write to long-term searchable memory
+- `"mem_recall_append": {"kind": "...", "content": "..."}` - Append to recent events timeline
+
+**Read operations (results returned, then you re-output with the information):**
+- `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
+- `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
+- `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+**Management operations:**
+- `"mem_core_del": ["key"]` - Delete keys from core memory
+- `"mem_recall_evict": {"oldest": N}` - Move old recall events to archival
+- `"consolidate": true` - Trigger memory consolidation

@@ -11,8 +11,8 @@ After analyzing the plots, record your key findings using `<memory_update>`:
 ```
 <memory_update>
 {
-  "core": {"key": "value"},
-  "archival": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
+  "mem_core_set": {"key": "value"},
+  "mem_archival_write": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
 }
 </memory_update>
 ```
@@ -27,8 +27,8 @@ Example:
 ```
 <memory_update>
 {
-  "core": {"plots_analyzed": 3, "main_finding": "convergence_achieved", "trend_direction": "improving"},
-  "archival": [{"text": "VLM ANALYSIS: Plot 1 (loss curve): Smooth convergence, final loss 0.023, no overfitting signs. Plot 2 (accuracy): Steady improvement from 0.7 to 0.94, plateaus at epoch 80. Plot 3 (confusion matrix): High diagonal values, minor confusion between classes 3-5. Recommendation: May benefit from class-weighted loss for classes 3-5.", "tags": ["VLM_ANALYSIS", "PLOT_INSIGHTS", "RECOMMENDATIONS"]}]
+  "mem_core_set": {"plots_analyzed": 3, "main_finding": "convergence_achieved", "trend_direction": "improving"},
+  "mem_archival_write": [{"text": "VLM ANALYSIS: Plot 1 (loss curve): Smooth convergence, final loss 0.023, no overfitting signs. Plot 2 (accuracy): Steady improvement from 0.7 to 0.94, plateaus at epoch 80. Plot 3 (confusion matrix): High diagonal values, minor confusion between classes 3-5. Recommendation: May benefit from class-weighted loss for classes 3-5.", "tags": ["VLM_ANALYSIS", "PLOT_INSIGHTS", "RECOMMENDATIONS"]}]
 }
 </memory_update>
 ```
@@ -39,7 +39,24 @@ Retrieve previous analysis context:
 ```
 <memory_update>
 {
-  "archival_search": {"query": "previous plot analysis trends", "k": 3}
+  "mem_archival_search": {"query": "previous plot analysis trends", "k": 3}
 }
 </memory_update>
 ```
+
+### All Memory Operations Reference
+
+**Write operations (stored immediately):**
+- `"mem_core_set": {"key": "value"}` - Set key-value pairs in always-visible memory
+- `"mem_archival_write": [{"text": "...", "tags": ["TAG"]}]` - Write to long-term searchable memory
+- `"mem_recall_append": {"kind": "...", "content": "..."}` - Append to recent events timeline
+
+**Read operations (results returned, then you re-output with the information):**
+- `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
+- `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
+- `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+**Management operations:**
+- `"mem_core_del": ["key"]` - Delete keys from core memory
+- `"mem_recall_evict": {"oldest": N}` - Move old recall events to archival
+- `"consolidate": true` - Trigger memory consolidation

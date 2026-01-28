@@ -922,7 +922,8 @@ def create_memory_database_viz(cfg: Any, current_stage_viz_path: Path):
 
     db_path = None
     for p in possible_paths:
-        if p.exists():
+        # Check both existence AND non-empty (sqlite3.connect creates empty files)
+        if p.exists() and p.stat().st_size > 0:
             db_path = p
             break
 

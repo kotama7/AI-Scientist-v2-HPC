@@ -16,13 +16,9 @@ For detailed phase-by-phase documentation, see:
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                  │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
-│  │                         PHASE 0: SETUP                                   │    │
-│  │  • Idea loading (idea.md → archival + core summary)                     │    │
+│  │                    PRE-FORK SETUP (on root branch)                       │    │
 │  │  • Resource indexing (resources.yaml → archival + RESOURCE_INDEX core)  │    │
-│  │  • Whole planning (LLM generates phase 0 plan)                          │    │
-│  │                                                                          │    │
-│  │  Memory writes: idea_md_summary, phase0_summary → Core                  │    │
-│  │                 PHASE0_INTERNAL, IDEA_MD → Archival                     │    │
+│  │  • Phase 0 prompt preparation (NOT executed yet)                        │    │
 │  └────────────────────────────────┬────────────────────────────────────────┘    │
 │                                   │                                              │
 │                                   ▼                                              │
@@ -30,12 +26,17 @@ For detailed phase-by-phase documentation, see:
 │  │                    TREE SEARCH LOOP (Stages 1-4)                         │    │
 │  │  For each node:                                                          │    │
 │  │    ┌──────────────────────────────────────────────────────────────────┐ │    │
-│  │    │ 1. Fork branch from parent                                       │ │    │
-│  │    │ 2. PHASE 1-4 execution (split-phase mode)                        │ │    │
-│  │    │ 3. Metrics extraction                                            │ │    │
-│  │    │ 4. Plotting code generation                                      │ │    │
-│  │    │ 5. VLM analysis (if plots exist)                                 │ │    │
-│  │    │ 6. Node summary generation                                       │ │    │
+│  │    │ 1. Fork branch from parent → child_branch_id                     │ │    │
+│  │    │ 2. PHASE 0: Setup (executed per-node on child branch)            │ │    │
+│  │    │    • Idea loading (idea.md → prompt injection)                   │ │    │
+│  │    │    • LLM planning (generates phase0_plan.json)                   │ │    │
+│  │    │    • Memory writes: idea_md_summary, phase0_summary → Core       │ │    │
+│  │    │                     PHASE0_INTERNAL, IDEA_MD → Archival          │ │    │
+│  │    │ 3. PHASE 1-4 execution (split-phase mode)                        │ │    │
+│  │    │ 4. Metrics extraction                                            │ │    │
+│  │    │ 5. Plotting code generation                                      │ │    │
+│  │    │ 6. VLM analysis (if plots exist)                                 │ │    │
+│  │    │ 7. Node summary generation                                       │ │    │
 │  │    └──────────────────────────────────────────────────────────────────┘ │    │
 │  └────────────────────────────────┬────────────────────────────────────────┘    │
 │                                   │                                              │
@@ -59,11 +60,12 @@ For detailed phase-by-phase documentation, see:
 
 ## Memory Injection Points Summary
 
+**Note**: Phase 0 is executed **per-node after fork**. Each child node runs its own Phase 0 planning, and memory events are recorded on the child branch (not root).
+
 | Phase | Task Hint | Function | Memory Budget | Notes |
 |-------|-----------|----------|---------------|-------|
-| **Phase 0** | `idea_md` | - | - | Writes to memory only |
-| **Phase 0** | `resource_index` | - | - | Writes to memory only |
-| **Phase 0** | `phase0_planning` | `_inject_memory()` | `memory_budget_chars` | Planning prompt |
+| **Phase 0** | `resource_index` | - | - | Writes to root branch (pre-fork) |
+| **Phase 0** | `phase0_planning` | `render_for_prompt()` | `memory_budget_chars` | Per-node after fork, memory injected |
 | **Phase 1** | `phase1_iterative` | `_inject_memory()` | `memory_budget_chars` | Iterative download/install |
 | **Phase 2** | `draft` | `_inject_memory()` | `memory_budget_chars` | Draft implementation |
 | **Phase 2** | `debug` | `_inject_memory()` | `memory_budget_chars` | Debug buggy code |
@@ -74,7 +76,7 @@ For detailed phase-by-phase documentation, see:
 | **Post** | `metrics_extraction` | `_inject_memory()` | `metrics_extraction_budget_chars` | Extract metrics from output **(Two-Phase)** |
 | **Post** | `plotting_code` | `_inject_memory()` | `plotting_code_budget_chars` | Generate plotting code |
 | **Post** | `plot_selection` | `_inject_memory()` | `plot_selection_budget_chars` | Select plots for analysis **(Two-Phase)** |
-| **Post** | `vlm_analysis` | `_inject_memory()` | `vlm_analysis_budget_chars` | VLM analyzes plots |
+| **Post** | `vlm_analysis` | `_inject_memory()` | `vlm_analysis_budget_chars` | VLM analyzes plots **(Two-Phase)** |
 | **Post** | `node_summary` | `_inject_memory()` | `node_summary_budget_chars` | Generate node summary **(Two-Phase)** |
 | **Agent** | `substage_goals` | `_inject_memory_into_text()` | `memory_budget_chars` | AgentManager goals |
 | **Agent** | `stage_completion` | `_inject_memory_into_text()` | `memory_budget_chars` | Check completion |
@@ -337,6 +339,7 @@ a **two-phase pattern**:
 |--------|--------------|----------------|
 | `execution_review` | Review output, record insights | `{"should_retry": bool, "reason": str}` |
 | `plot_selection` | Analyze available plots | `{"selected_plots": [...]}` |
+| `vlm_analysis` | Prepare for visual analysis, search related memories | `{"plot_analyses": [...], "vlm_feedback_summary": str}` |
 | `node_summary` | Summarize node findings | `{"summary": str, "key_findings": [...]}` |
 | `metrics_extraction` | Record metric patterns | `{"valid_metrics_received": bool, "metric_names": {...}}` |
 

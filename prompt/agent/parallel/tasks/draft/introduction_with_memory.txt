@@ -11,8 +11,8 @@ Include a `<memory_update>` block in your response to store insights:
 ```
 <memory_update>
 {
-  "core": {"key": "value"},
-  "archival": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
+  "mem_core_set": {"key": "value"},
+  "mem_archival_write": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
 }
 </memory_update>
 ```
@@ -27,8 +27,8 @@ Request stored information:
 ```
 <memory_update>
 {
-  "core_get": ["key1", "key2"],
-  "archival_search": {"query": "search terms", "k": 3}
+  "mem_core_get": ["key1", "key2"],
+  "mem_archival_search": {"query": "search terms", "k": 3}
 }
 </memory_update>
 ```
@@ -43,8 +43,25 @@ Example:
 ```
 <memory_update>
 {
-  "core": {"algorithm_approach": "gradient-based optimization", "baseline_method": "SGD"},
-  "archival": [{"text": "Draft phase: Implemented baseline using SGD optimizer. Chose this over Adam due to research paper's focus on convergence analysis. Data format: numpy arrays with shape (N, D).", "tags": ["PHASE2_DRAFT", "BASELINE", "DESIGN_DECISION"]}]
+  "mem_core_set": {"algorithm_approach": "gradient-based optimization", "baseline_method": "SGD"},
+  "mem_archival_write": [{"text": "Draft phase: Implemented baseline using SGD optimizer. Chose this over Adam due to research paper's focus on convergence analysis. Data format: numpy arrays with shape (N, D).", "tags": ["PHASE2_DRAFT", "BASELINE", "DESIGN_DECISION"]}]
 }
 </memory_update>
 ```
+
+### All Memory Operations Reference
+
+**Write operations (stored immediately):**
+- `"mem_core_set": {"key": "value"}` - Set key-value pairs in always-visible memory
+- `"mem_archival_write": [{"text": "...", "tags": ["TAG"]}]` - Write to long-term searchable memory
+- `"mem_recall_append": {"kind": "...", "content": "..."}` - Append to recent events timeline
+
+**Read operations (results returned, then you re-output with the information):**
+- `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
+- `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
+- `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+**Management operations:**
+- `"mem_core_del": ["key"]` - Delete keys from core memory
+- `"mem_recall_evict": {"oldest": N}` - Move old recall events to archival
+- `"consolidate": true` - Trigger memory consolidation

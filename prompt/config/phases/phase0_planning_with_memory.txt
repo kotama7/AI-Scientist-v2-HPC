@@ -7,8 +7,8 @@ You MUST include this block even if you have no updates (use empty object {}).
 
 <memory_update>
 {
-  "core": {"phase0_summary": "short"},
-  "archival": [{"text": "details", "tags": ["PHASE0_INTERNAL"]}]
+  "mem_core_set": {"phase0_summary": "short"},
+  "mem_archival_write": [{"text": "details", "tags": ["PHASE0_INTERNAL"]}]
 }
 </memory_update>
 
@@ -104,31 +104,31 @@ Schema:
   }
 }
 
-**Memory Operations:**
+**Memory Operations (use primitive function names):**
 
 Write operations (stored immediately):
-- "core": {"key": "value"} - Set key-value pairs in always-visible memory
-- "archival": [{"text": "...", "tags": ["TAG"]}] - Write to long-term searchable memory
-- "recall": {"kind": "...", "content": "..."} - Append to recent events timeline
+- "mem_core_set": {"key": "value"} - Set key-value pairs in always-visible memory
+- "mem_archival_write": [{"text": "...", "tags": ["TAG"]}] - Write to long-term searchable memory
+- "mem_recall_append": {"kind": "...", "content": "..."} - Append to recent events timeline
 
 Read operations (results returned, then you re-output with the information):
-- "core_get": ["key1", "key2"] - Retrieve core memory values
-- "archival_search": {"query": "...", "k": 5} - Search long-term memory
-- "recall_search": {"query": "...", "k": 10} - Search recent events
+- "mem_core_get": ["key1", "key2"] - Retrieve core memory values
+- "mem_archival_search": {"query": "...", "k": 5} - Search long-term memory
+- "mem_recall_search": {"query": "...", "k": 10} - Search recent events
 
 Management operations:
-- "core_delete": ["key"] - Delete keys from core memory
-- "recall_evict": {"oldest": N} - Move old recall events to archival
+- "mem_core_del": ["key"] - Delete keys from core memory
+- "mem_recall_evict": {"oldest": N} - Move old recall events to archival
 - "consolidate": true - Trigger memory consolidation
 
 **Read Operation Flow:**
-If you include read operations (core_get, archival_search, recall_search), the system will:
+If you include read operations (mem_core_get, mem_archival_search, mem_recall_search), the system will:
 1. Execute all operations (writes + reads)
 2. Return read results to you in a <memory_results> block
 3. You then output your final response using the retrieved information
 
 **Memory Update Guidelines:**
-- Use "core" for: optimal parameters, key constraints, concise Phase 0 summary
-- Use "archival" for: detailed environment + reproduction details, lessons learned
+- Use "mem_core_set" for: optimal parameters, key constraints, concise Phase 0 summary
+- Use "mem_archival_write" for: detailed environment + reproduction details, lessons learned
 - Do NOT record: temporary debug info, system-logged info, trivial observations
 If any internal information relevant to this plan has not yet been saved, please save it now (e.g., environment details, commands, parameters, or assumptions). This includes details that would be referenced when reproducing the experiment.

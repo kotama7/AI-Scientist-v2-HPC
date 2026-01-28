@@ -144,15 +144,15 @@ that include `<memory_update>` instructions and examples.
 
 | Task | `memory.enabled=false` | `memory.enabled=true` |
 |------|------------------------|----------------------|
-| **Draft** | `tasks/draft/introduction.txt` | `tasks/draft/introduction_with_memory.txt` |
-| **Debug** | `tasks/debug/introduction.txt` | `tasks/debug/introduction_with_memory.txt` |
-| **Improve** | `tasks/improve/introduction.txt` | `tasks/improve/introduction_with_memory.txt` |
-| **Hyperparam** | `nodes/hyperparam/introduction.txt` | `nodes/hyperparam/introduction_with_memory.txt` |
-| **Ablation** | `nodes/ablation/introduction.txt` | `nodes/ablation/introduction_with_memory.txt` |
-| **Execution Review** | `tasks/execution_review/introduction.txt` | `tasks/execution_review/introduction_with_memory.txt` |
-| **Summary** | `tasks/summary/introduction.txt` | `tasks/summary/introduction_with_memory.txt` |
-| **Parse Metrics** | `tasks/parse_metrics/introduction.txt` | `tasks/parse_metrics/introduction_with_memory.txt` |
-| **VLM Analysis** | `vlm_analysis.txt` | `vlm_analysis_with_memory.txt` |
+| **Draft** | `prompt/agent/parallel/tasks/draft/introduction.txt` | `prompt/agent/parallel/tasks/draft/introduction_with_memory.txt` |
+| **Debug** | `prompt/agent/parallel/tasks/debug/introduction.txt` | `prompt/agent/parallel/tasks/debug/introduction_with_memory.txt` |
+| **Improve** | `prompt/agent/parallel/tasks/improve/introduction.txt` | `prompt/agent/parallel/tasks/improve/introduction_with_memory.txt` |
+| **Hyperparam** | `prompt/agent/parallel/nodes/hyperparam/introduction.txt` | `prompt/agent/parallel/nodes/hyperparam/introduction_with_memory.txt` |
+| **Ablation** | `prompt/agent/parallel/nodes/ablation/introduction.txt` | `prompt/agent/parallel/nodes/ablation/introduction_with_memory.txt` |
+| **Execution Review** | `prompt/agent/parallel/tasks/execution_review/introduction.txt` | `prompt/agent/parallel/tasks/execution_review/introduction_with_memory.txt` |
+| **Summary** | `prompt/agent/parallel/tasks/summary/introduction.txt` | `prompt/agent/parallel/tasks/summary/introduction_with_memory.txt` |
+| **Parse Metrics** | `prompt/agent/parallel/tasks/parse_metrics/introduction.txt` | `prompt/agent/parallel/tasks/parse_metrics/introduction_with_memory.txt` |
+| **VLM Analysis** | `prompt/agent/parallel/vlm_analysis.txt` | `prompt/agent/parallel/vlm_analysis_with_memory.txt` |
 
 ### Code Implementation
 
@@ -249,7 +249,7 @@ _inject_memory(prompt, "improve", branch_id=node.branch_id)
 
 **Task Hint**: `hyperparam_node`
 
-**Stage**: Stage 2 (hyperparameter tuning)
+**Stage**: Stage 2 (baseline_tuning)
 
 **Prompt Structure**:
 ```python
@@ -268,7 +268,7 @@ _inject_memory(prompt, "hyperparam_node", branch_id=node.branch_id)
 
 **Task Hint**: `ablation_node`
 
-**Stage**: Stage 4 (ablation study)
+**Stage**: Stage 4 (ablation_studies)
 
 **Prompt Structure**:
 ```python
@@ -378,13 +378,16 @@ if memory_cfg and getattr(memory_cfg, "enabled", False):
 
 **Memory Events**:
 ```python
-# On completion
+# On completion - uses dict format for mem_recall_append
 mem_recall_append({
-    "kind": "phase1_complete" or "phase1_failed",
+    "ts": time.time(),
+    "run_id": memory_manager.run_id,
     "node_id": node.id,
     "branch_id": node.branch_id,
-    "commands_run": len(commands),
-    "error": error_details if failed
+    "phase": stage_name,
+    "kind": "phase1_complete",  # or "phase1_failed"
+    "summary": "Phase 1 download/install complete for node ...",
+    "refs": [],
 })
 ```
 
@@ -398,10 +401,14 @@ mem_recall_append({
 ```python
 # On completion
 mem_recall_append({
-    "kind": "coding_complete" or "coding_failed",
+    "ts": time.time(),
+    "run_id": memory_manager.run_id,
     "node_id": node.id,
     "branch_id": node.branch_id,
-    "files_created": len(files)
+    "phase": stage_name,
+    "kind": "coding_complete",  # or "coding_failed"
+    "summary": f"Coding phase complete for node {node.id}\nFiles: {files_list}",
+    "refs": [],
 })
 ```
 
@@ -415,13 +422,17 @@ mem_recall_append({
 ```python
 # On completion
 mem_recall_append({
-    "kind": "compile_complete" or "compile_failed",
+    "ts": time.time(),
+    "run_id": memory_manager.run_id,
     "node_id": node.id,
     "branch_id": node.branch_id,
-    "error": error_lines if failed
+    "phase": stage_name,
+    "kind": "compile_complete",  # or "compile_failed"
+    "summary": f"Compile phase complete for node {node.id}\nCompiler: {selected_compiler}",
+    "refs": [],
 })
 
-# On failure - detailed archival entry
+# On failure - detailed archival entry is also written
 if failed:
     mem_archival_write(
         text=f"Compilation failed: {error_details}",
@@ -439,13 +450,214 @@ if failed:
 ```python
 # On completion
 mem_recall_append({
-    "kind": "run_complete" or "run_failed",
+    "ts": time.time(),
+    "run_id": memory_manager.run_id,
     "node_id": node.id,
     "branch_id": node.branch_id,
-    "outputs_found": output_files,
-    "error": error_details if failed
+    "phase": stage_name,
+    "kind": "run_complete",  # or "run_failed"
+    "summary": f"Run phase complete for node {node.id}\nOutputs: {expected_outputs[:3]}",
+    "refs": [],
 })
 ```
+
+## Available Memory Functions
+
+The memory system is organized in three layers:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     System-Level Functions                               │
+│  apply_llm_memory_updates(), render_for_prompt()                        │
+│  Log: memory_system.jsonl                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                     Public API (mem_* functions)                         │
+│  mem_core_set(), mem_recall_append(), mem_archival_write(), etc.        │
+│  Log: memory_public_api.jsonl                                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                     Primitive Functions (DB operations)                  │
+│  set_core(), write_event(), _insert_archival(), retrieve_archival()     │
+│  Log: memory_primitive.jsonl                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Note**: All operations are also logged to `memory_calls.jsonl` with a `layer` field.
+Memory operations during phase execution are additionally logged to phase_log files:
+- `prompt_logs/<session>/memory_operations.jsonl` - operations with timestamps
+- `prompt_logs/<session>/memory_injections.jsonl` - injection details
+
+---
+
+### Layer 1: Primitive Functions (Low-Level DB Operations)
+
+These functions directly interact with the SQLite database. They are called by Public API functions.
+
+| Function | Signature | Table | Log Op |
+|----------|-----------|-------|--------|
+| `set_core` | `(branch_id, key, value, *, ttl, importance, op_name) -> None` | `core_kv`, `core_meta` | `llm_memory_update` |
+| `get_core` | `(branch_id, key, *, log_event, op_name, phase, node_id) -> str \| None` | `core_kv` | (none) |
+| `write_event` | `(branch_id, kind, text, tags, *, log_event, ...) -> bool` | `events` | (none) |
+| `_fetch_events` | `(branch_ids, limit, current_branch_id) -> list[Row]` | `events` | (none) |
+| `_insert_archival` | `(branch_id, text, tags, *, log_event, op_name, node_id) -> int` | `archival` | (none) |
+| `retrieve_archival` | `(branch_id, query, k, include_ancestors, tags_filter, ...) -> list[dict]` | `archival`, `archival_fts` | `retrieve_archival` |
+| `create_branch` | `(parent_branch_id, node_uid, branch_id) -> str` | `branches` | (none) |
+
+**Example Log Entry (Primitive)**:
+```json
+{"ts": 1769570057.97, "op": "llm_memory_update", "memory_type": "core", "branch_id": "...", "details": {"key": "phase0_summary", "value_preview": "...", "importance": 4}}
+```
+
+---
+
+### Layer 2: Public API Functions (mem_* functions)
+
+These are the main interface for memory operations. They call Primitive functions internally.
+
+#### Core Memory
+
+| Function | Signature | Calls | Log Op |
+|----------|-----------|-------|--------|
+| `mem_core_get` | `(keys: list[str] \| None) -> dict[str, str]` | `get_core()` | (none) |
+| `mem_core_set` | `(key, value, *, ttl, importance, branch_id) -> None` | `set_core()` | (via set_core) |
+| `mem_core_del` | `(key: str) -> None` | DELETE SQL | (none) |
+
+#### Recall Memory
+
+| Function | Signature | Calls | Log Op |
+|----------|-----------|-------|--------|
+| `mem_recall_append` | `(event: dict) -> None` | `write_event()` | `mem_recall_append` |
+| `mem_recall_search` | `(query, *, k=20) -> list[dict]` | `_fetch_events()` | (none) |
+
+**Event dict format for `mem_recall_append`**:
+```python
+{
+    "ts": float,           # Timestamp
+    "run_id": str,         # Run identifier
+    "node_id": str,        # Node identifier
+    "branch_id": str,      # Branch identifier
+    "phase": str,          # Phase name (e.g., "draft", "debug")
+    "kind": str,           # Event kind (e.g., "phase1_complete", "coding_failed")
+    "summary": str,        # Event summary text
+    "refs": list[str],     # Optional references
+}
+```
+
+**Example Log Entry**:
+```json
+{"ts": 1769570062.03, "op": "mem_recall_append", "memory_type": "recall", "branch_id": "...", "phase": "stage_execution_1", "details": {"kind": "memory_injected", "summary_preview": "..."}}
+```
+
+#### Archival Memory
+
+| Function | Signature | Calls | Log Op |
+|----------|-----------|-------|--------|
+| `mem_archival_write` | `(text, *, tags, meta) -> str` | `_insert_archival()` | `mem_archival_write` |
+| `mem_archival_update` | `(record_id, *, text, tags, meta) -> None` | UPDATE SQL | (none) |
+| `mem_archival_search` | `(query, *, tags, k=10) -> list[dict]` | `retrieve_archival()` | (via retrieve_archival) |
+| `mem_archival_get` | `(record_id: str) -> dict` | SELECT SQL | (none) |
+
+**Example Log Entry**:
+```json
+{"ts": 1769570057.97, "op": "mem_archival_write", "memory_type": "archival", "branch_id": "...", "details": {"record_id": 1, "tags": ["LLM_INSIGHT"], "text_preview": "..."}}
+```
+
+#### Branch/Node Operations
+
+| Function | Signature | Calls | Log Op |
+|----------|-----------|-------|--------|
+| `mem_node_fork` | `(parent_node_id, child_node_id, ancestor_chain, phase) -> None` | `create_branch()` | `mem_node_fork` |
+| `mem_node_read` | `(node_id, scope="all") -> dict` | multiple get functions | (none) |
+| `mem_node_write` | `(node_id, *, core_updates, recall_event, archival_records) -> None` | multiple set functions | (none) |
+
+**Example Log Entry**:
+```json
+{"ts": 1769569767.18, "op": "mem_node_fork", "memory_type": "node", "branch_id": "...", "details": {"parent_node_id": null, "child_branch_id": "..."}}
+```
+
+---
+
+### Layer 3: System-Level Functions (High-Level Integration)
+
+These functions orchestrate multiple Public API calls for complex operations.
+
+| Function | Signature | Purpose | Log Op |
+|----------|-----------|---------|--------|
+| `apply_llm_memory_updates` | `(branch_id, updates, node_id, phase) -> dict` | Process LLM memory update block | `apply_llm_memory_updates` |
+| `render_for_prompt` | `(branch_id, task_hint, budget_chars, no_limit) -> str` | Render memory for prompt injection | `render_for_prompt` |
+| `render_for_prompt_with_log` | `(branch_id, task_hint, budget_chars, no_limit) -> tuple[str, dict]` | Render with detailed log | `render_for_prompt` |
+
+**Example Log Entry (apply_llm_memory_updates)**:
+```json
+{
+  "ts": 1769570057.97,
+  "op": "apply_llm_memory_updates",
+  "memory_type": "llm_update",
+  "branch_id": "...",
+  "details": {
+    "core_keys": ["phase0_summary"],
+    "archival_count": 1,
+    "has_archival_search": false,
+    "has_recall_search": false,
+    "operations_log": [
+      {"type": "core_set", "key": "phase0_summary", "value": "..."},
+      {"type": "archival_write", "text": "...", "tags": ["LLM_INSIGHT"]}
+    ]
+  }
+}
+```
+
+---
+
+### Automatic/Internal Operations
+
+These operations are triggered automatically by the system:
+
+| Log Op | Trigger | Description |
+|--------|---------|-------------|
+| `check_memory_pressure` | Automatic | Monitor memory usage |
+| `consolidate_inherited_memory` | Automatic | Consolidate inherited events (CoW) |
+| `auto_consolidate_memory` | Automatic | Full memory consolidation |
+| `evaluate_importance_with_llm` | Automatic | LLM-based importance scoring |
+| `vlm_analysis_complete` | After VLM | VLM analysis completion marker |
+
+---
+
+### LLM Memory Update Keys
+
+The `updates` dict for `apply_llm_memory_updates` supports:
+
+| Key | Type | Internal Call | Description |
+|-----|------|---------------|-------------|
+| `core` | `dict[str, str]` | `mem_core_set()` | Key-value pairs to set |
+| `core_get` | `list[str]` | `mem_core_get()` | Keys to retrieve (returns in result) |
+| `core_delete` | `list[str]` | `mem_core_del()` | Keys to delete |
+| `archival` | `list[dict]` | `mem_archival_write()` | Records to write |
+| `archival_update` | `list[dict]` | `mem_archival_update()` | Records to update |
+| `archival_search` | `dict` | `mem_archival_search()` | Search query (returns in result) |
+| `recall` | `dict` | `mem_recall_append()` | Event to append |
+| `recall_search` | `dict` | `mem_recall_search()` | Search query (returns in result) |
+| `recall_evict` | `dict` | internal | Eviction params |
+| `recall_summarize` | `bool` | internal | Trigger consolidation |
+| `consolidate` | `bool` | internal | Trigger full consolidation |
+
+---
+
+### Actual Usage Statistics (from memory_calls.jsonl)
+
+| Log Op | Count | Layer |
+|--------|-------|-------|
+| `llm_memory_update` | 510 | Primitive (via set_core) |
+| `mem_archival_write` | 331 | Public API |
+| `mem_recall_append` | 314 | Public API |
+| `apply_llm_memory_updates` | 281 | System-Level |
+| `render_for_prompt` | 26 | System-Level |
+| `mem_node_fork` | 21 | Public API |
+| `retrieve_archival` | 12 | Primitive |
+| `vlm_analysis_complete` | 10 | Internal |
+| `check_memory_pressure` | 8 | Internal |
+| `consolidate_inherited_memory` | 6 | Internal |
+
+**Note**: `mem_archival_search`, `mem_recall_search`, `mem_core_get` are called internally by `apply_llm_memory_updates` and `render_for_prompt`, but do not generate separate log entries
 
 ## Response Format with Memory
 
@@ -485,23 +697,188 @@ root_branch (Phase 0 memory)
         └── Writes: isolated
 ```
 
+## Branch Fork Implementation
+
+**Function**: `mem_node_fork()` in `memgpt_store.py`
+
+```python
+def mem_node_fork(
+    self,
+    parent_node_id: str | None,
+    child_node_id: str,
+    ancestor_chain: list[str] | None = None,
+    phase: str | None = None,
+) -> None:
+    """Fork a new branch from parent.
+
+    Args:
+        parent_node_id: The parent node's ID (or None for root-level nodes)
+        child_node_id: The child node's ID
+        ancestor_chain: Optional list of ancestor node IDs from root to parent
+        phase: Optional phase name for the node fork operation
+    """
+```
+
+**Notes**:
+- Returns `None` (does not return a branch ID)
+- Automatically creates missing ancestor branches if `ancestor_chain` is provided
+- Logs the fork operation to memory event log
+
 ## Files Generated Per Node
 
 ```
 experiments/<run>/
-├── phase_logs/
-│   └── node_<id>/
-│       ├── download.log    # Phase 1 output
-│       ├── compile.log     # Phase 3 output
-│       ├── run.log         # Phase 4 output
-│       └── artifacts.json  # Full phase_artifacts
-├── prompts/
-│   └── <session>/
-│       ├── draft_attempt1_round0.json
-│       ├── draft_attempt1_round0.md
-│       └── ...
+├── logs/<index>-<exp_name>/
+│   └── phase_logs/
+│       └── node_<id>/
+│           ├── download.log    # Phase 1 output
+│           ├── compile.log     # Phase 3 output
+│           ├── run.log         # Phase 4 output
+│           └── artifacts.json  # Full phase_artifacts
+├── logs/<index>-<exp_name>/
+│   └── prompt_logs/
+│       └── <session>/
+│           ├── draft_attempt1_round0.json     # Full prompt with memory injection
+│           ├── draft_attempt1_round0.md       # Rendered prompt
+│           ├── memory_operations.jsonl        # Chronological memory operations
+│           └── memory_injections.jsonl        # Chronological memory injections
 └── memory/
-    └── memory_calls.jsonl  # All memory operations
+    ├── memory_calls.jsonl      # All memory operations (main log)
+    ├── memory_primitive.jsonl  # Layer 1: DB operations (set_core, get_core, etc.)
+    ├── memory_public_api.jsonl # Layer 2: Public API (mem_* functions)
+    ├── memory_system.jsonl     # Layer 3: System-level (apply_llm_memory_updates, render_for_prompt)
+    └── memory_internal.jsonl   # Internal operations (check_memory_pressure, etc.)
+```
+
+### Log File Contents
+
+**memory_calls.jsonl** (main log):
+```json
+{
+  "ts": 1706123456.789,
+  "op": "mem_recall_append",
+  "layer": "public_api",
+  "branch_id": "branch_abc123",
+  "node_id": "node_0",
+  "phase": "Draft/Code Generation",
+  "details": {...}
+}
+```
+
+**memory_operations.jsonl** (phase_log - operations with timestamps):
+```json
+{
+  "timestamp": 1706123456.789,
+  "stage": "1_creative_research_1_first_attempt",
+  "label": "draft_attempt1",
+  "counter": 1,
+  "timing": {
+    "start_timestamp": 1706123456.0,
+    "end_timestamp": 1706123456.789,
+    "duration_seconds": 0.789
+  },
+  "operations_count": 3,
+  "operations": [
+    {"type": "core_set", "timestamp": 1706123456.1, "key": "best_params", "value": "..."},
+    {"type": "archival_write", "timestamp": 1706123456.3, "text": "...", "tags": ["..."]}
+  ]
+}
+```
+
+**memory_injections.jsonl** (phase_log - injection details):
+```json
+{
+  "timestamp": 1706123456.789,
+  "stage": "1_creative_research_1_first_attempt",
+  "label": "draft_attempt1",
+  "task_hint": "draft",
+  "budget_chars": 24000,
+  "rendered_chars": 15432,
+  "core_count": 5,
+  "recall_count": 12,
+  "archival_count": 8,
+  "timing": {
+    "start_timestamp": 1706123456.0,
+    "end_timestamp": 1706123456.1,
+    "duration_seconds": 0.1
+  }
+}
+```
+
+## Database Schema (Actual Implementation)
+
+The memory system uses SQLite with the following tables:
+
+```sql
+-- Branch hierarchy
+CREATE TABLE IF NOT EXISTS branches (
+    id TEXT PRIMARY KEY,
+    parent_id TEXT NULL,
+    node_uid TEXT NULL,
+    created_at REAL
+);
+
+-- Core memory (key-value pairs)
+CREATE TABLE IF NOT EXISTS core_kv (
+    branch_id TEXT,
+    key TEXT,
+    value TEXT,
+    updated_at REAL,
+    PRIMARY KEY (branch_id, key)
+);
+
+-- Core memory metadata (importance, TTL)
+CREATE TABLE IF NOT EXISTS core_meta (
+    branch_id TEXT,
+    key TEXT,
+    importance INTEGER,
+    ttl TEXT,  -- Note: TEXT type, not INTEGER
+    updated_at REAL,
+    PRIMARY KEY (branch_id, key)
+);
+
+-- Recall memory (events)
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT,
+    kind TEXT,
+    text TEXT,
+    tags TEXT,
+    created_at REAL,
+    task_hint TEXT,
+    memory_size INTEGER
+);
+
+-- Archival memory
+CREATE TABLE IF NOT EXISTS archival (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT,
+    text TEXT,
+    tags TEXT,
+    created_at REAL
+);
+
+-- FTS5 full-text search (if available)
+CREATE VIRTUAL TABLE IF NOT EXISTS archival_fts USING fts5(
+    text, tags, branch_id
+);
+
+-- Inherited memory consolidation (Copy-on-Write)
+CREATE TABLE IF NOT EXISTS inherited_exclusions (
+    branch_id TEXT,
+    excluded_event_id INTEGER,
+    excluded_at REAL,
+    PRIMARY KEY (branch_id, excluded_event_id)
+);
+
+CREATE TABLE IF NOT EXISTS inherited_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id TEXT,
+    summary_text TEXT,
+    summarized_event_ids TEXT,
+    kind TEXT,
+    created_at REAL
+);
 ```
 
 ## See Also

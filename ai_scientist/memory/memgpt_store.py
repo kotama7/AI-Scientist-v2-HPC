@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import random
 import re
 import sqlite3
 import time
@@ -90,6 +91,60 @@ def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 3].rstrip() + "..."
+
+
+# FTS5 special characters that need escaping
+# See: https://www.sqlite.org/fts5.html#full_text_query_syntax
+_FTS5_SPECIAL_CHARS = re.compile(r'[":*^/=\-+()]')
+
+
+def _escape_fts5_query(query: str) -> str:
+    """Escape special characters for FTS5 MATCH query.
+
+    FTS5 has special syntax for operators like:
+    - " (phrase query)
+    - * (prefix match)
+    - : (column filter)
+    - ^ (boost)
+    - / = - + ( ) (various operators)
+
+    This function wraps each word in double quotes to make them literal strings,
+    which prevents FTS5 from interpreting special characters as operators.
+
+    Args:
+        query: Raw query string that may contain special characters
+
+    Returns:
+        Escaped query string safe for FTS5 MATCH
+
+    Examples:
+        >>> _escape_fts5_query("path/to/file.png")
+        '"path" "to" "file" "png"'
+        >>> _escape_fts5_query("key=value")
+        '"key" "value"'
+        >>> _escape_fts5_query("stability_oriented_autotuning")
+        '"stability_oriented_autotuning"'
+    """
+    if not query:
+        return ""
+
+    # Check if query contains special characters
+    if not _FTS5_SPECIAL_CHARS.search(query):
+        # No special characters, return as-is for better FTS5 matching
+        return query
+
+    # Split on whitespace and special characters, filter empty strings
+    # This handles cases like "path/to/file" -> ["path", "to", "file"]
+    words = re.split(r'[\s":*^/=\-+()]+', query)
+    words = [w.strip() for w in words if w.strip()]
+
+    if not words:
+        return ""
+
+    # Wrap each word in double quotes to make them literal
+    # FTS5 treats quoted strings as literal text
+    escaped_words = [f'"{w}"' for w in words]
+    return " ".join(escaped_words)
 
 
 # LLM compression cache: {(text_hash, max_chars, context_hint): compressed_text}
@@ -442,6 +497,8 @@ class MemoryManager:
         self.memory_log_max_chars = int(_cfg_get(self.config, "memory_log_max_chars", 400))
         self.memory_log_dir: Path | None = None
         self.memory_log_path: Path | None = None
+        # Layer-separated log paths
+        self.memory_log_paths: dict[str, Path] = {}
         log_dir = _cfg_get(self.config, "memory_log_dir", None)
         if not log_dir:
             base_log_dir = _cfg_get(self.config, "log_dir", None)
@@ -452,9 +509,17 @@ class MemoryManager:
                 self.memory_log_dir = Path(log_dir)
                 self.memory_log_dir.mkdir(parents=True, exist_ok=True)
                 self.memory_log_path = self.memory_log_dir / "memory_calls.jsonl"
+                # Layer-separated log files
+                self.memory_log_paths = {
+                    "primitive": self.memory_log_dir / "memory_primitive.jsonl",
+                    "public_api": self.memory_log_dir / "memory_public_api.jsonl",
+                    "system": self.memory_log_dir / "memory_system.jsonl",
+                    "internal": self.memory_log_dir / "memory_internal.jsonl",
+                }
             except Exception:
                 self.memory_log_dir = None
                 self.memory_log_path = None
+                self.memory_log_paths = {}
 
         # Current phase tracking for memory event logging
         self._current_phase: str | None = None
@@ -520,6 +585,7 @@ class MemoryManager:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA busy_timeout=60000")  # Wait up to 60s for locks
         self._init_schema()
         self._fts_enabled = self._init_fts()
 
@@ -651,6 +717,46 @@ class MemoryManager:
         finally:
             self._current_phase = previous_phase
 
+    # Operation to layer mapping for log separation
+    _OP_LAYER_MAP: dict[str, str] = {
+        # Primitive layer (DB operations)
+        "set_core": "primitive",
+        "get_core": "primitive",
+        "write_event": "primitive",
+        "write_archival": "primitive",
+        "retrieve_archival": "primitive",
+        "llm_memory_update": "primitive",
+        "core_delete": "primitive",
+        # Public API layer (mem_* functions)
+        "mem_core_get": "public_api",
+        "mem_core_set": "public_api",
+        "mem_core_del": "public_api",
+        "mem_recall_append": "public_api",
+        "mem_recall_search": "public_api",
+        "mem_archival_write": "public_api",
+        "mem_archival_update": "public_api",
+        "mem_archival_search": "public_api",
+        "mem_archival_get": "public_api",
+        "mem_node_fork": "public_api",
+        "mem_node_read": "public_api",
+        "mem_node_write": "public_api",
+        # System-level layer (high-level integration)
+        "apply_llm_memory_updates": "system",
+        "render_for_prompt": "system",
+        "render_for_prompt_with_log": "system",
+        # Internal/automatic operations
+        "check_memory_pressure": "internal",
+        "consolidate_inherited_memory": "internal",
+        "consolidate_recall_events": "internal",
+        "auto_consolidate_memory": "internal",
+        "evaluate_importance_with_llm": "internal",
+        "vlm_analysis_complete": "internal",
+    }
+
+    def _get_op_layer(self, op: str) -> str:
+        """Determine which layer an operation belongs to."""
+        return self._OP_LAYER_MAP.get(op, "internal")
+
     def _log_memory_event(
         self,
         op: str,
@@ -667,9 +773,12 @@ class MemoryManager:
         raw_phase = phase if phase is not None else self._current_phase
         # Convert to human-readable phase name
         effective_phase = _get_phase_display_name(raw_phase)
+        # Determine operation layer
+        layer = self._get_op_layer(op)
         payload: dict[str, Any] = {
             "ts": _now_ts(),
             "op": op,
+            "layer": layer,
             "memory_type": memory_type,
             "branch_id": branch_id,
             "node_id": node_id,
@@ -678,10 +787,19 @@ class MemoryManager:
         }
         if details:
             payload["details"] = self._sanitize_detail_value(details)
+
+        log_line = json.dumps(payload, ensure_ascii=True) + "\n"
+
         try:
             self.memory_log_path.parent.mkdir(parents=True, exist_ok=True)
+            # Write to main log file (all operations)
             with self.memory_log_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+                handle.write(log_line)
+            # Write to layer-specific log file
+            if self.memory_log_paths and layer in self.memory_log_paths:
+                layer_path = self.memory_log_paths[layer]
+                with layer_path.open("a", encoding="utf-8") as handle:
+                    handle.write(log_line)
         except Exception as exc:
             logger.warning("Failed to write memory log event: %s", exc)
 
@@ -814,6 +932,42 @@ class MemoryManager:
         except Exception:
             pass
 
+    def _execute_with_retry(
+        self,
+        operation: callable,
+        max_retries: int = 5,
+        base_delay: float = 0.1,
+    ) -> Any:
+        """Execute a database operation with exponential backoff retry on lock errors.
+
+        Args:
+            operation: A callable that performs the database operation.
+            max_retries: Maximum number of retry attempts.
+            base_delay: Base delay in seconds for exponential backoff.
+
+        Returns:
+            The result of the operation.
+
+        Raises:
+            sqlite3.OperationalError: If all retries are exhausted.
+        """
+        for attempt in range(max_retries):
+            try:
+                return operation()
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.1)
+                    logger.debug(
+                        "Database locked, retrying in %.2fs (attempt %d/%d)",
+                        delay,
+                        attempt + 1,
+                        max_retries,
+                    )
+                    time.sleep(delay)
+                else:
+                    raise
+
     def create_branch(
         self,
         parent_branch_id: str | None,
@@ -826,11 +980,14 @@ class MemoryManager:
         ).fetchone()
         if existing:
             return branch_id
-        self._conn.execute(
-            "INSERT INTO branches (id, parent_id, node_uid, created_at) VALUES (?, ?, ?, ?)",
-            (branch_id, parent_branch_id, node_uid, _now_ts()),
-        )
-        self._conn.commit()
+        def _do_insert_branch():
+            self._conn.execute(
+                "INSERT INTO branches (id, parent_id, node_uid, created_at) VALUES (?, ?, ?, ?)",
+                (branch_id, parent_branch_id, node_uid, _now_ts()),
+            )
+            self._conn.commit()
+
+        self._execute_with_retry(_do_insert_branch)
         # Force WAL checkpoint so new branch is immediately visible to other processes
         try:
             self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
@@ -841,11 +998,14 @@ class MemoryManager:
         return branch_id
 
     def update_branch_node_uid(self, branch_id: str, node_uid: str) -> None:
-        self._conn.execute(
-            "UPDATE branches SET node_uid=? WHERE id=?",
-            (node_uid, branch_id),
-        )
-        self._conn.commit()
+        def _do_update():
+            self._conn.execute(
+                "UPDATE branches SET node_uid=? WHERE id=?",
+                (node_uid, branch_id),
+            )
+            self._conn.commit()
+
+        self._execute_with_retry(_do_update)
 
     def set_root_branch_id(self, branch_id: str) -> None:
         self.root_branch_id = branch_id
@@ -1942,7 +2102,7 @@ class MemoryManager:
                 },
             )
         self._enforce_core_budget(branch_id)
-        self._conn.commit()
+        self._execute_with_retry(self._conn.commit)
 
     def get_core(
         self,
@@ -2063,11 +2223,14 @@ class MemoryManager:
                 # Duplicate found, skip insertion
                 return False
 
-        self._conn.execute(
-            "INSERT INTO events (branch_id, kind, text, tags, created_at, task_hint, memory_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (branch_id, kind, payload, tags_json, _now_ts(), task_hint, memory_size),
-        )
-        self._conn.commit()
+        def _do_insert():
+            self._conn.execute(
+                "INSERT INTO events (branch_id, kind, text, tags, created_at, task_hint, memory_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (branch_id, kind, payload, tags_json, _now_ts(), task_hint, memory_size),
+            )
+            self._conn.commit()
+
+        self._execute_with_retry(_do_insert)
         if log_event:
             if not node_id or not phase:
                 for tag in tag_list:
@@ -2145,17 +2308,23 @@ class MemoryManager:
                 # Duplicate found, skip insertion
                 return existing[0]
 
-        cur = self._conn.execute(
-            "INSERT INTO archival (branch_id, text, tags, created_at) VALUES (?, ?, ?, ?)",
-            (branch_id, payload, tags_json, _now_ts()),
-        )
-        row_id = cur.lastrowid
-        if self._fts_enabled and row_id:
-            self._conn.execute(
-                "INSERT INTO archival_fts (rowid, text, tags, branch_id) VALUES (?, ?, ?, ?)",
-                (row_id, payload, tags_json, branch_id),
+        row_id_container = [None]
+
+        def _do_insert_archival():
+            cur = self._conn.execute(
+                "INSERT INTO archival (branch_id, text, tags, created_at) VALUES (?, ?, ?, ?)",
+                (branch_id, payload, tags_json, _now_ts()),
             )
-        self._conn.commit()
+            row_id_container[0] = cur.lastrowid
+            if self._fts_enabled and row_id_container[0]:
+                self._conn.execute(
+                    "INSERT INTO archival_fts (rowid, text, tags, branch_id) VALUES (?, ?, ?, ?)",
+                    (row_id_container[0], payload, tags_json, branch_id),
+                )
+            self._conn.commit()
+
+        self._execute_with_retry(_do_insert_archival)
+        row_id = row_id_container[0]
         if log_event:
             self._log_memory_event(
                 op_name or "write_archival",
@@ -2243,15 +2412,27 @@ class MemoryManager:
         placeholders = ",".join(["?"] * len(branch_ids))
         cleaned_query = (query or "").strip()
         rows: list[sqlite3.Row] = []
+        fts_succeeded = False
         if self._fts_enabled and cleaned_query:
-            sql = (
-                "SELECT a.id, a.branch_id, a.text, a.tags, a.created_at "
-                "FROM archival_fts f JOIN archival a ON a.id = f.rowid "
-                f"WHERE a.branch_id IN ({placeholders}) AND f.text MATCH ? "
-                "ORDER BY a.created_at DESC LIMIT ?"
-            )
-            rows = self._conn.execute(sql, [*branch_ids, cleaned_query, k]).fetchall()
-        else:
+            # Escape special characters for FTS5 MATCH query
+            # FTS5 interprets characters like /, =, :, *, etc. as operators
+            escaped_query = _escape_fts5_query(cleaned_query)
+            if escaped_query:
+                sql = (
+                    "SELECT a.id, a.branch_id, a.text, a.tags, a.created_at "
+                    "FROM archival_fts f JOIN archival a ON a.id = f.rowid "
+                    f"WHERE a.branch_id IN ({placeholders}) AND f.text MATCH ? "
+                    "ORDER BY a.created_at DESC LIMIT ?"
+                )
+                try:
+                    rows = self._conn.execute(sql, [*branch_ids, escaped_query, k]).fetchall()
+                    fts_succeeded = True
+                except sqlite3.OperationalError as e:
+                    # FTS5 query failed (e.g., complex syntax not fully escaped)
+                    # Fall back to non-FTS search
+                    logger.debug(f"FTS5 query failed, falling back to LIKE search: {e}")
+                    fts_succeeded = False
+        if not fts_succeeded:
             sql = (
                 "SELECT id, branch_id, text, tags, created_at FROM archival "
                 f"WHERE branch_id IN ({placeholders}) "
@@ -2761,15 +2942,16 @@ class MemoryManager:
 
         Args:
             branch_id: The branch ID to apply updates to.
-            updates: A dict containing memory updates with optional keys:
-                - "core": dict of key-value pairs to set in core memory
-                - "core_delete": list of keys to delete from core memory
-                - "core_get": list of keys to retrieve from core memory
-                - "archival": list of dicts with "text" and optional "tags"
-                - "archival_update": list of dicts with "id", "text", and optional "tags"
-                - "archival_search": dict with "query" and optional "k", "tags"
-                - "recall": dict with event data to append to recall
-                - "recall_search": dict with "query" and optional "k"
+            updates: A dict containing memory updates with keys matching primitive functions:
+                - "mem_core_set": dict of key-value pairs to set in core memory
+                - "mem_core_get": list of keys to retrieve from core memory
+                - "mem_core_del": list of keys to delete from core memory
+                - "mem_archival_write": list of dicts with "text" and optional "tags"
+                - "mem_archival_update": list of dicts with "id", "text", and optional "tags"
+                - "mem_archival_search": dict with "query" and optional "k", "tags"
+                - "mem_recall_append": dict with event data to append to recall
+                - "mem_recall_search": dict with "query" and optional "k"
+                - "mem_recall_evict": dict with eviction parameters
                 - "consolidate": bool to trigger memory consolidation
             node_id: Optional node ID for logging.
             phase: Optional phase name for logging.
@@ -2780,8 +2962,38 @@ class MemoryManager:
         if not updates or not isinstance(updates, dict):
             return {}
 
+        # Normalize keys: map primitive function names to internal keys
+        # This allows LLM to use the documented primitive function names
+        key_mapping = {
+            "mem_core_set": "core",
+            "mem_core_get": "core_get",
+            "mem_core_del": "core_delete",
+            "mem_archival_write": "archival",
+            "mem_archival_update": "archival_update",
+            "mem_archival_search": "archival_search",
+            "mem_recall_append": "recall",
+            "mem_recall_search": "recall_search",
+            "mem_recall_evict": "recall_evict",
+        }
+        normalized_updates = {}
+        for key, value in updates.items():
+            normalized_key = key_mapping.get(key, key)
+            normalized_updates[normalized_key] = value
+        updates = normalized_updates
+
         use_phase = phase or self._current_phase
         results: dict = {}
+        # Track all memory operations for detailed logging with timestamps
+        operations_log: list[dict] = []
+        apply_start_ts = _now_ts()
+
+        def _log_op(op_type: str, **kwargs: Any) -> None:
+            """Append operation to log with timestamp."""
+            operations_log.append({
+                "type": op_type,
+                "timestamp": _now_ts(),
+                **kwargs,
+            })
 
         # Core memory SET operations
         if "core" in updates and isinstance(updates["core"], dict):
@@ -2808,6 +3020,8 @@ class MemoryManager:
                     phase=use_phase,
                     node_id=node_id,
                 )
+                # Log the write operation with full value
+                _log_op("core_set", key=key, value=actual_value, importance=importance, ttl=ttl)
 
         # Core memory GET operations
         if "core_get" in updates:
@@ -2817,6 +3031,8 @@ class MemoryManager:
                 for key in keys:
                     value = self.get_core(branch_id, key, log_event=False)
                     results["core_get"][key] = value
+                    # Log the read operation with full value
+                    _log_op("core_get", key=key, value=value)
 
         # Core memory DELETE/EVICT operations
         if "core_delete" in updates:
@@ -2830,6 +3046,7 @@ class MemoryManager:
                         log_event=True,
                         node_id=node_id,
                     )
+                    _log_op("core_delete", key=key)
             elif isinstance(keys, str):
                 self._delete_core_key(
                     branch_id,
@@ -2838,6 +3055,7 @@ class MemoryManager:
                     log_event=True,
                     node_id=node_id,
                 )
+                _log_op("core_delete", key=keys)
 
         # Archival memory WRITE operations
         if "archival" in updates and isinstance(updates["archival"], list):
@@ -2863,6 +3081,8 @@ class MemoryManager:
                     "source": "llm",
                 })
                 self.mem_archival_write(str(text), tags=tags, meta=meta)
+                # Log the archival write operation with full text
+                _log_op("archival_write", text=str(text), tags=tags)
 
         # Archival memory UPDATE operations
         if "archival_update" in updates and isinstance(updates["archival_update"], list):
@@ -2875,6 +3095,8 @@ class MemoryManager:
                 text = item.get("text")
                 tags = item.get("tags")
                 self.mem_archival_update(record_id, text=text, tags=tags)
+                # Log the archival update operation with full text
+                _log_op("archival_update", id=record_id, text=text, tags=tags)
 
         # Archival memory SEARCH operations
         if "archival_search" in updates and isinstance(updates["archival_search"], dict):
@@ -2891,10 +3113,14 @@ class MemoryManager:
                     tags_filter=tags_filter,
                     log_event=True,
                 )
+                # Full results for logging
                 results["archival_search"] = [
-                    {"id": r.get("id"), "text": r.get("text", "")[:500], "tags": r.get("tags", [])}
+                    {"id": r.get("id"), "text": r.get("text", ""), "tags": r.get("tags", [])}
                     for r in search_results
                 ]
+                # Log the archival search operation with full results
+                _log_op("archival_search", query=query, k=k, tags_filter=tags_filter,
+                        results_count=len(search_results), results=results["archival_search"])
 
         # Recall memory APPEND operations
         if "recall" in updates and isinstance(updates["recall"], dict):
@@ -2907,6 +3133,8 @@ class MemoryManager:
             if "kind" not in event:
                 event["kind"] = "llm_insight"
             self.mem_recall_append(event)
+            # Log the recall append operation with full content
+            _log_op("recall_append", kind=event.get("kind"), content=str(event.get("content", "")))
 
         # Recall memory SEARCH operations
         if "recall_search" in updates and isinstance(updates["recall_search"], dict):
@@ -2915,10 +3143,14 @@ class MemoryManager:
             k = search_params.get("k", 20)
             if query:
                 search_results = self.mem_recall_search(query, k=k)
+                # Full results for logging
                 results["recall_search"] = [
-                    {"kind": r.get("kind"), "summary": str(r.get("summary", ""))[:300], "ts": r.get("ts")}
+                    {"kind": r.get("kind"), "summary": str(r.get("summary", "")), "ts": r.get("ts")}
                     for r in search_results
                 ]
+                # Log the recall search operation with full results
+                _log_op("recall_search", query=query, k=k,
+                        results_count=len(search_results), results=results["recall_search"])
 
         # Recall memory EVICT operations (move to archival before deleting)
         if "recall_evict" in updates:
@@ -2994,6 +3226,8 @@ class MemoryManager:
                     self._conn.commit()
 
             results["recall_evict"] = {"evicted_count": evicted_count, "archived_count": archived_count}
+            # Log the recall evict operation
+            _log_op("recall_evict", evicted_count=evicted_count, archived_count=archived_count)
 
         # Recall memory SUMMARIZE operations
         if "recall_summarize" in updates:
@@ -3002,9 +3236,11 @@ class MemoryManager:
                 try:
                     consolidated = self.consolidate_recall_events(branch_id)
                     results["recall_summarize"] = {"status": "success", "events_consolidated": consolidated}
+                    _log_op("recall_summarize", status="success", events_consolidated=consolidated)
                 except Exception as exc:
                     logger.warning("LLM-requested recall summarize failed: %s", exc)
                     results["recall_summarize"] = {"status": "failed", "error": str(exc)}
+                    _log_op("recall_summarize", status="failed", error=str(exc))
 
         # Memory CONSOLIDATION operations
         if updates.get("consolidate"):
@@ -3012,10 +3248,13 @@ class MemoryManager:
                 # Use "high" pressure level to trigger consolidation
                 consolidate_result = self.auto_consolidate_memory(branch_id, pressure_level="high")
                 results["consolidate"] = {"status": "success", "details": consolidate_result}
+                _log_op("consolidate", status="success", details=consolidate_result)
             except Exception as exc:
                 logger.warning("LLM-requested consolidation failed: %s", exc)
                 results["consolidate"] = {"status": "failed", "error": str(exc)}
+                _log_op("consolidate", status="failed", error=str(exc))
 
+        apply_end_ts = _now_ts()
         self._log_memory_event(
             "apply_llm_memory_updates",
             "llm_update",
@@ -3034,8 +3273,21 @@ class MemoryManager:
                 "has_recall_evict": "recall_evict" in updates,
                 "has_recall_summarize": "recall_summarize" in updates,
                 "has_consolidate": updates.get("consolidate", False),
+                "start_timestamp": apply_start_ts,
+                "end_timestamp": apply_end_ts,
+                "duration_seconds": apply_end_ts - apply_start_ts,
+                "operations_log": operations_log,  # Include detailed operations log with timestamps
             },
         )
+
+        # Include operations log, timing, and input updates in results for prompt log recording
+        results["operations_log"] = operations_log
+        results["input_updates"] = updates
+        results["timing"] = {
+            "start_timestamp": apply_start_ts,
+            "end_timestamp": apply_end_ts,
+            "duration_seconds": apply_end_ts - apply_start_ts,
+        }
 
         return results
 
@@ -3095,15 +3347,14 @@ class MemoryManager:
         core_latest.pop(RESOURCE_DIGEST_KEY, None)
         core_latest.pop(RESOURCE_USED_KEY, None)
 
-        # Build core items for logging (truncated values)
+        # Build core items for logging with full values
         core_items: list[dict] = []
         # Add all core items (LLM manages what to store)
         # Note: idea_md_summary and phase0_summary are no longer auto-injected
         for key, (value, _) in sorted(core_latest.items(), key=lambda kv: kv[0]):
             core_lines.append(f"- {key}: {value}")
-            # Truncate value for logging (max 300 chars)
-            truncated_value = value[:300] + "..." if len(value) > 300 else value
-            core_items.append({"key": key, "value": truncated_value})
+            # Full value for logging
+            core_items.append({"key": key, "value": value})
 
         core_text = "\n".join(core_lines).strip()
         return core_text, resource_index or "", core_items
@@ -3247,25 +3498,23 @@ class MemoryManager:
         # Convert task_hint to human-readable phase name for logging
         phase_display_name = _get_phase_display_name(task_hint)
 
-        # Build detailed items for logging (truncated for size)
+        # Build detailed items for logging with full content
         recall_items = []
-        for row in recall_rows[:20]:  # Limit to 20 items
-            text = str(_row_get(row, "text", ""))[:200]
+        for row in recall_rows:  # No limit on items
             recall_items.append({
                 "kind": _row_get(row, "kind"),
-                "text": text + "..." if len(str(_row_get(row, "text", ""))) > 200 else text,
+                "text": str(_row_get(row, "text", "")),
             })
 
         archival_items = []
-        for row in archival_rows[:10]:  # Limit to 10 items
-            text = str(_row_get(row, "text", ""))[:200]
+        for row in archival_rows:  # No limit on items
             tags = []
             try:
                 tags = json.loads(_row_get(row, "tags") or "[]")
             except (json.JSONDecodeError, TypeError):
                 pass
             archival_items.append({
-                "text": text + "..." if len(str(_row_get(row, "text", ""))) > 200 else text,
+                "text": str(_row_get(row, "text", "")),
                 "tags": tags,
             })
 
@@ -3306,6 +3555,130 @@ class MemoryManager:
             details=log_details,
         )
         return rendered
+
+    def render_for_prompt_with_log(
+        self,
+        branch_id: str,
+        task_hint: str | None,
+        budget_chars: int,
+        no_limit: bool = False,
+    ) -> tuple[str, dict]:
+        """Render memory for prompt injection and return detailed log information.
+
+        This method is similar to render_for_prompt but also returns detailed
+        information about what memory was injected, suitable for prompt logging.
+
+        Args:
+            branch_id: Branch ID to render memory for
+            task_hint: Optional task hint for retrieval
+            budget_chars: Character budget (ignored if no_limit=True)
+            no_limit: If True, skip all truncation/compression
+
+        Returns:
+            Tuple of (rendered_text, log_details) where log_details contains:
+            - core_items: List of core memory key-value pairs
+            - recall_items: List of recall memory events
+            - archival_items: List of archival memory entries
+            - task_hint: The task hint used for retrieval
+            - budget_chars: The character budget used
+        """
+        if not branch_id:
+            return "", {}
+        branch_ids = self._branch_chain(branch_id)
+        if not branch_ids:
+            return "", {}
+
+        render_start_ts = _now_ts()
+
+        # Render each memory section
+        core_text, resource_index, core_items = self._render_core_memory(branch_ids, branch_id, no_limit)
+        resource_items_text = self._render_resource_items(branch_id, task_hint)
+        recall_text, recall_rows = self._render_recall_memory(branch_ids)
+        archival_text, archival_rows = self._render_archival_memory(branch_id, task_hint, no_limit)
+
+        # Build sections
+        sections = []
+        if resource_index:
+            sections.append(("Resource Index", resource_index))
+        if core_text:
+            sections.append(("Core Memory", core_text))
+        if recall_text:
+            sections.append(("Recall Memory", recall_text))
+        if archival_text:
+            sections.append(("Archival Memory", archival_text))
+        if resource_items_text:
+            sections.append(("Resource Memory", resource_items_text))
+
+        # Build detailed items for logging with full content
+        recall_items = []
+        for row in recall_rows:  # No limit on items
+            recall_items.append({
+                "kind": _row_get(row, "kind"),
+                "text": str(_row_get(row, "text", "")),
+            })
+
+        archival_items = []
+        for row in archival_rows:  # No limit on items
+            tags = []
+            try:
+                tags = json.loads(_row_get(row, "tags") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                pass
+            archival_items.append({
+                "text": str(_row_get(row, "text", "")),
+                "tags": tags,
+            })
+
+        render_end_ts = _now_ts()
+
+        # Build log details with injection context and timing
+        log_details = {
+            "task_hint": task_hint,
+            "budget_chars": budget_chars,
+            "no_limit": no_limit,
+            "core_count": len(core_items),
+            "recall_count": len(recall_rows),
+            "archival_count": len(archival_rows),
+            "resource_items": 1 if resource_items_text else 0,
+            # Detailed items for logging
+            "core_items": core_items,
+            "recall_items": recall_items,
+            "archival_items": archival_items,
+            "archival_query": task_hint,
+            "archival_k": self.retrieval_k,
+            # Timing information
+            "timing": {
+                "start_timestamp": render_start_ts,
+                "end_timestamp": render_end_ts,
+                "duration_seconds": render_end_ts - render_start_ts,
+            },
+        }
+
+        # Convert task_hint to human-readable phase name for logging
+        phase_display_name = _get_phase_display_name(task_hint)
+
+        if not sections:
+            self._log_memory_event(
+                "render_for_prompt",
+                "prompt",
+                branch_id=branch_id,
+                phase=phase_display_name,
+                details=log_details,
+            )
+            return "", log_details
+
+        # Combine sections with budget management
+        rendered = self._combine_memory_sections(sections, budget_chars, no_limit)
+        log_details["rendered_chars"] = len(rendered)
+
+        self._log_memory_event(
+            "render_for_prompt",
+            "prompt",
+            branch_id=branch_id,
+            phase=phase_display_name,
+            details=log_details,
+        )
+        return rendered, log_details
 
     def _collect_experimental_results(self, best_branch: str, no_budget_limit: bool) -> str:
         """Collect experimental results from events and core memory."""

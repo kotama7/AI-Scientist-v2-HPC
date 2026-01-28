@@ -7,8 +7,8 @@ You MUST include this block even if you have no updates (use empty object {}).
 
 <memory_update>
 {
-  "core": {"phase1_status": "in_progress"},
-  "archival": [{"text": "details", "tags": ["PHASE1_INSTALL"]}]
+  "mem_core_set": {"phase1_status": "in_progress"},
+  "mem_archival_write": [{"text": "details", "tags": ["PHASE1_INSTALL"]}]
 }
 </memory_update>
 
@@ -80,30 +80,30 @@ Step 3: cd /workspace/third_party/cnpy && cmake -B build -DCMAKE_INSTALL_PREFIX=
 Step 4: ls /workspace/.local/lib/libcnpy* (verification)
 Step 5: done=true, command=""
 
-**Memory Operations:**
+**Memory Operations (use primitive function names):**
 
 Write operations (stored immediately):
-- "core": {"key": "value"} - Set key-value pairs in always-visible memory
-- "archival": [{"text": "...", "tags": ["TAG"]}] - Write to long-term searchable memory
-- "recall": {"kind": "...", "content": "..."} - Append to recent events timeline
+- "mem_core_set": {"key": "value"} - Set key-value pairs in always-visible memory
+- "mem_archival_write": [{"text": "...", "tags": ["TAG"]}] - Write to long-term searchable memory
+- "mem_recall_append": {"kind": "...", "content": "..."} - Append to recent events timeline
 
 Read operations (results returned, then you re-output with the information):
-- "core_get": ["key1", "key2"] - Retrieve core memory values
-- "archival_search": {"query": "...", "k": 5} - Search long-term memory
-- "recall_search": {"query": "...", "k": 10} - Search recent events
+- "mem_core_get": ["key1", "key2"] - Retrieve core memory values
+- "mem_archival_search": {"query": "...", "k": 5} - Search long-term memory
+- "mem_recall_search": {"query": "...", "k": 10} - Search recent events
 
 Management operations:
-- "core_delete": ["key"] - Delete keys from core memory
-- "recall_evict": {"oldest": N} - Move old recall events to archival
+- "mem_core_del": ["key"] - Delete keys from core memory
+- "mem_recall_evict": {"oldest": N} - Move old recall events to archival
 - "consolidate": true - Trigger memory consolidation
 
 **Memory Update Guidelines for Phase 1:**
-- Use "core" for:
+- Use "mem_core_set" for:
   * Installation status (in_progress/completed/failed)
   * Discovered package versions (e.g., "numpy_version": "1.24.0")
   * Critical environment constraints (e.g., "gcc_version": "11.4.0")
   * Git commit SHAs for reproducibility
-- Use "archival" for:
+- Use "mem_archival_write" for:
   * Detailed installation logs with tag ["PHASE1_INSTALL"]
   * Error messages and recovery steps with tag ["PHASE1_ERROR"]
   * Build configuration details with tag ["BUILD_CONFIG"]
@@ -113,32 +113,32 @@ Management operations:
 **Example Memory Update (after git clone):**
 <memory_update>
 {
-  "core": {"cnpy_commit": "abc1234"},
-  "archival": [{"text": "Cloned cnpy from https://github.com/rogersce/cnpy.git at commit abc1234. Build with CMake requires zlib1g-dev.", "tags": ["PHASE1_INSTALL", "resource:github:cnpy"]}]
+  "mem_core_set": {"cnpy_commit": "abc1234"},
+  "mem_archival_write": [{"text": "Cloned cnpy from https://github.com/rogersce/cnpy.git at commit abc1234. Build with CMake requires zlib1g-dev.", "tags": ["PHASE1_INSTALL", "resource:github:cnpy"]}]
 }
 </memory_update>
 
 **Example Memory Update (after error recovery):**
 <memory_update>
 {
-  "core": {"numpy_install_method": "pip_target"},
-  "archival": [{"text": "apt python3-numpy caused import errors. Switched to pip install --target /workspace/.pydeps. PYTHONPATH must include /workspace/.pydeps.", "tags": ["PHASE1_ERROR", "WORKAROUND"]}]
+  "mem_core_set": {"numpy_install_method": "pip_target"},
+  "mem_archival_write": [{"text": "apt python3-numpy caused import errors. Switched to pip install --target /workspace/.pydeps. PYTHONPATH must include /workspace/.pydeps.", "tags": ["PHASE1_ERROR", "WORKAROUND"]}]
 }
 </memory_update>
 
 **Example Memory Update (when done):**
 <memory_update>
 {
-  "core": {"phase1_status": "completed", "python_deps_path": "/workspace/.pydeps"},
-  "archival": [{"text": "Phase 1 completed. Installed: numpy 1.24.0, matplotlib 3.7.1, pandas 2.0.0, seaborn 0.12.2, scikit-learn 1.2.2, networkx 3.1, scipy 1.10.1 via pip --target /workspace/.pydeps. zlib1g-dev and build-essential installed via apt.", "tags": ["PHASE1_INSTALL", "PHASE1_COMPLETE"]}]
+  "mem_core_set": {"phase1_status": "completed", "python_deps_path": "/workspace/.pydeps"},
+  "mem_archival_write": [{"text": "Phase 1 completed. Installed: numpy 1.24.0, matplotlib 3.7.1, pandas 2.0.0, seaborn 0.12.2, scikit-learn 1.2.2, networkx 3.1, scipy 1.10.1 via pip --target /workspace/.pydeps. zlib1g-dev and build-essential installed via apt.", "tags": ["PHASE1_INSTALL", "PHASE1_COMPLETE"]}]
 }
 </memory_update>
 
 **Example Memory Read (retrieve previous install info):**
 <memory_update>
 {
-  "core_get": ["numpy_install_method", "python_deps_path"],
-  "archival_search": {"query": "PHASE1_ERROR workaround", "k": 3}
+  "mem_core_get": ["numpy_install_method", "python_deps_path"],
+  "mem_archival_search": {"query": "PHASE1_ERROR workaround", "k": 3}
 }
 </memory_update>
 

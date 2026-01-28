@@ -1,0 +1,68 @@
+{
+  "local": [
+    {
+      "name": "ai_scientist_data",
+      "host_path": "/home/users/takanori.kotama/workplace/AI-Scientist-v2-HPC/data",
+      "mount_path": "/workspace/input/data",
+      "read_only": true
+    }
+  ],
+  "items": [
+    {
+      "name": "himenobmt_baseline",
+      "class": "template",
+      "source": "local",
+      "resource": "ai_scientist_data",
+      "path": "himenobmt",
+      "include_tree": true,
+      "max_chars": 0,
+      "max_total_chars": 0,
+      "include_files": [
+        "himenoBMT.c",
+        "Makefile"
+      ],
+      "notes": "Baseline Himeno BMT C implementation."
+    },
+    {
+      "name": "himenobmt_pthreads",
+      "class": "template",
+      "source": "local",
+      "resource": "ai_scientist_data",
+      "path": "himenobmt_c_thr",
+      "include_tree": true,
+      "max_chars": 0,
+      "max_total_chars": 0,
+      "include_files": [
+        "himenoBMT_t.c",
+        "barrier.h",
+        "barrier.c",
+        "Makefile"
+      ],
+      "notes": "Pthreads version with a custom barrier."
+    },
+    {
+      "name": "himenobmt_mpi",
+      "class": "template",
+      "source": "local",
+      "resource": "ai_scientist_data",
+      "path": "himenobmt_mpi",
+      "include_tree": true,
+      "max_chars": 0,
+      "max_total_chars": 0,
+      "include_files": [
+        "himenoBMT_m.c",
+        "Makefile"
+      ],
+      "notes": "MPI version for distributed-memory runs."
+    },
+    {
+      "name": "data_manifest",
+      "class": "document",
+      "source": "local",
+      "resource": "ai_scientist_data",
+      "path": "manifest.json",
+      "include_content": true,
+      "notes": "Manifest describing available local resources."
+    }
+  ]
+}

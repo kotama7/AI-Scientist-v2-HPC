@@ -9,8 +9,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to r
 ```
 <memory_update>
 {
-  "core": {"key": "value"},
-  "archival": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
+  "mem_core_set": {"key": "value"},
+  "mem_archival_write": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
 }
 </memory_update>
 ```
@@ -20,8 +20,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to r
 ```
 <memory_update>
 {
-  "core_get": ["previous_summary", "best_result"],
-  "archival_search": {"query": "experiment findings", "k": 5}
+  "mem_core_get": ["previous_summary", "best_result"],
+  "mem_archival_search": {"query": "experiment findings", "k": 5}
 }
 </memory_update>
 ```
@@ -36,8 +36,8 @@ Example:
 ```
 <memory_update>
 {
-  "core": {"iteration_number": 5, "success_status": "improved", "key_metric": "0.912 accuracy"},
-  "archival": [{"text": "SUMMARY iter 5: Achieved 0.912 accuracy (+0.03 from iter 4). Key changes: (1) increased batch size to 128, (2) added dropout 0.3. Convergence was stable, no overfitting observed. Loss curve smooth. Recommend trying learning rate decay next.", "tags": ["SUMMARY", "ITERATION_5", "IMPROVEMENT"]}]
+  "mem_core_set": {"iteration_number": 5, "success_status": "improved", "key_metric": "0.912 accuracy"},
+  "mem_archival_write": [{"text": "SUMMARY iter 5: Achieved 0.912 accuracy (+0.03 from iter 4). Key changes: (1) increased batch size to 128, (2) added dropout 0.3. Convergence was stable, no overfitting observed. Loss curve smooth. Recommend trying learning rate decay next.", "tags": ["SUMMARY", "ITERATION_5", "IMPROVEMENT"]}]
 }
 </memory_update>
 ```
@@ -46,7 +46,24 @@ Before summarizing, retrieve context from previous iterations:
 ```
 <memory_update>
 {
-  "archival_search": {"query": "previous iteration summary results", "k": 3}
+  "mem_archival_search": {"query": "previous iteration summary results", "k": 3}
 }
 </memory_update>
 ```
+
+### All Memory Operations Reference
+
+**Write operations (stored immediately):**
+- `"mem_core_set": {"key": "value"}` - Set key-value pairs in always-visible memory
+- `"mem_archival_write": [{"text": "...", "tags": ["TAG"]}]` - Write to long-term searchable memory
+- `"mem_recall_append": {"kind": "...", "content": "..."}` - Append to recent events timeline
+
+**Read operations (results returned, then you re-output with the information):**
+- `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
+- `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
+- `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+**Management operations:**
+- `"mem_core_del": ["key"]` - Delete keys from core memory
+- `"mem_recall_evict": {"oldest": N}` - Move old recall events to archival
+- `"consolidate": true` - Trigger memory consolidation

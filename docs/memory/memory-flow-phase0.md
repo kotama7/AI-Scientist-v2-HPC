@@ -10,7 +10,8 @@ Each node generates its own Phase 0 plan with history from previous runs if avai
 Key points:
 - **Per-node execution**: Phase 0 is generated for every node (no caching)
 - **History injection**: Previous run results are collected and injected into the prompt
-- **Memory operations**: If memory is enabled, Phase 0 responses must start with a `<memory_update>` block; memory context is not auto-injected
+- **Memory injection**: If memory is enabled, memory context is auto-injected into the prompt (same as Phase 1-4)
+- **Memory operations**: Phase 0 responses must start with a `<memory_update>` block; read operations can access previous data
 - **LLM-managed memory**: `idea_md_summary`, `phase0_summary`, and `PHASE0_INTERNAL` are managed by the LLM via `<memory_update>` blocks
 - **Output**: Plan is saved to `phase0_plan.json` for logging purposes
 
@@ -61,12 +62,12 @@ Key points:
 │                                      ▼                                      │
 │  ┌────────────────────────────────────────────────────────────────────┐    │
 │  │ 3. WHOLE PLANNING (Phase 0 Planning)                               │    │
-│  │    Function: _whole_plan_query()                                   │    │
+│  │    Function: _execute_phase0_planning()                            │    │
 │  │                                                                    │    │
 │  │    Prompt:                                                        │    │
 │  │    - memory enabled: `prompt/config/phases/phase0_planning_with_memory.txt` │
 │  │    - memory disabled: `prompt/config/phases/phase0_planning.txt`   │    │
-│  │    (no automatic memory context).                                  │    │
+│  │    + Memory context injected via render_for_prompt() (same as Phase 1-4) │
 │  │                                                                    │    │
 │  │    LLM response format (memory enabled):                          │    │
 │  │    ┌──────────────────────────────────────────────────────────┐   │    │
@@ -155,11 +156,24 @@ for item in resource_items:
     )
 ```
 
-### 3. Whole Planning (`_whole_plan_query`)
+### 3. Whole Planning (`_execute_phase0_planning`)
 
 **Location**: `parallel_agent.py`
 
-**Trigger**: Called from `run_with_phase0_planning()`
+**Trigger**: Called from `run_with_phase0_planning()` after fork
+
+**Memory Injection** (same as Phase 1-4):
+```python
+# Memory context is injected before the LLM query
+if memory_cfg and memory_cfg.enabled and memory_manager and branch_id:
+    memory_context = memory_manager.render_for_prompt(
+        branch_id,
+        task_hint="phase0",
+        budget_chars=memory_cfg.memory_budget_chars,
+    )
+    if memory_context:
+        prompt["Memory"] = memory_context + memory_ops_instructions
+```
 
 **Prompt Structure**:
 ```python
@@ -169,11 +183,13 @@ prompt = {
     "History": history_injection,
     "Environment": environment_context,
     "Resources": resources_context (optional),
+    "Memory": memory_context + instructions,  # Injected if memory enabled
 }
 
 # Memory Operations are specified inside the phase0 planning prompt when enabled:
 # - <memory_update> is REQUIRED before the JSON plan
 # - Read operations (core_get / archival_search / recall_search) are supported
+# - LLM can see existing memory data and use read operations to access it
 ```
 
 **LLM Output**:
@@ -227,7 +243,7 @@ After Phase 0 completes, the memory may contain (depending on LLM behavior):
 | `PHASE0_INTERNAL` | Phase 0 internal info | LLM-managed (optional) |
 
 ### Recall Memory
-Empty at this point (no events yet)
+May contain events from previous runs or parent branches (accessible via memory injection)
 
 ## Files Generated
 

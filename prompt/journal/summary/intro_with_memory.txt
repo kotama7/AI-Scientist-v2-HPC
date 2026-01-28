@@ -9,8 +9,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to r
 ```
 <memory_update>
 {
-  "core": {"key": "value"},
-  "archival": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
+  "mem_core_set": {"key": "value"},
+  "mem_archival_write": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
 }
 </memory_update>
 ```
@@ -20,8 +20,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to r
 ```
 <memory_update>
 {
-  "core_get": ["experiment_count", "best_result"],
-  "archival_search": {"query": "successful experiment pattern", "k": 5}
+  "mem_core_get": ["experiment_count", "best_result"],
+  "mem_archival_search": {"query": "successful experiment pattern", "k": 5}
 }
 </memory_update>
 ```
@@ -36,8 +36,8 @@ Example:
 ```
 <memory_update>
 {
-  "core": {"total_experiments": 15, "success_rate": "73%", "best_approach": "lr_warmup_with_cosine"},
-  "archival": [{"text": "SUMMARY: Analyzed 15 experiments. Success patterns: (1) Learning rate warmup consistently improved convergence, (2) Batch size 64 optimal for memory/speed tradeoff, (3) Early stopping at patience=10 prevented overfitting. Failure patterns: (1) LR > 0.01 caused divergence, (2) No weight decay led to overfitting on small datasets.", "tags": ["SUMMARY", "ANALYSIS", "PATTERNS"]}]
+  "mem_core_set": {"total_experiments": 15, "success_rate": "73%", "best_approach": "lr_warmup_with_cosine"},
+  "mem_archival_write": [{"text": "SUMMARY: Analyzed 15 experiments. Success patterns: (1) Learning rate warmup consistently improved convergence, (2) Batch size 64 optimal for memory/speed tradeoff, (3) Early stopping at patience=10 prevented overfitting. Failure patterns: (1) LR > 0.01 caused divergence, (2) No weight decay led to overfitting on small datasets.", "tags": ["SUMMARY", "ANALYSIS", "PATTERNS"]}]
 }
 </memory_update>
 ```
@@ -46,7 +46,24 @@ Before summarizing, retrieve previous experiment data:
 ```
 <memory_update>
 {
-  "archival_search": {"query": "experiment results metrics", "k": 10}
+  "mem_archival_search": {"query": "experiment results metrics", "k": 10}
 }
 </memory_update>
 ```
+
+### All Memory Operations Reference
+
+**Write operations (stored immediately):**
+- `"mem_core_set": {"key": "value"}` - Set key-value pairs in always-visible memory
+- `"mem_archival_write": [{"text": "...", "tags": ["TAG"]}]` - Write to long-term searchable memory
+- `"mem_recall_append": {"kind": "...", "content": "..."}` - Append to recent events timeline
+
+**Read operations (results returned, then you re-output with the information):**
+- `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
+- `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
+- `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+**Management operations:**
+- `"mem_core_del": ["key"]` - Delete keys from core memory
+- `"mem_recall_evict": {"oldest": N}` - Move old recall events to archival
+- `"consolidate": true` - Trigger memory consolidation

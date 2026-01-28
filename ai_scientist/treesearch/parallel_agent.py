@@ -619,6 +619,7 @@ def _run_memory_update_phase(
     temperature: float,
     max_rounds: int = 2,
     task_description: str = "",
+    log_dir: Path | None = None,
 ) -> None:
     """Run multi-round memory update phase before task execution.
 
@@ -637,6 +638,7 @@ def _run_memory_update_phase(
         temperature: Temperature for LLM query
         max_rounds: Maximum number of memory read rounds (default 2)
         task_description: Description of what memory operations to perform
+        log_dir: Optional directory for logging prompts and responses
     """
     if not memory_manager or not branch_id:
         return
@@ -654,12 +656,53 @@ def _run_memory_update_phase(
     memory_read_round = 0
     while memory_read_round <= max_rounds:
         try:
+            # Log prompt before query
+            if log_dir:
+                log_dir.mkdir(parents=True, exist_ok=True)
+                log_name = f"{phase_name}_memory_round{memory_read_round}"
+                prompt_payload = {
+                    "meta": {
+                        "phase_name": phase_name,
+                        "memory_read_round": memory_read_round,
+                        "model": model,
+                        "branch_id": branch_id,
+                        "node_id": node_id,
+                    },
+                    "prompt": memory_prompt,
+                }
+                (log_dir / f"{log_name}_prompt.json").write_text(
+                    json.dumps(prompt_payload, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                rendered = _render_prompt_for_log(memory_prompt)
+                (log_dir / f"{log_name}_prompt.md").write_text(rendered, encoding="utf-8")
+
             memory_response = query(
                 system_message=memory_prompt,
                 user_message=None,
                 model=model,
                 temperature=temperature,
             )
+
+            # Log response after query
+            if log_dir and memory_response:
+                log_name = f"{phase_name}_memory_round{memory_read_round}"
+                response_payload = {
+                    "meta": {
+                        "phase_name": phase_name,
+                        "memory_read_round": memory_read_round,
+                        "model": model,
+                    },
+                    "response": memory_response,
+                }
+                (log_dir / f"{log_name}_response.json").write_text(
+                    json.dumps(response_payload, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                (log_dir / f"{log_name}_response.txt").write_text(
+                    memory_response, encoding="utf-8"
+                )
+
             if not memory_response:
                 break
 
@@ -792,9 +835,12 @@ def _save_phase_execution_artifacts(
         _copy_artifact(plans_dir / "phase0_llm_output.txt", llm_outputs_dir)
         _copy_artifact(run_root / "workers" / worker_label / "phase1_steps.jsonl", llm_outputs_dir)
         _copy_artifact(run_root / "workers" / worker_label / "phase1_llm_outputs.jsonl", llm_outputs_dir)
+        # Copy all prompt logs (Phase 0, Phase 1, Phase 2-4, etc.)
         prompt_root = run_root / "workers" / worker_label / "prompt_logs"
-        for prompt_name in ("phase0_prompt.json", "phase0_prompt.md"):
-            _copy_artifact(prompt_root / prompt_name, llm_outputs_dir / "prompt_logs")
+        if prompt_root.exists():
+            for prompt_file in prompt_root.iterdir():
+                if prompt_file.is_file():
+                    _copy_artifact(prompt_file, llm_outputs_dir / "prompt_logs")
     if phase_artifacts:
         llm_outputs_dir.mkdir(parents=True, exist_ok=True)
         phase_data = phase_artifacts.get("phase_artifacts") if isinstance(phase_artifacts, dict) else None
@@ -971,6 +1017,158 @@ SEED_PLOTTING_PROMPT_INTRO = load_prompt(
 SEED_PLOTTING_PROMPT_RESPONSE = load_prompt(
     PROMPT_BASE + "tasks/seed_plotting/response_format"
 ).rstrip("\n")
+
+def _execute_phase0_planning(
+    *,
+    phase0_prompt: dict[str, Any],
+    cfg: "Config",
+    memory_cfg: Any,
+    memory_manager: Any,
+    branch_id: str,
+    plans_dir: Path | None,
+    prompt_log_root: Path | None,
+) -> tuple[dict | None, list | None, dict | None]:
+    """Execute Phase 0 planning LLM call and return results.
+
+    This function is called AFTER fork so that Phase 0 is executed
+    in the context of each child node, not the parent.
+
+    Args:
+        phase0_prompt: The prompt to send to the LLM
+        cfg: Configuration object
+        memory_cfg: Memory configuration
+        memory_manager: Memory manager instance
+        branch_id: The child branch ID to record memory on
+        plans_dir: Directory to save phase0 plan files
+        prompt_log_root: Directory for prompt logs
+
+    Returns:
+        Tuple of (phase0_plan, memory_updates, followup_prompt)
+    """
+    phase0_plan: dict | None = None
+    phase0_memory_updates: list | None = None
+    phase0_followup_prompt: dict | None = None
+
+    try:
+        # Inject memory context into Phase 0 prompt (same as Phase 1-4)
+        # This allows LLM to use memory read operations to access previous data
+        prompt_with_memory = phase0_prompt.copy()
+        if memory_cfg and getattr(memory_cfg, "enabled", False) and memory_manager and branch_id:
+            try:
+                budget_chars = getattr(memory_cfg, "memory_budget_chars", 4000)
+                memory_context = memory_manager.render_for_prompt(
+                    branch_id,
+                    task_hint="phase0",
+                    budget_chars=budget_chars,
+                )
+                if memory_context:
+                    # Add memory context with operation instructions
+                    memory_ops_instructions = """
+
+## Memory Operations
+The memory operations are already described in the Introduction section.
+Use read operations (core_get, archival_search, recall_search) to retrieve
+information from previous runs or other nodes before making your plan.
+"""
+                    prompt_with_memory["Memory"] = memory_context + memory_ops_instructions
+                    logger.info("Phase 0: Injected memory context (%d chars) for branch %s", len(memory_context), branch_id)
+            except Exception as exc:
+                logger.warning("Failed to inject memory context for Phase 0: %s", exc)
+
+        # LLM context (Phase 0 planning): Introduction + Task + History + Environment + Resources + Memory
+        phase0_response = query(
+            system_message=prompt_with_memory,
+            user_message=None,
+            model=cfg.agent.code.model,
+            temperature=cfg.agent.code.temp,
+        )
+        phase0_response_raw = phase0_response
+
+        # Save raw LLM output
+        if plans_dir:
+            try:
+                (plans_dir / "phase0_llm_output.txt").write_text(
+                    phase0_response_raw,
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning("Failed to write Phase 0 raw output: %s", exc)
+
+        # Extract and apply memory updates to this node's branch
+        if phase0_response_raw:
+            if memory_cfg and getattr(memory_cfg, "enabled", False):
+                if check_malformed_memory_update(phase0_response_raw):
+                    logger.warning("Phase 0 response contains malformed <memory_update>; attempting to strip.")
+                phase0_memory_updates = extract_memory_updates(phase0_response_raw)
+
+                # Apply memory updates immediately to this node's branch
+                if phase0_memory_updates and memory_manager and branch_id:
+                    try:
+                        memory_results = memory_manager.apply_llm_memory_updates(
+                            branch_id,
+                            phase0_memory_updates,
+                            node_id=None,
+                            phase="phase0",
+                        )
+                        # Handle memory read results with follow-up rounds if needed
+                        if memory_results and _has_memory_read_results(memory_results):
+                            try:
+                                results_text = _format_memory_results_for_llm(memory_results)
+                                followup_prompt = phase0_prompt.copy()
+                                followup_prompt["Memory Read Results"] = (
+                                    "Your memory read operations returned the following results:\n\n"
+                                    f"{results_text}\n\n"
+                                    "Based on this information, you may:\n"
+                                    "1. Write additional insights to memory\n"
+                                    "2. Search for more related information\n"
+                                    "3. Complete with an empty update if done\n\n"
+                                    "Respond with ONLY a <memory_update> block."
+                                )
+                                max_rounds_cfg = getattr(cfg.memory, "max_memory_read_rounds", 2)
+                                if max_rounds_cfg > 0:
+                                    _run_memory_update_phase(
+                                        prompt=followup_prompt,
+                                        memory_manager=memory_manager,
+                                        branch_id=branch_id,
+                                        node_id=None,
+                                        phase_name="phase0",
+                                        model=cfg.agent.code.model,
+                                        temperature=cfg.agent.code.temp,
+                                        max_rounds=max(0, max_rounds_cfg - 1),
+                                        task_description=(
+                                            "You may update memory based on the Phase 0 context and memory read results. "
+                                            "Respond with ONLY a <memory_update> block."
+                                        ),
+                                        log_dir=prompt_log_root,
+                                    )
+                            except Exception as exc:
+                                logger.warning("Failed to run Phase 0 memory read follow-up: %s", exc)
+                    except Exception as exc:
+                        logger.warning("Failed to apply Phase 0 memory updates to branch %s: %s", branch_id, exc)
+
+                phase0_response = remove_memory_update_tags(phase0_response_raw)
+            else:
+                phase0_response = phase0_response_raw
+
+        phase0_plan = _normalize_phase0_plan(
+            _parse_json_object(phase0_response, context="Phase 0 plan")
+        )
+    except Exception as exc:
+        logger.warning("Phase 0 planning failed: %s", exc)
+        phase0_plan = _normalize_phase0_plan({})
+
+    # Save phase0 plan to file
+    if plans_dir:
+        try:
+            (plans_dir / "phase0_plan.json").write_text(
+                json.dumps(phase0_plan, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Failed to write Phase 0 plan: %s", exc)
+
+    return phase0_plan, phase0_memory_updates, phase0_followup_prompt
+
 
 def _safe_pickle_test(obj, name="object"):
     """Test if an object can be pickled"""
@@ -1276,6 +1474,9 @@ class MinimalAgent:
         self.prompt_log_dir = prompt_log_dir
         self.prompt_session_id = prompt_session_id
         self._prompt_log_counter = 0
+        # Memory operation tracking for detailed prompt logging
+        self._last_memory_injection_log: dict | None = None
+        self._last_memory_operation_results: dict | None = None
         resources_path = getattr(self.cfg.exec, "resources", None)
         if resources_path:
             try:
@@ -1298,6 +1499,37 @@ class MinimalAgent:
         budget = budget_chars or getattr(getattr(self.cfg, "memory", None), "memory_budget_chars", 4000)
         return self.memory_manager.render_for_prompt(use_branch, task_hint, budget_chars=budget)
 
+    def _memory_context_with_log(
+        self,
+        task_hint: str,
+        branch_id: str | None = None,
+        budget_chars: int | None = None,
+        allow_summary_fallback: bool = False,
+    ) -> tuple[str, dict | None]:
+        """Get memory context with detailed log information.
+
+        Returns:
+            Tuple of (memory_text, log_details) where log_details contains
+            information about what memory was injected into the prompt.
+        """
+        if not self.memory_manager:
+            fallback = (self.memory_summary or "") if allow_summary_fallback else ""
+            return fallback, None
+        use_branch = branch_id or self.branch_id
+        if not use_branch:
+            return self.memory_summary or "", None
+        budget = budget_chars or getattr(getattr(self.cfg, "memory", None), "memory_budget_chars", 4000)
+        # Check if render_for_prompt_with_log method exists
+        if hasattr(self.memory_manager, "render_for_prompt_with_log"):
+            text, log_details = self.memory_manager.render_for_prompt_with_log(
+                use_branch, task_hint, budget_chars=budget
+            )
+            return text, log_details
+        else:
+            # Fallback to regular render if method not available
+            text = self.memory_manager.render_for_prompt(use_branch, task_hint, budget_chars=budget)
+            return text, None
+
     def _inject_memory(
         self,
         prompt: dict[str, Any],
@@ -1313,12 +1545,15 @@ class MinimalAgent:
             phase_display_name = get_phase_display_name(task_hint)
             self.memory_manager.set_current_phase(phase_display_name)
 
-        memory_context = self._memory_context(
+        # Get memory context with log information for detailed prompt logging
+        memory_context, memory_injection_log = self._memory_context_with_log(
             task_hint,
             branch_id=branch_id,
             budget_chars=budget_chars,
             allow_summary_fallback=allow_summary_fallback,
         )
+        # Store the memory injection log for later use in prompt logging
+        self._last_memory_injection_log = memory_injection_log
         if memory_context or allow_empty:
             # Add memory operation instructions for LLM
             # For split-phase mode with memory enabled, the Response format already
@@ -1640,10 +1875,143 @@ You can manage your memory by including a <memory_update> block at the end of yo
             session_id=self.prompt_session_id,
             counter=self._prompt_log_counter,
         )
-        payload: dict[str, Any] = {"stage": self.stage_name}
+        import time
+        payload: dict[str, Any] = {
+            "stage": self.stage_name,
+            "timestamp": time.time(),
+            "label": label,
+            "counter": self._prompt_log_counter,
+        }
         if meta:
             payload.update(meta)
+        # Include memory injection details if available
+        if self._last_memory_injection_log:
+            payload["memory_injected"] = self._last_memory_injection_log
+        # Include memory operation results if available (from previous LLM response)
+        if self._last_memory_operation_results:
+            payload["memory_operations"] = self._last_memory_operation_results
+            # Clear after use to avoid stale data
+            self._last_memory_operation_results = None
         _write_prompt_log(self.prompt_log_dir, name, prompt, meta=payload)
+
+        # Also write to memory_operations.jsonl if memory operations were logged
+        if self.prompt_log_dir and payload.get("memory_operations"):
+            self._append_memory_ops_log(payload)
+
+        # Log memory injection details to memory_injections.jsonl
+        if self.prompt_log_dir and payload.get("memory_injected"):
+            self._append_memory_injection_log(payload)
+
+    def _append_memory_ops_log(self, payload: dict[str, Any]) -> None:
+        """Append memory operations to a chronological log file."""
+        if not self.prompt_log_dir:
+            return
+        import json
+        import time
+        mem_log_path = self.prompt_log_dir / "memory_operations.jsonl"
+        mem_ops = payload.get("memory_operations", {})
+        operations_log = mem_ops.get("operations_log", [])
+
+        entry = {
+            "timestamp": time.time(),
+            "stage": payload.get("stage"),
+            "label": payload.get("label"),
+            "counter": payload.get("counter"),
+            "timing": mem_ops.get("timing"),
+            "operations_count": len(operations_log),
+            "operations": operations_log,
+            "input_updates_keys": list(mem_ops.get("input_updates", {}).keys()) if mem_ops.get("input_updates") else [],
+        }
+
+        try:
+            mem_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(mem_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
+        except Exception:
+            pass  # Non-critical logging
+
+    def _append_memory_injection_log(self, payload: dict[str, Any]) -> None:
+        """Append memory injection details to a chronological log file."""
+        if not self.prompt_log_dir:
+            return
+        import json
+        import time
+        inj_log_path = self.prompt_log_dir / "memory_injections.jsonl"
+        mem_inj = payload.get("memory_injected", {})
+
+        entry = {
+            "timestamp": time.time(),
+            "stage": payload.get("stage"),
+            "label": payload.get("label"),
+            "counter": payload.get("counter"),
+            "task_hint": mem_inj.get("task_hint"),
+            "budget_chars": mem_inj.get("budget_chars"),
+            "timing": mem_inj.get("timing"),
+            "rendered_chars": mem_inj.get("rendered_chars"),
+            "core_count": mem_inj.get("core_count"),
+            "recall_count": mem_inj.get("recall_count"),
+            "archival_count": mem_inj.get("archival_count"),
+            "core_items": mem_inj.get("core_items"),
+            "recall_items": mem_inj.get("recall_items"),
+            "archival_items": mem_inj.get("archival_items"),
+        }
+
+        try:
+            inj_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(inj_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
+        except Exception:
+            pass  # Non-critical logging
+
+    def _log_response(
+        self,
+        response: str,
+        *,
+        label: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
+        """Log raw LLM response to a file for debugging and analysis.
+
+        Args:
+            response: The raw LLM response text.
+            label: Label for the response log (e.g., 'phase_artifacts_attempt1').
+            meta: Optional metadata to include in the log.
+        """
+        if not self.prompt_log_dir or not response:
+            return
+        import time
+
+        # Use the same counter as the corresponding prompt
+        name = _format_prompt_log_name(
+            f"{label}_response",
+            session_id=self.prompt_session_id,
+            counter=self._prompt_log_counter,
+        )
+
+        payload: dict[str, Any] = {
+            "stage": self.stage_name,
+            "timestamp": time.time(),
+            "label": label,
+            "counter": self._prompt_log_counter,
+        }
+        if meta:
+            payload.update(meta)
+
+        log_dir = self.prompt_log_dir
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write response with metadata as JSON
+        response_payload = {
+            "meta": payload,
+            "response": response,
+        }
+        (log_dir / f"{name}.json").write_text(
+            json.dumps(response_payload, indent=2, default=str),
+            encoding="utf-8",
+        )
+
+        # Also write raw response as plain text for easy reading
+        (log_dir / f"{name}.txt").write_text(response, encoding="utf-8")
 
     def _build_impl_guideline(self) -> list[str]:
         """Build implementation guidelines dynamically based on language."""
@@ -2252,6 +2620,18 @@ You can manage your memory by including a <memory_update> block at the end of yo
                 model=self.cfg.agent.code.model,
                 temperature=self.cfg.agent.code.temp,
             )
+            # Log raw response for debugging
+            self._log_response(
+                completion_text,
+                label=f"{log_label}_attempt{attempt}_round{memory_read_round}",
+                meta={
+                    "phase": "phase2",
+                    "attempt": attempt,
+                    "memory_read_round": memory_read_round,
+                    "model": self.cfg.agent.code.model,
+                    "memory_enabled": memory_enabled,
+                },
+            )
             try:
                 self.last_phase_artifacts_response = completion_text
                 artifacts = extract_phase_artifacts(
@@ -2272,6 +2652,8 @@ You can manage your memory by including a <memory_update> block at the end of yo
                                 node_id=getattr(self, "_current_node_id", None),
                                 phase=log_label,
                             )
+                            # Store memory operation results for prompt logging
+                            self._last_memory_operation_results = memory_results
 
                             # Check if there are read results and we haven't exceeded max rounds
                             if (
@@ -2379,12 +2761,14 @@ You can manage your memory by including a <memory_update> block at the end of yo
                 memory_updates = extract_memory_updates(completion_text)
                 if memory_updates:
                     try:
-                        self.memory_manager.apply_llm_memory_updates(
+                        memory_results = self.memory_manager.apply_llm_memory_updates(
                             self.branch_id,
                             memory_updates,
                             node_id=getattr(self, "_current_node_id", None),
                             phase=log_label,
                         )
+                        # Store memory operation results for prompt logging
+                        self._last_memory_operation_results = memory_results
                     except Exception as exc:
                         logger.warning("Failed to apply LLM memory updates: %s", exc)
                     # Remove memory update tags from completion text before code extraction
@@ -2443,6 +2827,7 @@ You can manage your memory by including a <memory_update> block at the end of yo
                     "patterns, or lessons learned. You can also search memory for related past experiences. "
                     "Respond with ONLY a <memory_update> block containing your memory operations."
                 ),
+                log_dir=self.prompt_log_dir,
             )
 
         # Phase 2: Task execution with structured response
@@ -2612,12 +2997,14 @@ You can manage your memory by including a <memory_update> block at the end of yo
                 memory_updates = extract_memory_updates(response)
                 if memory_updates:
                     try:
-                        self.memory_manager.apply_llm_memory_updates(
+                        memory_results = self.memory_manager.apply_llm_memory_updates(
                             self.branch_id,
                             memory_updates,
                             node_id=getattr(self, "_current_node_id", None),
                             phase="datasets_successfully_tested",
                         )
+                        # Store memory operation results for prompt logging
+                        self._last_memory_operation_results = memory_results
                     except Exception as exc:
                         logger.warning("Failed to apply LLM memory updates: %s", exc)
                     # Remove memory update tags before parsing
@@ -2708,6 +3095,7 @@ You can manage your memory by including a <memory_update> block at the end of yo
                         "You can also search memory for related past observations. "
                         "Respond with ONLY a <memory_update> block containing your memory operations."
                     ),
+                    log_dir=self.prompt_log_dir,
                 )
 
             # Phase 2: Task execution with structured response
@@ -2767,16 +3155,54 @@ You can manage your memory by including a <memory_update> block at the end of yo
                 selected_plots = node.plot_paths[:10]
 
         print("[cyan]Before encoding images[/cyan]")
+        branch_id = getattr(node, "branch_id", None)
+
+        # Phase 1: Memory update with multi-round support (optional, only if memory is enabled)
+        # This allows VLM to update memory with observations before structured analysis
+        if self._is_memory_enabled and self.memory_manager and branch_id:
+            vlm_memory_prompt = {
+                "Introduction": "You are about to analyze experimental plots. Before the visual analysis, "
+                               "review any relevant memory and prepare to record your findings.",
+                "Research idea": self.task_desc,
+                "Plot paths to analyze": selected_plots,
+            }
+            self._inject_memory(
+                vlm_memory_prompt,
+                "vlm_analysis",
+                branch_id=branch_id,
+                budget_chars=getattr(self.cfg.memory, "vlm_analysis_budget_chars", 1000),
+            )
+            max_rounds = getattr(getattr(self.cfg, "memory", None), "max_memory_read_rounds", 2)
+            _run_memory_update_phase(
+                prompt=vlm_memory_prompt,
+                memory_manager=self.memory_manager,
+                branch_id=branch_id,
+                node_id=node.id,
+                phase_name="vlm_analysis",
+                model=self.cfg.agent.feedback.model,
+                temperature=self.cfg.agent.feedback.temp,
+                max_rounds=max_rounds,
+                task_description=(
+                    "Review the experiment context and update your memory with any relevant observations. "
+                    "You can search memory for related past VLM analyses or plot patterns. "
+                    "After the visual analysis, key findings will be recorded separately. "
+                    "Respond with ONLY a <memory_update> block containing your memory operations."
+                ),
+                log_dir=self.prompt_log_dir,
+            )
+
+        # Phase 2: Task execution with VLM (structured response via func_spec)
         memory_context = self._memory_context(
             "vlm_analysis",
-            branch_id=getattr(node, "branch_id", None),
+            branch_id=branch_id,
             budget_chars=getattr(self.cfg.memory, "vlm_analysis_budget_chars", 1000),
         )
         memory_context_block = (
             f"Memory:\n{memory_context}\n\n" if memory_context else ""
         )
         # Select prompt template based on memory configuration
-        vlm_template = VLM_ANALYSIS_PROMPT_TEMPLATE_WITH_MEMORY if self._is_memory_enabled else VLM_ANALYSIS_PROMPT_TEMPLATE
+        # Note: Use template WITHOUT memory update instructions since Phase 1 handles memory
+        vlm_template = VLM_ANALYSIS_PROMPT_TEMPLATE if self._is_memory_enabled else VLM_ANALYSIS_PROMPT_TEMPLATE
         analysis_text = vlm_template.format(
             memory_context_block=memory_context_block,
             task_desc=self.task_desc,
@@ -2807,6 +3233,30 @@ You can manage your memory by including a <memory_update> block at the end of yo
                 temperature=self.cfg.agent.vlm_feedback.temp,
             ),
         )
+
+        # Phase 3: Post-VLM memory update - record VLM findings to memory
+        if self._is_memory_enabled and self.memory_manager and branch_id:
+            try:
+                # Write VLM analysis summary to archival memory
+                vlm_summary = response.get("vlm_feedback_summary", "")
+                if vlm_summary:
+                    self.memory_manager.mem_archival_write(
+                        text=f"VLM Analysis for node {node.id}: {vlm_summary}",
+                        tags=["VLM_ANALYSIS", f"node:{node.id}"],
+                        meta={"node_id": node.id, "branch_id": branch_id, "phase": "vlm_analysis"},
+                    )
+                # Update core memory with analysis status
+                self.memory_manager.set_core(
+                    branch_id,
+                    "last_vlm_analysis",
+                    f"node:{node.id}, plots:{len(selected_plots)}, valid:{response.get('valid_plots_received', False)}",
+                    importance=3,
+                    op_name="vlm_analysis_complete",
+                    phase="vlm_analysis",
+                    node_id=node.id,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to write VLM analysis to memory: {e}")
         print(
             f"[cyan]VLM response from {self.cfg.agent.vlm_feedback.model}:[/cyan] {response}"
         )
@@ -2872,6 +3322,7 @@ You can manage your memory by including a <memory_update> block at the end of yo
                     "You can also search memory for related past experiments. "
                     "Respond with ONLY a <memory_update> block containing your memory operations."
                 ),
+                log_dir=self.prompt_log_dir,
             )
 
         # Phase 2: Task execution with structured response
@@ -3095,6 +3546,11 @@ class ParallelAgent:
         budget = getattr(getattr(self.cfg, "memory", None), "memory_budget_chars", 4000)
         return self.memory_manager.render_for_prompt(branch_id, task_hint, budget_chars=budget)
 
+    @property
+    def _is_memory_enabled(self) -> bool:
+        """Check if memory management is enabled."""
+        return bool(self.memory_manager and getattr(self.cfg, 'memory', None) and getattr(self.cfg.memory, 'enabled', False))
+
     def _run_execution_review_for_timeout(
         self, node: Node, branch_id: str | None
     ) -> tuple[str, bool]:
@@ -3197,12 +3653,14 @@ class ParallelAgent:
                     memory_updates = extract_memory_updates(completion_text)
                     if memory_updates:
                         try:
-                            self.memory_manager.apply_llm_memory_updates(
+                            memory_results = self.memory_manager.apply_llm_memory_updates(
                                 branch_id,
                                 memory_updates,
                                 node_id=getattr(self, "_current_node_id", None),
                                 phase="plan_and_code",
                             )
+                            # Store memory operation results for prompt logging
+                            self._last_memory_operation_results = memory_results
                         except Exception as exc:
                             logger.warning("Failed to apply LLM memory updates: %s", exc)
                         # Remove memory update tags from completion text before code extraction
@@ -3866,6 +4324,8 @@ class ParallelAgent:
         phase0_history_summary: dict | None = None
         phase0_artifact_paths: list[str] | None = None
         phase0_command_str: str | None = None
+        phase0_prompt: dict[str, Any] | None = None
+        plans_dir: Path | None = None
         worker_label = f"worker-{worker_id if worker_id is not None else 0}"
         if getattr(cfg.exec, "phase_mode", "single") == "split":
             run_root = _resolve_run_root(cfg)
@@ -3963,8 +4423,8 @@ class ParallelAgent:
                     "timeout_seconds": environment_context.get("timeout_seconds", cfg.exec.timeout),
                 },
             }
-            # NOTE: root branch has no memory data, so we skip memory injection for phase0_planning.
-            # Memory context will be available in child branches after they are forked.
+            # NOTE: Memory injection for Phase 0 is deferred to _execute_phase0_planning(),
+            # which is called after fork. This ensures memory context from child branches is available.
             resources_path = getattr(cfg.exec, "resources", None)
             if resources_path:
                 try:
@@ -3982,119 +4442,10 @@ class ParallelAgent:
                         "model": cfg.agent.code.model,
                     },
                 )
-            try:
-                # LLM context (Phase 0 planning): Introduction + Task + History (phase summaries/compile-run logs/errors/LLM outputs) + Environment snapshot + optional Resources.
-                phase0_response = query(
-                    system_message=phase0_prompt,
-                    user_message=None,
-                    model=cfg.agent.code.model,
-                    temperature=cfg.agent.code.temp,
-                )
-                phase0_response_raw = phase0_response
-                try:
-                    (plans_dir / "phase0_llm_output.txt").write_text(
-                        phase0_response_raw,
-                        encoding="utf-8",
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to write Phase 0 raw output: %s", exc)
-                if phase0_response_raw:
-                    if memory_cfg and getattr(memory_cfg, "enabled", False):
-                        if check_malformed_memory_update(phase0_response_raw):
-                            logger.warning("Phase 0 response contains malformed <memory_update>; attempting to strip.")
-                        memory_updates = extract_memory_updates(phase0_response_raw)
-                        memory_results = None
-                        if memory_updates:
-                            if memory_manager and root_branch_id:
-                                try:
-                                    memory_results = memory_manager.apply_llm_memory_updates(
-                                        root_branch_id,
-                                        memory_updates,
-                                        node_id=None,
-                                        phase="phase0",
-                                    )
-                                except Exception as exc:
-                                    logger.warning("Failed to apply Phase 0 memory updates: %s", exc)
-                            else:
-                                logger.warning("Phase 0 memory update ignored (memory disabled or root branch missing).")
-                        if (
-                            memory_results
-                            and _has_memory_read_results(memory_results)
-                            and memory_manager
-                            and root_branch_id
-                        ):
-                            try:
-                                results_text = _format_memory_results_for_llm(memory_results)
-                                followup_prompt = phase0_prompt.copy()
-                                followup_prompt["Memory Read Results"] = (
-                                    "Your memory read operations returned the following results:\n\n"
-                                    f"{results_text}\n\n"
-                                    "Based on this information, you may:\n"
-                                    "1. Write additional insights to memory\n"
-                                    "2. Search for more related information\n"
-                                    "3. Complete with an empty update if done\n\n"
-                                    "Respond with ONLY a <memory_update> block."
-                                )
-                                max_rounds_cfg = getattr(cfg.memory, "max_memory_read_rounds", 2)
-                                if max_rounds_cfg > 0:
-                                    _run_memory_update_phase(
-                                        prompt=followup_prompt,
-                                        memory_manager=memory_manager,
-                                        branch_id=root_branch_id,
-                                        node_id=None,
-                                        phase_name="phase0",
-                                        model=cfg.agent.code.model,
-                                        temperature=cfg.agent.code.temp,
-                                        max_rounds=max(0, max_rounds_cfg - 1),
-                                        task_description=(
-                                            "You may update memory based on the Phase 0 context and memory read results. "
-                                            "Respond with ONLY a <memory_update> block."
-                                        ),
-                                    )
-                            except Exception as exc:
-                                logger.warning("Failed to run Phase 0 memory read follow-up: %s", exc)
-                        phase0_response = remove_memory_update_tags(phase0_response_raw)
-                    else:
-                        phase0_response = phase0_response_raw
-                phase0_plan = _normalize_phase0_plan(
-                    _parse_json_object(phase0_response, context="Phase 0 plan")
-                )
-            except Exception as exc:
-                logger.warning("Phase 0 planning failed: %s", exc)
-                phase0_plan = _normalize_phase0_plan({})
-            try:
-                phase0_plan_path.write_text(
-                    json.dumps(phase0_plan, indent=2),
-                    encoding="utf-8",
-                )
-            except Exception as exc:
-                logger.warning("Failed to write Phase 0 plan: %s", exc)
-            if getattr(memory_cfg, "persist_phase0_internal", True):
-                # Prepare phase0 artifacts for later ingestion (will be ingested per child node)
-                phase0_artifact_paths = [str(phase0_plan_path), str(phase0_history_path)]
-                llm_out = plans_dir / "phase0_llm_output.txt"
-                if llm_out.exists():
-                    phase0_artifact_paths.append(str(llm_out))
-
-                def _extract_phase0_commands(plan: Any) -> str | None:
-                    if not isinstance(plan, dict):
-                        return None
-                    phase_artifacts = plan.get("phase_artifacts") or plan.get("plan") or {}
-                    if isinstance(phase_artifacts, dict):
-                        commands: list[str] = []
-                        for section in ("download", "compile", "run"):
-                            section_data = phase_artifacts.get(section, {})
-                            if isinstance(section_data, dict):
-                                section_cmds = section_data.get("commands") or []
-                                for cmd in section_cmds:
-                                    if isinstance(cmd, list):
-                                        commands.append(" ".join([str(c) for c in cmd]))
-                                    else:
-                                        commands.append(str(cmd))
-                        return " | ".join(commands) if commands else None
-                    return None
-
-                phase0_command_str = _extract_phase0_commands(phase0_plan)
+            # NOTE: Phase 0 LLM call is deferred until after fork.
+            # This ensures Phase 0 is executed in each child node's context,
+            # and memory events are recorded on the correct branch.
+            # The phase0_prompt is saved and passed to _execute_phase0_planning after fork.
             phase0_history_summary = history_summary
 
         if prompt_log_root is None and getattr(cfg.exec, "log_prompts", True):
@@ -4190,6 +4541,21 @@ class ParallelAgent:
 
                 memory_manager.mem_node_fork(parent_branch_id, child_branch_id, ancestor_chain=ancestor_chain)
                 worker_agent.branch_id = child_branch_id
+
+            # Execute Phase 0 planning AFTER fork so it runs in each child node's context
+            # This ensures Phase 0 memory events are recorded on the correct child branch
+            if phase0_prompt and getattr(cfg.exec, "phase_mode", "single") == "split":
+                phase0_plan, _, _ = _execute_phase0_planning(
+                    phase0_prompt=phase0_prompt,
+                    cfg=cfg,
+                    memory_cfg=memory_cfg,
+                    memory_manager=memory_manager,
+                    branch_id=child_branch_id if child_branch_id else root_branch_id,
+                    plans_dir=plans_dir,
+                    prompt_log_root=prompt_log_root,
+                )
+                # Update worker agent with the Phase 0 plan
+                worker_agent.phase0_plan = phase0_plan
 
             # Process the node using worker agent
             print("Starting node processing")
@@ -4552,6 +4918,7 @@ class ParallelAgent:
                                                         "You may update memory based on Phase 1 context and memory read results. "
                                                         "Respond with ONLY a <memory_update> block."
                                                     ),
+                                                    log_dir=worker_agent.prompt_log_dir,
                                                 )
                                     except Exception as exc:
                                         logger.warning("Failed to apply Phase 1 memory updates: %s", exc)
@@ -5077,6 +5444,7 @@ class ParallelAgent:
                                         "You can also search memory for patterns from previous metric extractions. "
                                         "Respond with ONLY a <memory_update> block containing your memory operations."
                                     ),
+                                    log_dir=worker_agent.prompt_log_dir,
                                 )
 
                             # Phase 2: Task execution with structured response

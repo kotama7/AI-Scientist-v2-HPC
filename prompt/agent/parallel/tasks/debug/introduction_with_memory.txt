@@ -9,8 +9,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to r
 ```
 <memory_update>
 {
-  "core": {"key": "value"},
-  "archival": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
+  "mem_core_set": {"key": "value"},
+  "mem_archival_write": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
 }
 </memory_update>
 ```
@@ -20,8 +20,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to r
 ```
 <memory_update>
 {
-  "core_get": ["key1"],
-  "archival_search": {"query": "similar bug pattern", "k": 3}
+  "mem_core_get": ["key1"],
+  "mem_archival_search": {"query": "similar bug pattern", "k": 3}
 }
 </memory_update>
 ```
@@ -36,8 +36,8 @@ Example:
 ```
 <memory_update>
 {
-  "core": {"last_bug_type": "shape_mismatch"},
-  "archival": [{"text": "DEBUG: Shape mismatch error in matmul. Root cause: input tensor was (B, D) but expected (B, D, 1). Fix: Added unsqueeze(-1) before matmul. Prevention: Always verify tensor shapes at layer boundaries.", "tags": ["PHASE2_DEBUG", "BUG_FIX", "SHAPE_MISMATCH"]}]
+  "mem_core_set": {"last_bug_type": "shape_mismatch"},
+  "mem_archival_write": [{"text": "DEBUG: Shape mismatch error in matmul. Root cause: input tensor was (B, D) but expected (B, D, 1). Fix: Added unsqueeze(-1) before matmul. Prevention: Always verify tensor shapes at layer boundaries.", "tags": ["PHASE2_DEBUG", "BUG_FIX", "SHAPE_MISMATCH"]}]
 }
 </memory_update>
 ```
@@ -46,7 +46,24 @@ Before fixing, consider searching for similar past bugs:
 ```
 <memory_update>
 {
-  "archival_search": {"query": "shape mismatch tensor dimension", "k": 3}
+  "mem_archival_search": {"query": "shape mismatch tensor dimension", "k": 3}
 }
 </memory_update>
 ```
+
+### All Memory Operations Reference
+
+**Write operations (stored immediately):**
+- `"mem_core_set": {"key": "value"}` - Set key-value pairs in always-visible memory
+- `"mem_archival_write": [{"text": "...", "tags": ["TAG"]}]` - Write to long-term searchable memory
+- `"mem_recall_append": {"kind": "...", "content": "..."}` - Append to recent events timeline
+
+**Read operations (results returned, then you re-output with the information):**
+- `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
+- `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
+- `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+**Management operations:**
+- `"mem_core_del": ["key"]` - Delete keys from core memory
+- `"mem_recall_evict": {"oldest": N}` - Move old recall events to archival
+- `"consolidate": true` - Trigger memory consolidation

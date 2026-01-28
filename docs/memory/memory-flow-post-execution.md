@@ -83,18 +83,19 @@ steps extract insights and generate summaries that are stored in memory.
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ 3. VLM ANALYSIS (if plots exist)                                     │    │
 │  │    Task hint: "vlm_analysis"                                         │    │
+│  │    Uses: Two-Phase Pattern (func_spec)                               │    │
 │  │    Budget: vlm_analysis_budget_chars                                 │    │
 │  │                                                                       │    │
 │  │    Input: Generated plot images                                      │    │
-│  │    Output: Analysis text (insights, observations)                    │    │
+│  │    Output: {"plot_analyses": [...], "vlm_feedback_summary": str}     │    │
 │  │                                                                       │    │
 │  │    Memory:                                                            │    │
 │  │    ┌─────────────────────────────────────────────────────────────┐   │    │
-│  │    │ _inject_memory(prompt, "vlm_analysis", branch_id)            │   │    │
-│  │    │                                                              │   │    │
-│  │    │ Result stored:                                               │   │    │
-│  │    │   node.vlm_analysis = analysis_text                          │   │    │
-│  │    │   (Not directly written to memory, but available for summary)│   │    │
+│  │    │ Phase 1: _run_memory_update_phase() before VLM query         │   │    │
+│  │    │ Phase 2: VLM analysis with func_spec (structured response)   │   │    │
+│  │    │ Phase 3: Post-analysis memory write                          │   │    │
+│  │    │   - Archival: VLM analysis summary with VLM_ANALYSIS tag     │   │    │
+│  │    │   - Core: last_vlm_analysis status                           │   │    │
 │  │    └─────────────────────────────────────────────────────────────┘   │    │
 │  └────────────────────────────────┬────────────────────────────────────┘    │
 │                                   │                                          │
@@ -372,19 +373,53 @@ if memory_updates:
 
 **Trigger**: After plots are generated (if any .png files exist)
 
-**Prompt Structure**:
+**Uses Two-Phase Pattern**: Yes (via `_run_memory_update_phase()`)
+
+**Phase 1: Memory Update** (before VLM analysis):
 ```python
-prompt = {
-    "Introduction": "Analyze the following plots...",
-    "Experiment context": node.plan,
-    "Images": [encoded_plot_images],  # Base64 encoded
-    "Instructions": vlm_analysis_instructions,
-}
-_inject_memory(
-    prompt,
-    "vlm_analysis",
-    branch_id=node.branch_id,
-    budget_chars=cfg.memory.vlm_analysis_budget_chars
+if self._is_memory_enabled and self.memory_manager and branch_id:
+    vlm_memory_prompt = {
+        "Introduction": "You are about to analyze experimental plots...",
+        "Research idea": self.task_desc,
+        "Plot paths to analyze": selected_plots,
+    }
+    _inject_memory(vlm_memory_prompt, "vlm_analysis", branch_id=branch_id)
+    _run_memory_update_phase(
+        prompt=vlm_memory_prompt,
+        memory_manager=self.memory_manager,
+        branch_id=branch_id,
+        node_id=node.id,
+        phase_name="vlm_analysis",
+        model=cfg.agent.feedback.model,
+        temperature=cfg.agent.feedback.temp,
+        max_rounds=cfg.memory.max_memory_read_rounds,
+        task_description="Review context and update memory before visual analysis..."
+    )
+```
+
+**Phase 2: Task Execution (VLM with func_spec)**:
+```python
+response = query(
+    system_message=None,
+    user_message=user_message,  # Contains images + analysis text
+    func_spec=vlm_feedback_spec,
+    model=cfg.agent.vlm_feedback.model,
+    temperature=cfg.agent.vlm_feedback.temp,
+)
+# Returns: {"plot_analyses": [...], "valid_plots_received": bool, "vlm_feedback_summary": str}
+```
+
+**Phase 3: Post-VLM Memory Update**:
+```python
+# Write VLM analysis summary to archival memory
+self.memory_manager.mem_archival_write(
+    text=f"VLM Analysis for node {node.id}: {vlm_summary}",
+    tags=["VLM_ANALYSIS", f"node:{node.id}"]
+)
+# Update core memory with analysis status
+self.memory_manager.set_core(
+    branch_id, "last_vlm_analysis",
+    f"node:{node.id}, plots:{len(selected_plots)}, valid:{valid_plots_received}"
 )
 ```
 

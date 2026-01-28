@@ -419,6 +419,13 @@ function countByType(items) {
     for (const item of items) {
         const opInfo = getOpInfo(item.op);
         if (counts.hasOwnProperty(opInfo.type)) {
+            // Exclude root creation (parent_branch_id is null) from fork count
+            if (opInfo.type === 'fork') {
+                const parentBranchId = item.details?.parent_branch_id;
+                if (parentBranchId === null || parentBranchId === undefined) {
+                    continue;  // Skip root creation, not a real fork
+                }
+            }
             counts[opInfo.type]++;
         }
     }

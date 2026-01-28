@@ -9,8 +9,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to t
 ```
 <memory_update>
 {
-  "core": {"key": "value"},
-  "archival": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
+  "mem_core_set": {"key": "value"},
+  "mem_archival_write": [{"text": "detailed info", "tags": ["TAG1", "TAG2"]}]
 }
 </memory_update>
 ```
@@ -20,8 +20,8 @@ You have access to a persistent memory system. Use `<memory_update>` blocks to t
 ```
 <memory_update>
 {
-  "core_get": ["previous_improvements"],
-  "archival_search": {"query": "optimization technique", "k": 3}
+  "mem_core_get": ["previous_improvements"],
+  "mem_archival_search": {"query": "optimization technique", "k": 3}
 }
 </memory_update>
 ```
@@ -36,8 +36,8 @@ Example:
 ```
 <memory_update>
 {
-  "core": {"improvement_count": 3, "best_metric_achieved": "0.847 accuracy"},
-  "archival": [{"text": "IMPROVE iteration 3: Added learning rate warmup. Performance improved from 0.82 to 0.847 accuracy. Warmup steps=1000 worked best. Tried cosine annealing but saw no improvement over step decay.", "tags": ["PHASE2_IMPROVE", "OPTIMIZATION", "LR_SCHEDULE"]}]
+  "mem_core_set": {"improvement_count": 3, "best_metric_achieved": "0.847 accuracy"},
+  "mem_archival_write": [{"text": "IMPROVE iteration 3: Added learning rate warmup. Performance improved from 0.82 to 0.847 accuracy. Warmup steps=1000 worked best. Tried cosine annealing but saw no improvement over step decay.", "tags": ["PHASE2_IMPROVE", "OPTIMIZATION", "LR_SCHEDULE"]}]
 }
 </memory_update>
 ```
@@ -46,7 +46,24 @@ Before improving, retrieve past strategies:
 ```
 <memory_update>
 {
-  "archival_search": {"query": "improvement strategy that worked", "k": 5}
+  "mem_archival_search": {"query": "improvement strategy that worked", "k": 5}
 }
 </memory_update>
 ```
+
+### All Memory Operations Reference
+
+**Write operations (stored immediately):**
+- `"mem_core_set": {"key": "value"}` - Set key-value pairs in always-visible memory
+- `"mem_archival_write": [{"text": "...", "tags": ["TAG"]}]` - Write to long-term searchable memory
+- `"mem_recall_append": {"kind": "...", "content": "..."}` - Append to recent events timeline
+
+**Read operations (results returned, then you re-output with the information):**
+- `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
+- `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
+- `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+**Management operations:**
+- `"mem_core_del": ["key"]` - Delete keys from core memory
+- `"mem_recall_evict": {"oldest": N}` - Move old recall events to archival
+- `"consolidate": true` - Trigger memory consolidation
