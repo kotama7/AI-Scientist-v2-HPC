@@ -15,10 +15,10 @@
 
 ### Stage (ステージ)
 探索の進行段階を表します：
-- **Stage 1**: 初期ドラフト生成（Draft）
-- **Stage 2**: ハイパーパラメータ調整
-- **Stage 3**: コード改善（Debug/Improve）
-- **Stage 4**: アブレーション研究
+- **Stage 1** (`initial_implementation`): 初期実装の生成と動作検証
+- **Stage 2** (`baseline_tuning`): ベースラインチューニング、追加データセットでの評価
+- **Stage 3** (`creative_research`): 創造的改善、実験計画の実行
+- **Stage 4** (`ablation_studies`): アブレーション研究、リスク要因の検証
 
 ### Worker (ワーカー)
 並列実行されるエージェントプロセス。`num_workers`で並列数を指定し、各ワーカーはGPUまたはCPUにマップされます。
@@ -29,7 +29,7 @@
 プランニングフェーズ。環境情報を収集し、Phase 1-4の実行計画を生成します。
 
 ### Phase 1 (Download/Install)
-依存関係のダウンロードとインストールを行うフェーズ。Singularityコンテナ内で`apt-get`、`pip install`、ソースビルドなどを実行します。
+依存関係のダウンロードとインストールを行うフェーズ。Singularityコンテナ内で`apt-get`、`pip install`、ソースビルドなどを実行します。反復的インストーラーの最大ステップ数は`phase1_max_steps`で設定（デフォルト: 100）。
 
 ### Phase 2 (Coding)
 コード生成フェーズ。LLMがワークスペースにファイルを生成します。
@@ -49,16 +49,16 @@ Phase 0-4を明示的に分離して実行するモード（デフォルト）�
 ## メモリ関連
 
 ### MemGPT
-階層的メモリ管理システム。`memory.enabled=true`で有効化されます。
+階層的メモリ管理システム。`memory.enabled=true`で有効化されます（デフォルトで有効）。
 
 ### Core Memory (コアメモリ)
-常にプロンプトに注入される重要な情報（アイデア要約、Phase 0サマリーなど）。`core_max_chars`で容量制限。
+常にプロンプトに注入される重要な情報。LLMが自律的にキー値を設定・管理します。`core_max_chars`で容量制限（デフォルト: 10000文字、コードのフォールバック: 2000文字）。
 
 ### Recall Memory (リコールメモリ)
-直近のイベントタイムライン。ノードの作成、コンパイル成功/失敗などのイベントが記録されます。`recall_max_events`で件数制限。
+直近のイベントタイムライン。ノードの作成、コンパイル成功/失敗などのイベントが記録されます。`recall_max_events`で件数制限（デフォルト: 5件、コードのフォールバック: 20件）。
 
 ### Archival Memory (アーカイブメモリ)
-長期保存用メモリ。FTS5による全文検索が可能。詳細なエラー情報や成功パターンを保存します。
+長期保存用メモリ。FTS5による全文検索が可能。詳細なエラー情報や成功パターンを保存します。`retrieval_k`で検索時の上位k件を指定（デフォルト: 4件、コードのフォールバック: 8件）。
 
 ### Branch (ブランチ)
 メモリの分岐。子ノードは親のメモリを継承し、書き込みは自身のブランチに隔離されます。
@@ -76,7 +76,7 @@ LLMを使用してテキストを圧縮する機能。単純な切り捨てで�
 ## リソース関連
 
 ### Resource File
-データセット、GitHubリポジトリ、HuggingFaceモデルを定義するJSONまたはYAMLファイル。`data_resources.json`が例です。
+データセット、GitHubリポジトリ、HuggingFaceモデルを定義するJSONまたはYAMLファイル。`--resources`フラグで指定します。
 
 ### Local Resource
 ホストシステムに存在し、コンテナにマウントされるリソース。
@@ -89,6 +89,9 @@ LLMを使用してテキストを圧縮する機能。単純な切り捨てで�
 
 ## 出力関連
 
+### Experiment Output Filename
+実験結果の出力ファイル名。`{experiment_name}_data.npy`形式で、実験名に基づいて動的に生成されます。例: `stability_oriented_autotuning_v2_data.npy`。これにより、どの実験が出力を生成したかが明確になります。
+
 ### Experiment Directory
 `experiments/<timestamp>_<idea>_attempt_<id>/`形式のディレクトリ。実験の全成果物を含みます。
 
@@ -99,7 +102,7 @@ LLMを使用してテキストを圧縮する機能。単純な切り捨てで�
 LLM API呼び出しのトークン使用量を記録するシステム。`token_tracker.json`に出力。
 
 ### Final Memory
-実行終了時に生成されるメモリサマリー。`final_memory-for-paper.md`と`final_memory_for_paper.json`。
+実行終了時に生成されるメモリサマリー。`final_memory_for_paper.md`と`final_memory_for_paper.json`。
 
 ## 論文生成関連
 
@@ -121,7 +124,7 @@ LLM API呼び出しのトークン使用量を記録するシステム。`token_
 メインの設定ファイル。実験ごとに`experiments/<run>/`にコピーされます。
 
 ### Persona
-`agent.role_description`で設定されるエージェントの役割（例: "HPC Researcher"）。プロンプトに注入されます。
+`agent.role_description`で設定されるエージェントの役割（例: "HPC Researcher"）。プロンプト内の`{persona}`トークンが置換されます。未設定時のデフォルトは"AI researcher"。
 
 ### Singularity Image (SIF)
 Singularityコンテナイメージ。`exec.singularity_image`で指定。

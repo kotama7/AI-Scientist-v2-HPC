@@ -104,10 +104,10 @@ python launch_scientist_bfts.py \
 木探索による実験の自動実行です。
 
 **ステージ構成**:
-- **Stage 1 (Draft)**: 初期実装のドラフトを生成
-- **Stage 2 (Hyperparameter)**: ハイパーパラメータ調整
-- **Stage 3 (Improve)**: デバッグと改善
-- **Stage 4 (Ablation)**: アブレーション研究
+- **Stage 1 (`initial_implementation`)**: 初期実装の生成と動作検証
+- **Stage 2 (`baseline_tuning`)**: ベースラインチューニング、追加データセットでの評価
+- **Stage 3 (`creative_research`)**: 創造的改善、実験計画の実行
+- **Stage 4 (`ablation_studies`)**: アブレーション研究、リスク要因の検証
 
 **各ノードで実行されるPhase**:
 
@@ -125,7 +125,7 @@ python launch_scientist_bfts.py \
 │  Phase 1: ダウンロード/インストール (Singularityコンテナ内)       │
 │  ├── apt-get, pip install                                        │
 │  ├── ソースからビルド                                            │
-│  └── 反復的なインストーラー (最大12ステップ)                     │
+│  └── 反復的なインストーラー (最大100ステップ)                    │
 │           │                                                      │
 │           ▼                                                      │
 │  Phase 2: コーディング                                           │
@@ -245,7 +245,7 @@ python generate_paper.py \
 │     └── その他の重要情報: LLMが判断して保存                      │
 │                                                                  │
 │  4. 実験終了時                                                   │
-│     └── final_memory-for-paper.md/json 生成                      │
+│     └── final_memory_for_paper.md/json 生成                      │
 │                                                                  │
 │  注: idea_md_summary, phase0_summary は自動注入されません。       │
 │      LLMが自律的に <memory_update> を使用して管理します。         │

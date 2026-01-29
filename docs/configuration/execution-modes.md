@@ -29,8 +29,9 @@ Split mode runs the experiment as explicit phases inside Singularity:
 4. Run (Phase 4)
 
 The LLM outputs a structured JSON payload with per-phase artifacts. The run
-phase must produce `working/experiment_data.npy` inside the container by
-default (the expected outputs can be overridden by the plan).
+phase must produce `working/{experiment_name}_data.npy` inside the container
+(e.g., `stability_autotuning_data.npy`). The expected outputs can be
+overridden by the plan.
 
 Per-worker SIFs are built when `per_worker_sif=true` under
 `experiments/<...>/workers/worker-*/container/`.

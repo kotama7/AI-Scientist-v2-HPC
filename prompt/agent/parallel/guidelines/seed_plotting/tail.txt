@@ -3,14 +3,16 @@ try:
     # IMPORTANT: If "Experiment Data Path" section is provided above, you MUST copy those
     # absolute paths here. Example:
     # experiment_data_path_list = [
-    #     "/path/to/seed1/experiment_data.npy",
-    #     "/path/to/seed2/experiment_data.npy",
-    #     "/path/to/seed3/experiment_data.npy",
+    #     "/path/to/seed1/{dataset_name}_data.npy",
+    #     "/path/to/seed2/{dataset_name}_data.npy",
+    #     "/path/to/seed3/{dataset_name}_data.npy",
     # ]
     experiment_data_path_list = []  # Replace with paths from "Experiment Data Path" section
 
     # Only use this fallback if NO paths were provided in "Experiment Data Path" section
     if not experiment_data_path_list:
+        # Prefer *_data.npy pattern (e.g., {experiment_name}_data.npy)
+        experiment_data_path_list += glob.glob(os.path.join(working_dir, '*_data.npy'))
         experiment_data_path_list += glob.glob(os.path.join(working_dir, 'experiment_data*.npy'))
         experiment_data_path_list += glob.glob(os.path.join(working_dir, 'output*.npy'))
         if not experiment_data_path_list:

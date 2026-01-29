@@ -171,7 +171,7 @@ if self._is_memory_enabled and memory_manager and branch_id:
         phase_name="execution_review",
         model=cfg.agent.feedback.model,
         temperature=cfg.agent.feedback.temp,
-        max_rounds=getattr(cfg.memory, "max_memory_read_rounds", 2),
+        max_rounds=getattr(cfg.memory, "max_memory_read_rounds", 5),
         task_description=(
             "Review the execution failure and update your memory with any important "
             "observations, error patterns, or debugging insights."
@@ -227,7 +227,7 @@ if self._is_memory_enabled and memory_manager and branch_id:
         phase_name="plot_selection",
         model=cfg.agent.feedback.model,
         temperature=cfg.agent.feedback.temp,
-        max_rounds=getattr(cfg.memory, "max_memory_read_rounds", 2),
+        max_rounds=getattr(cfg.memory, "max_memory_read_rounds", 5),
         task_description=(
             "Review the available plots and update your memory with observations about "
             "which visualizations best represent the experiment results."
@@ -282,7 +282,7 @@ if worker_agent._is_memory_enabled and memory_manager and metrics_branch_id:
         phase_name="metrics_extraction",
         model=cfg.agent.feedback.model,
         temperature=cfg.agent.feedback.temp,
-        max_rounds=cfg.memory.max_memory_read_rounds,  # Default: 2
+        max_rounds=cfg.memory.max_memory_read_rounds,  # Default: 5
         task_description=(
             "Review the metrics output and update your memory with any important "
             "observations, metric patterns, or performance insights."
@@ -467,7 +467,7 @@ if self._is_memory_enabled and memory_manager and branch_id:
         phase_name="node_summary",
         model=cfg.agent.feedback.model,
         temperature=cfg.agent.feedback.temp,
-        max_rounds=getattr(cfg.memory, "max_memory_read_rounds", 2),
+        max_rounds=getattr(cfg.memory, "max_memory_read_rounds", 5),
         task_description=(
             "Review the node's execution results and update your memory with key findings, "
             "successful approaches, errors encountered, and insights for future nodes."
@@ -608,7 +608,7 @@ if memory_context:
 ```yaml
 memory:
   # Multi-round memory read settings
-  max_memory_read_rounds: 2           # Max re-query cycles for read operations
+  max_memory_read_rounds: 5           # Max re-query cycles for read operations
 
   # Post-execution budgets (Two-Phase methods)
   execution_review_budget_chars: 2000
@@ -646,7 +646,7 @@ memory_manager.generate_final_memory_for_paper(
 ```
 
 **Output Files**:
-- `final_memory-for-paper.md` - Comprehensive markdown for paper writeup
+- `final_memory_for_paper.md` - Comprehensive markdown for paper writeup
 - `final_memory_for_paper.json` - Structured data with node information
 - `final_writeup_memory.json` - Complete writeup payload
 

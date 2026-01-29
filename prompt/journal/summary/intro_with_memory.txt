@@ -63,6 +63,11 @@ Before summarizing, retrieve previous experiment data:
 - `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
 - `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
 
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
+
 **Management operations:**
 - `"mem_core_del": ["key"]` - Delete keys from core memory
 - `"mem_recall_evict": {"oldest": N}` - Move old recall events to archival

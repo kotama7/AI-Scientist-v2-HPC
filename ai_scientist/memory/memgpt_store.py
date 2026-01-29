@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import multiprocessing as mp
 import random
 import re
 import sqlite3
@@ -12,9 +13,12 @@ from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Generator, Iterable, Sequence
+from typing import Any, Generator, Iterable, Optional, Sequence
 
 from ai_scientist.prompt_loader import PromptNotFoundError, load_prompt
+
+# Import writer client for centralized database writes
+from .db_writer import DatabaseWriterClient, WriteResponse
 
 from .resource_memory import (
     RESOURCE_DIGEST_KEY,
@@ -471,7 +475,12 @@ def _parse_markdown_sections(text: str) -> dict[str, str]:
 
 
 class MemoryManager:
-    def __init__(self, db_path: str | Path, config: Any | None = None):
+    def __init__(
+        self,
+        db_path: str | Path,
+        config: Any | None = None,
+        writer_queue: Optional[mp.Queue] = None,
+    ):
         self.config = config or {}
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -586,6 +595,20 @@ class MemoryManager:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=60000")  # Wait up to 60s for locks
+
+        # Initialize centralized writer client if queue provided
+        # This routes all writes through a dedicated writer process to avoid
+        # "database is locked" errors in multiprocessing scenarios
+        self._writer_queue = writer_queue
+        self._writer_client: Optional[DatabaseWriterClient] = None
+        if writer_queue is not None:
+            self._writer_client = DatabaseWriterClient(
+                queue=writer_queue,
+                default_timeout=60.0,
+                sync_by_default=False,  # Async writes for performance
+            )
+            logger.info("MemoryManager using centralized writer process")
+
         self._init_schema()
         self._fts_enabled = self._init_fts()
 
@@ -740,6 +763,18 @@ class MemoryManager:
         "mem_node_fork": "public_api",
         "mem_node_read": "public_api",
         "mem_node_write": "public_api",
+        # LLM-initiated operations (logged from apply_llm_memory_updates)
+        "llm_core_set": "llm",
+        "llm_core_get": "llm",
+        "llm_core_delete": "llm",
+        "llm_archival_write": "llm",
+        "llm_archival_update": "llm",
+        "llm_archival_search": "llm",
+        "llm_recall_append": "llm",
+        "llm_recall_search": "llm",
+        "llm_recall_evict": "llm",
+        "llm_recall_summarize": "llm",
+        "llm_consolidate": "llm",
         # System-level layer (high-level integration)
         "apply_llm_memory_updates": "system",
         "render_for_prompt": "system",
@@ -935,15 +970,15 @@ class MemoryManager:
     def _execute_with_retry(
         self,
         operation: callable,
-        max_retries: int = 5,
-        base_delay: float = 0.1,
+        max_retries: int = 10,
+        base_delay: float = 0.5,
     ) -> Any:
         """Execute a database operation with exponential backoff retry on lock errors.
 
         Args:
             operation: A callable that performs the database operation.
-            max_retries: Maximum number of retry attempts.
-            base_delay: Base delay in seconds for exponential backoff.
+            max_retries: Maximum number of retry attempts (increased from 5 to 10).
+            base_delay: Base delay in seconds for exponential backoff (increased from 0.1 to 0.5).
 
         Returns:
             The result of the operation.
@@ -968,6 +1003,81 @@ class MemoryManager:
                 else:
                     raise
 
+    def _write_execute(
+        self,
+        sql: str,
+        params: tuple = (),
+        commit: bool = False,
+        sync: bool = False,
+    ) -> Optional[WriteResponse]:
+        """Execute a write operation, routing to writer process if available.
+
+        This method abstracts write operations to use either the centralized
+        writer process (if configured) or the local connection with retry.
+
+        Args:
+            sql: SQL statement to execute.
+            params: Parameters for the SQL statement.
+            commit: If True, commit after execution.
+            sync: If True and using writer, wait for confirmation.
+
+        Returns:
+            WriteResponse if using writer and sync=True, None otherwise.
+        """
+        if self._writer_client is not None:
+            # Route to centralized writer process
+            if commit:
+                return self._writer_client.execute_and_commit(sql, params, sync=sync)
+            else:
+                return self._writer_client.execute(sql, params, sync=sync)
+        else:
+            # Use local connection with retry
+            def _do_execute():
+                self._conn.execute(sql, params)
+                if commit:
+                    self._conn.commit()
+            self._execute_with_retry(_do_execute)
+            return None
+
+    def _write_commit(self, sync: bool = False) -> Optional[WriteResponse]:
+        """Commit pending changes, routing to writer process if available.
+
+        Args:
+            sync: If True and using writer, wait for confirmation.
+
+        Returns:
+            WriteResponse if using writer and sync=True, None otherwise.
+        """
+        if self._writer_client is not None:
+            return self._writer_client.commit(sync=sync)
+        else:
+            self._execute_with_retry(self._conn.commit)
+            return None
+
+    def _write_batch(
+        self,
+        operations: list[tuple[str, tuple]],
+        sync: bool = True,
+    ) -> Optional[WriteResponse]:
+        """Execute multiple operations in a single transaction.
+
+        Args:
+            operations: List of (sql, params) tuples.
+            sync: If True and using writer, wait for confirmation.
+
+        Returns:
+            WriteResponse if using writer and sync=True, None otherwise.
+        """
+        if self._writer_client is not None:
+            return self._writer_client.batch_execute(operations, sync=sync)
+        else:
+            def _do_batch():
+                for sql, params in operations:
+                    self._conn.execute(sql, params)
+                self._conn.commit()
+            self._execute_with_retry(_do_batch)
+            return None
+
     def create_branch(
         self,
         parent_branch_id: str | None,
@@ -980,14 +1090,15 @@ class MemoryManager:
         ).fetchone()
         if existing:
             return branch_id
-        def _do_insert_branch():
-            self._conn.execute(
-                "INSERT INTO branches (id, parent_id, node_uid, created_at) VALUES (?, ?, ?, ?)",
-                (branch_id, parent_branch_id, node_uid, _now_ts()),
-            )
-            self._conn.commit()
 
-        self._execute_with_retry(_do_insert_branch)
+        # Use centralized writer if available
+        self._write_execute(
+            "INSERT INTO branches (id, parent_id, node_uid, created_at) VALUES (?, ?, ?, ?)",
+            (branch_id, parent_branch_id, node_uid, _now_ts()),
+            commit=True,
+            sync=True,  # Wait for confirmation on branch creation
+        )
+
         # Force WAL checkpoint so new branch is immediately visible to other processes
         try:
             self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
@@ -998,14 +1109,11 @@ class MemoryManager:
         return branch_id
 
     def update_branch_node_uid(self, branch_id: str, node_uid: str) -> None:
-        def _do_update():
-            self._conn.execute(
-                "UPDATE branches SET node_uid=? WHERE id=?",
-                (node_uid, branch_id),
-            )
-            self._conn.commit()
-
-        self._execute_with_retry(_do_update)
+        self._write_execute(
+            "UPDATE branches SET node_uid=? WHERE id=?",
+            (node_uid, branch_id),
+            commit=True,
+        )
 
     def set_root_branch_id(self, branch_id: str) -> None:
         self.root_branch_id = branch_id
@@ -1712,6 +1820,7 @@ class MemoryManager:
             "consolidate_recall_events",
             "consolidation",
             branch_id=branch_id,
+            phase=self._current_phase or "memory_management",
             details={
                 "total_events": len(all_events),
                 "events_kept": len(events_to_keep),
@@ -1855,7 +1964,8 @@ class MemoryManager:
                 )
 
                 event_ids_json = json.dumps([e["id"] for e in group_events])
-                self._conn.execute(
+                # Use centralized writer to avoid database locking
+                self._write_execute(
                     """
                     INSERT INTO inherited_summaries
                     (branch_id, summary_text, summarized_event_ids, kind, created_at)
@@ -1869,25 +1979,27 @@ class MemoryManager:
             consolidated_count += len(group_events)
 
         # Insert exclusions (these events will be filtered out for this branch)
+        # Batch all exclusion inserts for better performance and atomicity
         if event_ids_to_exclude:
-            for event_id in event_ids_to_exclude:
-                try:
-                    self._conn.execute(
-                        """
-                        INSERT OR IGNORE INTO inherited_exclusions
-                        (branch_id, excluded_event_id, excluded_at)
-                        VALUES (?, ?, ?)
-                        """,
-                        (branch_id, event_id, now),
-                    )
-                except Exception:
-                    pass  # Ignore duplicate key errors
-            self._conn.commit()
+            exclusion_ops = [
+                (
+                    """
+                    INSERT OR IGNORE INTO inherited_exclusions
+                    (branch_id, excluded_event_id, excluded_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (branch_id, event_id, now),
+                )
+                for event_id in event_ids_to_exclude
+            ]
+            # Use batch operation for all exclusions
+            self._write_batch(exclusion_ops, sync=True)
 
         self._log_memory_event(
             "consolidate_inherited_memory",
             "consolidation",
             branch_id=branch_id,
+            phase=self._current_phase or "memory_management",
             details={
                 "total_inherited_events": len(inherited_events),
                 "events_kept": len(events_to_keep),
@@ -2223,14 +2335,12 @@ class MemoryManager:
                 # Duplicate found, skip insertion
                 return False
 
-        def _do_insert():
-            self._conn.execute(
-                "INSERT INTO events (branch_id, kind, text, tags, created_at, task_hint, memory_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (branch_id, kind, payload, tags_json, _now_ts(), task_hint, memory_size),
-            )
-            self._conn.commit()
-
-        self._execute_with_retry(_do_insert)
+        # Use centralized writer if available
+        self._write_execute(
+            "INSERT INTO events (branch_id, kind, text, tags, created_at, task_hint, memory_size) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (branch_id, kind, payload, tags_json, _now_ts(), task_hint, memory_size),
+            commit=True,
+        )
         if log_event:
             if not node_id or not phase:
                 for tag in tag_list:
@@ -2308,23 +2418,42 @@ class MemoryManager:
                 # Duplicate found, skip insertion
                 return existing[0]
 
-        row_id_container = [None]
+        row_id: int | None = None
 
-        def _do_insert_archival():
-            cur = self._conn.execute(
+        if self._writer_client is not None:
+            # Use centralized writer with batched operations
+            # First insert main record, get row_id, then insert FTS if enabled
+            response = self._writer_client.execute_and_commit(
                 "INSERT INTO archival (branch_id, text, tags, created_at) VALUES (?, ?, ?, ?)",
                 (branch_id, payload, tags_json, _now_ts()),
+                sync=True,  # Need row_id
             )
-            row_id_container[0] = cur.lastrowid
-            if self._fts_enabled and row_id_container[0]:
-                self._conn.execute(
-                    "INSERT INTO archival_fts (rowid, text, tags, branch_id) VALUES (?, ?, ?, ?)",
-                    (row_id_container[0], payload, tags_json, branch_id),
-                )
-            self._conn.commit()
+            if response and response.success and response.result:
+                row_id = response.result.get("lastrowid")
+                if self._fts_enabled and row_id:
+                    self._writer_client.execute_and_commit(
+                        "INSERT INTO archival_fts (rowid, text, tags, branch_id) VALUES (?, ?, ?, ?)",
+                        (row_id, payload, tags_json, branch_id),
+                    )
+        else:
+            # Use local connection with retry
+            row_id_container = [None]
 
-        self._execute_with_retry(_do_insert_archival)
-        row_id = row_id_container[0]
+            def _do_insert_archival():
+                cur = self._conn.execute(
+                    "INSERT INTO archival (branch_id, text, tags, created_at) VALUES (?, ?, ?, ?)",
+                    (branch_id, payload, tags_json, _now_ts()),
+                )
+                row_id_container[0] = cur.lastrowid
+                if self._fts_enabled and row_id_container[0]:
+                    self._conn.execute(
+                        "INSERT INTO archival_fts (rowid, text, tags, branch_id) VALUES (?, ?, ?, ?)",
+                        (row_id_container[0], payload, tags_json, branch_id),
+                    )
+                self._conn.commit()
+
+            self._execute_with_retry(_do_insert_archival)
+            row_id = row_id_container[0]
         if log_event:
             self._log_memory_event(
                 op_name or "write_archival",
@@ -2561,8 +2690,8 @@ class MemoryManager:
                 },
             )
 
-    def mem_recall_search(self, query: str, *, k: int = 20) -> list[dict]:
-        branch_id = self._default_branch_id()
+    def mem_recall_search(self, query: str, *, k: int = 20, branch_id: str | None = None) -> list[dict]:
+        branch_id = branch_id or self._default_branch_id()
         if not branch_id:
             return []
         branch_ids = self._branch_chain(branch_id)
@@ -2724,8 +2853,9 @@ class MemoryManager:
         *,
         tags: list[str] | None = None,
         k: int = 10,
+        branch_id: str | None = None,
     ) -> list[dict]:
-        branch_id = self._default_branch_id()
+        branch_id = branch_id or self._default_branch_id()
         if not branch_id:
             return []
         rows = self.retrieve_archival(
@@ -3022,6 +3152,11 @@ class MemoryManager:
                 )
                 # Log the write operation with full value
                 _log_op("core_set", key=key, value=actual_value, importance=importance, ttl=ttl)
+                self._log_memory_event(
+                    "llm_core_set", "llm_update", branch_id=branch_id,
+                    node_id=node_id, phase=use_phase,
+                    details={"key": key, "value": actual_value, "importance": importance, "ttl": ttl},
+                )
 
         # Core memory GET operations
         if "core_get" in updates:
@@ -3033,6 +3168,11 @@ class MemoryManager:
                     results["core_get"][key] = value
                     # Log the read operation with full value
                     _log_op("core_get", key=key, value=value)
+                self._log_memory_event(
+                    "llm_core_get", "llm_read", branch_id=branch_id,
+                    node_id=node_id, phase=use_phase,
+                    details={"keys": keys, "results": results.get("core_get", {})},
+                )
 
         # Core memory DELETE/EVICT operations
         if "core_delete" in updates:
@@ -3056,6 +3196,11 @@ class MemoryManager:
                     node_id=node_id,
                 )
                 _log_op("core_delete", key=keys)
+            self._log_memory_event(
+                "llm_core_delete", "llm_update", branch_id=branch_id,
+                node_id=node_id, phase=use_phase,
+                details={"keys": updates["core_delete"]},
+            )
 
         # Archival memory WRITE operations
         if "archival" in updates and isinstance(updates["archival"], list):
@@ -3083,6 +3228,11 @@ class MemoryManager:
                 self.mem_archival_write(str(text), tags=tags, meta=meta)
                 # Log the archival write operation with full text
                 _log_op("archival_write", text=str(text), tags=tags)
+                self._log_memory_event(
+                    "llm_archival_write", "llm_update", branch_id=branch_id,
+                    node_id=node_id, phase=use_phase,
+                    details={"text": str(text)[:200], "tags": tags},
+                )
 
         # Archival memory UPDATE operations
         if "archival_update" in updates and isinstance(updates["archival_update"], list):
@@ -3097,6 +3247,11 @@ class MemoryManager:
                 self.mem_archival_update(record_id, text=text, tags=tags)
                 # Log the archival update operation with full text
                 _log_op("archival_update", id=record_id, text=text, tags=tags)
+                self._log_memory_event(
+                    "llm_archival_update", "llm_update", branch_id=branch_id,
+                    node_id=node_id, phase=use_phase,
+                    details={"id": record_id, "text": str(text)[:200] if text else None, "tags": tags},
+                )
 
         # Archival memory SEARCH operations
         if "archival_search" in updates and isinstance(updates["archival_search"], dict):
@@ -3121,6 +3276,11 @@ class MemoryManager:
                 # Log the archival search operation with full results
                 _log_op("archival_search", query=query, k=k, tags_filter=tags_filter,
                         results_count=len(search_results), results=results["archival_search"])
+                self._log_memory_event(
+                    "llm_archival_search", "llm_read", branch_id=branch_id,
+                    node_id=node_id, phase=use_phase,
+                    details={"query": query, "k": k, "tags_filter": tags_filter, "results_count": len(search_results)},
+                )
 
         # Recall memory APPEND operations
         if "recall" in updates and isinstance(updates["recall"], dict):
@@ -3135,6 +3295,11 @@ class MemoryManager:
             self.mem_recall_append(event)
             # Log the recall append operation with full content
             _log_op("recall_append", kind=event.get("kind"), content=str(event.get("content", "")))
+            self._log_memory_event(
+                "llm_recall_append", "llm_update", branch_id=branch_id,
+                node_id=node_id, phase=use_phase,
+                details={"kind": event.get("kind"), "content": str(event.get("content", ""))[:200]},
+            )
 
         # Recall memory SEARCH operations
         if "recall_search" in updates and isinstance(updates["recall_search"], dict):
@@ -3142,7 +3307,7 @@ class MemoryManager:
             query = search_params.get("query", "")
             k = search_params.get("k", 20)
             if query:
-                search_results = self.mem_recall_search(query, k=k)
+                search_results = self.mem_recall_search(query, k=k, branch_id=branch_id)
                 # Full results for logging
                 results["recall_search"] = [
                     {"kind": r.get("kind"), "summary": str(r.get("summary", "")), "ts": r.get("ts")}
@@ -3151,6 +3316,11 @@ class MemoryManager:
                 # Log the recall search operation with full results
                 _log_op("recall_search", query=query, k=k,
                         results_count=len(search_results), results=results["recall_search"])
+                self._log_memory_event(
+                    "llm_recall_search", "llm_read", branch_id=branch_id,
+                    node_id=node_id, phase=use_phase,
+                    details={"query": query, "k": k, "results_count": len(search_results)},
+                )
 
         # Recall memory EVICT operations (move to archival before deleting)
         if "recall_evict" in updates:
@@ -3228,6 +3398,11 @@ class MemoryManager:
             results["recall_evict"] = {"evicted_count": evicted_count, "archived_count": archived_count}
             # Log the recall evict operation
             _log_op("recall_evict", evicted_count=evicted_count, archived_count=archived_count)
+            self._log_memory_event(
+                "llm_recall_evict", "llm_update", branch_id=branch_id,
+                node_id=node_id, phase=use_phase,
+                details={"evicted_count": evicted_count, "archived_count": archived_count},
+            )
 
         # Recall memory SUMMARIZE operations
         if "recall_summarize" in updates:
@@ -3237,6 +3412,11 @@ class MemoryManager:
                     consolidated = self.consolidate_recall_events(branch_id)
                     results["recall_summarize"] = {"status": "success", "events_consolidated": consolidated}
                     _log_op("recall_summarize", status="success", events_consolidated=consolidated)
+                    self._log_memory_event(
+                        "llm_recall_summarize", "llm_update", branch_id=branch_id,
+                        node_id=node_id, phase=use_phase,
+                        details={"status": "success", "events_consolidated": consolidated},
+                    )
                 except Exception as exc:
                     logger.warning("LLM-requested recall summarize failed: %s", exc)
                     results["recall_summarize"] = {"status": "failed", "error": str(exc)}
@@ -3249,6 +3429,11 @@ class MemoryManager:
                 consolidate_result = self.auto_consolidate_memory(branch_id, pressure_level="high")
                 results["consolidate"] = {"status": "success", "details": consolidate_result}
                 _log_op("consolidate", status="success", details=consolidate_result)
+                self._log_memory_event(
+                    "llm_consolidate", "llm_update", branch_id=branch_id,
+                    node_id=node_id, phase=use_phase,
+                    details={"status": "success"},
+                )
             except Exception as exc:
                 logger.warning("LLM-requested consolidation failed: %s", exc)
                 results["consolidate"] = {"status": "failed", "error": str(exc)}

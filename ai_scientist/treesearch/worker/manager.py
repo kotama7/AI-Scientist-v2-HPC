@@ -4,6 +4,7 @@ This module provides WorkerManager for running tasks in separate processes
 with reliable termination on timeout.
 """
 
+import atexit
 import logging
 import signal
 import time
@@ -79,6 +80,9 @@ class WorkerManager:
         self.next_task_id = 0
         self._shutdown = False
         self._start_workers()
+        # Register atexit handler so non-daemon workers are cleaned up
+        # if the main process exits unexpectedly.
+        atexit.register(self._atexit_cleanup)
 
     def _start_workers(self):
         """Start worker processes."""
@@ -87,7 +91,7 @@ class WorkerManager:
                 target=_worker_process_target,
                 args=(self.task_queue, self.result_queue),
                 name=f"Worker-{i}",
-                daemon=True
+                daemon=False,  # Non-daemon so workers can spawn child processes (e.g. Interpreter)
             )
             try:
                 p.start()
@@ -97,6 +101,11 @@ class WorkerManager:
                 logger.error(f"Failed to start worker process Worker-{i}: {e}")
                 # Don't append failed process to workers list
                 # Continue trying to start remaining workers
+
+    def _atexit_cleanup(self):
+        """Terminate workers on interpreter exit (safety net for non-daemon workers)."""
+        if not self._shutdown:
+            self.shutdown(wait=False)
 
     def submit(self, func: Callable, *args) -> int:
         """Submit a task and return a task_id.

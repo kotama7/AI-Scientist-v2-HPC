@@ -32,7 +32,32 @@ When reviewing execution, record:
 - **Core**: `execution_status`, `has_bugs`, `output_quality`
 - **Archival**: Detailed findings, error patterns, performance observations
 
-Example:
+### IMPORTANT: Search When Errors Occur (REQUIRED)
+
+**If you observe any errors or unexpected behavior, you MUST search archival memory FIRST.** Past execution reviews contain solutions to similar problems.
+
+When errors are present, include this at the START of your response:
+```
+<memory_update>
+{
+  "mem_archival_search": {"query": "EXECUTION_REVIEW error YOUR_ERROR_TYPE", "k": 5},
+  "mem_recall_search": {"query": "execution failed error", "k": 5}
+}
+</memory_update>
+```
+
+**Trigger conditions for archival_search:**
+- Runtime errors → search: `"EXECUTION_REVIEW runtime error"`
+- Memory issues → search: `"EXECUTION_REVIEW memory OOM"`
+- Timeout/hang → search: `"EXECUTION_REVIEW timeout hang"`
+- Wrong output → search: `"EXECUTION_REVIEW output_quality wrong"`
+- Missing files → search: `"EXECUTION_REVIEW file missing"`
+
+After receiving search results, check if similar errors were encountered and how they were resolved.
+
+### Writing Execution Results
+
+After review, record for future reference:
 ```
 <memory_update>
 {
@@ -53,6 +78,11 @@ Example:
 - `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
 - `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
 - `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
 
 **Management operations:**
 - `"mem_core_del": ["key"]` - Delete keys from core memory

@@ -32,7 +32,35 @@ When tuning hyperparameters, record:
 - **Core**: `tuning_method`, `search_space`, `best_params`, `best_metric`
 - **Archival**: Configurations tested, results comparison, insights about parameter sensitivity
 
-Example:
+### IMPORTANT: Search Before Tuning (REQUIRED)
+
+**You MUST search archival memory FIRST before starting hyperparameter tuning.** Past tuning runs contain critical information about parameter sensitivity and optimal ranges.
+
+Include this at the START of your response:
+```
+<memory_update>
+{
+  "mem_archival_search": {"query": "HYPERPARAM tuning results best_params", "k": 5},
+  "mem_core_get": ["best_params", "tuning_method", "search_space"]
+}
+</memory_update>
+```
+
+**Trigger conditions for archival_search:**
+- Thread/parallelism tuning → search: `"HYPERPARAM threads OMP_NUM_THREADS"`
+- Learning rate tuning → search: `"HYPERPARAM learning_rate lr"`
+- Batch size tuning → search: `"HYPERPARAM batch_size"`
+- Memory/cache tuning → search: `"HYPERPARAM cache tile_size"`
+- Failed configurations → search: `"HYPERPARAM divergence failed"`
+
+After receiving search results, use them to:
+1. Narrow the search space based on past results
+2. Avoid configurations that caused failures
+3. Start from previously best parameters
+
+### Writing Tuning Results
+
+After tuning, record for future reference:
 ```
 <memory_update>
 {
@@ -53,6 +81,11 @@ Example:
 - `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
 - `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
 - `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
 
 **Management operations:**
 - `"mem_core_del": ["key"]` - Delete keys from core memory

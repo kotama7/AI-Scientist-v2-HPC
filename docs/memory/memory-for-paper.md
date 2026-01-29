@@ -18,13 +18,13 @@ The function generates the following files in `<workspace>/memory/`:
 
 | File | Description |
 |------|-------------|
-| `final_memory-for-paper.md` | Human-readable markdown for paper writeup |
+| `final_memory_for_paper.md` | Human-readable markdown for paper writeup |
 | `final_memory_for_paper.json` | Structured JSON for programmatic access |
 | `final_writeup_memory.json` | Complete writeup memory payload |
 
 ## Markdown Structure
 
-The generated `final_memory-for-paper.md` contains the following sections:
+The generated `final_memory_for_paper.md` contains the following sections:
 
 ### 1. Executive Summary
 - Best result metric value and name
@@ -123,7 +123,7 @@ The generated `final_memory-for-paper.md` contains the following sections:
 ┌────────────────────────────────────────────────────────────────────┐
 │                    Generate Markdown & JSON                         │
 │                                                                     │
-│  - final_memory-for-paper.md (human-readable)                      │
+│  - final_memory_for_paper.md (human-readable)                      │
 │  - final_memory_for_paper.json (structured data)                   │
 │  - final_writeup_memory.json (complete payload)                    │
 └────────────────────────────────────────────────────────────────────┘
@@ -167,7 +167,7 @@ The following configuration options affect output:
 ```yaml
 memory:
   final_memory_enabled: true           # Enable/disable final memory generation
-  final_memory_filename_md: "final_memory-for-paper.md"
+  final_memory_filename_md: "final_memory_for_paper.md"
   final_memory_filename_json: "final_memory_for_paper.json"
 ```
 

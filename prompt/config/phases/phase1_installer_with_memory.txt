@@ -142,9 +142,32 @@ Management operations:
 }
 </memory_update>
 
+**IMPORTANT: Search When Errors Occur (REQUIRED)**
+When a command fails (exit_code != 0), you MUST search archival memory for past solutions:
+```
+<memory_update>
+{
+  "mem_archival_search": {"query": "PHASE1_ERROR YOUR_ERROR_TYPE workaround", "k": 5},
+  "mem_core_get": ["numpy_install_method", "python_deps_path"]
+}
+</memory_update>
+```
+
+**Trigger conditions for archival_search:**
+- Installation failure → search: `"PHASE1_ERROR install failed"`
+- Import error → search: `"PHASE1_ERROR import ModuleNotFoundError"`
+- Build failure → search: `"BUILD_CONFIG cmake make error"`
+- Permission denied → search: `"PHASE1_ERROR permission denied sudo"`
+- Network failure → search: `"PHASE1_ERROR curl wget timeout"`
+
 Read operations are useful when:
 - Checking if a dependency was already installed in a previous attempt
 - Retrieving error recovery strategies from earlier Phase 1 iterations
 - Looking up environment constraints discovered in Phase 0
 
-After read results are returned, you will be prompted to respond with any additional memory updates based on the retrieved information.
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
+
+After read results are returned by the system, you will be prompted to respond with any additional memory updates based on the retrieved information.

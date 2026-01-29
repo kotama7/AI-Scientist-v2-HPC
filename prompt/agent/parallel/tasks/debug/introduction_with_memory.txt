@@ -32,21 +32,35 @@ During debugging, record:
 - **Core**: `last_bug_type`, `common_pitfalls`
 - **Archival**: Bug description, root cause analysis, fix strategy, prevention tips
 
-Example:
+### IMPORTANT: Search Before Fixing
+
+**You MUST search archival memory FIRST before attempting any fix.** Past debugging sessions may contain solutions to similar problems. Include a read operation at the START of your response:
+
+```
+<memory_update>
+{
+  "mem_archival_search": {"query": "YOUR_ERROR_TYPE or symptom keywords", "k": 5}
+}
+</memory_update>
+```
+
+**Trigger conditions for archival_search (use when you see):**
+- Compilation errors → search: `"compilation error COMPILER_NAME"`
+- Runtime errors → search: `"runtime error ERROR_TYPE"`
+- Segfault/crash → search: `"segmentation fault memory"`
+- Performance issues → search: `"performance degradation slow"`
+- Import/module errors → search: `"module import dependency"`
+
+After receiving search results, incorporate relevant solutions into your fix.
+
+### Writing Debug Results
+
+After fixing, record for future reference:
 ```
 <memory_update>
 {
   "mem_core_set": {"last_bug_type": "shape_mismatch"},
   "mem_archival_write": [{"text": "DEBUG: Shape mismatch error in matmul. Root cause: input tensor was (B, D) but expected (B, D, 1). Fix: Added unsqueeze(-1) before matmul. Prevention: Always verify tensor shapes at layer boundaries.", "tags": ["PHASE2_DEBUG", "BUG_FIX", "SHAPE_MISMATCH"]}]
-}
-</memory_update>
-```
-
-Before fixing, consider searching for similar past bugs:
-```
-<memory_update>
-{
-  "mem_archival_search": {"query": "shape mismatch tensor dimension", "k": 3}
 }
 </memory_update>
 ```
@@ -62,6 +76,11 @@ Before fixing, consider searching for similar past bugs:
 - `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
 - `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
 - `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
 
 **Management operations:**
 - `"mem_core_del": ["key"]` - Delete keys from core memory

@@ -3,7 +3,8 @@ Example data loading and plot saving code:
 
                 try:
                     candidate_paths = []
-                    candidate_paths += glob.glob(os.path.join(working_dir, 'experiment_data.npy'))
+                    # Prefer *_data.npy pattern (e.g., {experiment_name}_data.npy)
+                    candidate_paths += glob.glob(os.path.join(working_dir, '*_data.npy'))
                     candidate_paths += glob.glob(os.path.join(working_dir, 'experiment_data_*.npy'))
                     candidate_paths += glob.glob(os.path.join(working_dir, 'output*.npy'))
                     if not candidate_paths:

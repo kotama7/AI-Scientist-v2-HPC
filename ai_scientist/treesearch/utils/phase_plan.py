@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 from ai_scientist.treesearch.utils.response import sanitize_memory_update_tags
+from ai_scientist.treesearch.utils.file_utils import get_experiment_output_filename
 
 
 class PhasePlanError(ValueError):
@@ -12,6 +13,33 @@ class PhasePlanError(ValueError):
 
 class MissingMemoryUpdateError(PhasePlanError):
     """Raised when memory is enabled but <memory_update> block is missing."""
+
+
+class MemoryReadOnlyResponse(PhasePlanError):
+    """Raised when the LLM response contains only a memory read request with no phase_artifacts JSON.
+
+    This is NOT a true parse error — the LLM legitimately wants to read from
+    memory before producing code.  The caller should execute the read operations
+    and re-query the LLM *without* consuming a retry slot.
+    """
+
+    def __init__(self, memory_updates: Dict[str, Any], message: str = ""):
+        self.memory_updates = memory_updates
+        super().__init__(message or "LLM returned a memory-read-only response (no phase_artifacts JSON).")
+
+
+_MEMORY_READ_KEYS = frozenset({"mem_core_get", "mem_archival_search", "mem_recall_search"})
+_MEMORY_WRITE_KEYS = frozenset({"mem_core_set", "mem_archival_write"})
+
+
+def _is_memory_read_only_request(updates: Optional[Dict[str, Any]]) -> bool:
+    """Return True when *updates* contains at least one read op and NO write ops / no phase data."""
+    if not updates or not isinstance(updates, dict):
+        return False
+    keys = set(updates.keys())
+    has_read = bool(keys & _MEMORY_READ_KEYS)
+    has_write = bool(keys & _MEMORY_WRITE_KEYS)
+    return has_read and not has_write
 
 
 def extract_memory_update_block(raw_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
@@ -42,6 +70,11 @@ def extract_memory_update_block(raw_text: str) -> Tuple[Optional[Dict[str, Any]]
     # Remove the memory_update block from the text
     remaining_text = re.sub(pattern, '', raw_text, flags=re.DOTALL).strip()
 
+    # Also remove any <memory_results> blocks that the LLM may have incorrectly output
+    # (memory_results should only be output by the system, not the LLM)
+    memory_results_pattern = r'<memory_results>\s*.*?\s*</memory_results>'
+    remaining_text = re.sub(memory_results_pattern, '', remaining_text, flags=re.DOTALL).strip()
+
     # Parse the memory update JSON
     try:
         if not memory_json or memory_json == '{}':
@@ -71,6 +104,7 @@ def extract_phase_artifacts(
     *,
     default_language: str = "c",
     require_memory_update: bool = False,
+    experiment_name: str | None = None,
 ) -> Dict[str, Any]:
     """Parse and validate the JSON returned by the LLM for split-phase execution.
 
@@ -79,6 +113,8 @@ def extract_phase_artifacts(
         default_language: Default programming language for placeholders.
         require_memory_update: If True, raise MissingMemoryUpdateError when
             <memory_update> block is not found.
+        experiment_name: The experiment name for generating the output filename.
+            If None, uses the default filename.
 
     Returns:
         A dict containing 'phase_artifacts', 'constraints', and optionally
@@ -147,6 +183,17 @@ def extract_phase_artifacts(
             "The response must start with a <memory_update>...</memory_update> block."
         )
 
+    # Detect read-only memory request: the LLM emitted a <memory_update> with
+    # only read operations (mem_archival_search, mem_core_get, …) and no
+    # phase_artifacts JSON body.  This is a legitimate "search first, code
+    # later" pattern and must NOT be treated as a parse error.
+    if (
+        memory_updates is not None
+        and _is_memory_read_only_request(memory_updates)
+        and not remaining_text.strip()
+    ):
+        raise MemoryReadOnlyResponse(memory_updates)
+
     default_language = normalize_language(default_language)
     cleaned = _strip_json_wrappers(remaining_text)
     try:
@@ -214,24 +261,30 @@ def extract_phase_artifacts(
         build_plan = build_plan[0]
     if not isinstance(build_plan, dict):
         build_plan = {}
+    # Generate dynamic output filename based on experiment name
+    output_filename = get_experiment_output_filename(experiment_name)
+    default_output_path = f"working/{output_filename}"
+
     build_plan.setdefault("language", default_language)
     build_plan.setdefault("compiler_selected", "")
     build_plan.setdefault("cflags", [])
     build_plan.setdefault("ldflags", [])
     build_plan.setdefault("workdir", "/workspace")
-    if default_language == "python":
-        build_plan.setdefault("output", "working/experiment_data.npy")
+    language = normalize_language(build_plan.get("language", default_language))
+    if language == "python":
+        build_plan.setdefault("output", default_output_path)
     else:
         build_plan.setdefault("output", "bin/a.out")
     compile_section["build_plan"] = build_plan
 
-    if not build_plan.get("compiler_selected"):
-        raise PhasePlanError("build_plan.compiler_selected is required.")
+    # compiler_selected is required for compiled languages, but not for python
+    if language != "python" and not build_plan.get("compiler_selected"):
+        raise PhasePlanError("build_plan.compiler_selected is required for compiled languages (c/cpp/fortran).")
 
     run_section = phase["run"]
     expected_outputs = run_section.get("expected_outputs")
     if not expected_outputs:
-        run_section["expected_outputs"] = ["working/experiment_data.npy"]
+        run_section["expected_outputs"] = [default_output_path]
 
     constraints = parsed.get("constraints")
     if isinstance(constraints, list) and constraints:

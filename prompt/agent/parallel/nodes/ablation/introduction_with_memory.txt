@@ -32,7 +32,34 @@ When conducting ablation studies, record:
 - **Core**: `components_tested`, `critical_components`, `removable_components`
 - **Archival**: Per-component impact analysis, contribution quantification, interactions discovered
 
-Example:
+### IMPORTANT: Search Before Ablation (REQUIRED)
+
+**You MUST search archival memory FIRST before designing ablation experiments.** Past ablation studies contain valuable insights about component contributions and interactions.
+
+Include this at the START of your response:
+```
+<memory_update>
+{
+  "mem_archival_search": {"query": "ABLATION component contribution critical", "k": 5},
+  "mem_core_get": ["components_tested", "critical_components"]
+}
+</memory_update>
+```
+
+**Trigger conditions for archival_search:**
+- Component importance → search: `"ABLATION critical_components"`
+- Removable features → search: `"ABLATION removable REMOVABLE"`
+- Component interactions → search: `"ABLATION interaction dependency"`
+- Past ablation results → search: `"COMPONENT_ANALYSIS contribution"`
+
+After receiving search results, use them to:
+1. Focus on components not yet tested
+2. Understand known critical vs removable components
+3. Design experiments that avoid redundant tests
+
+### Writing Ablation Results
+
+After ablation, record for future reference:
 ```
 <memory_update>
 {
@@ -53,6 +80,11 @@ Example:
 - `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
 - `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
 - `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
 
 **Management operations:**
 - `"mem_core_del": ["key"]` - Delete keys from core memory

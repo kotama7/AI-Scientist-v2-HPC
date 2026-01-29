@@ -113,7 +113,7 @@ summarizes what is injected per phase:
 - **Constraints**: From `agent/parallel/response_format/execution_split.txt` (sudo allowed, write paths, etc.)
 - **Progress**: Step-by-step history:
   - `step`: Current step index
-  - `max_steps`: Maximum allowed steps (default 12)
+  - `max_steps`: Maximum allowed steps (default 100)
   - `history`: List of `{command, exit_code, stdout_summary, stderr_summary}`
 - **Phase 0 guidance for Phase 1**:
   - `targets`: Dependencies to install/fetch

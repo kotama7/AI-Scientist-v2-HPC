@@ -248,7 +248,7 @@ When memory is disabled, the LLM uses `execution_split.txt` format:
     },
     "run": {
       "commands": ["./bin/a.out"],
-      "expected_outputs": ["working/experiment_data.npy"],
+      "expected_outputs": ["working/{experiment_name}_data.npy"],
       "notes": "..."
     }
   },

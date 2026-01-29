@@ -69,7 +69,7 @@ Schema:
         "notes": "short"
       },
       "phase4": {
-        "output_policy": "must generate /workspace/working/experiment_data.npy",
+        "output_policy": "must generate /workspace/working/{experiment_name}_data.npy",
         "validation": ["numpy magic check", "file exists"]
       }
     },

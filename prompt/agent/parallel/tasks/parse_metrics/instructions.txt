@@ -1,16 +1,15 @@
 0. Resolve the working directory robustly: if os.path.basename(os.getcwd()) == "working" use os.getcwd(), otherwise use os.path.join(os.getcwd(), "working").
-1. Load experiment_data.npy from the working directory. If it is missing, fall back to common outputs (prefer experiment_data*.npy over output*.npy) by checking:
-   - os.path.join(working_dir, "experiment_data.npy")
-   - os.path.join(os.getcwd(), "experiment_data.npy")
+1. Load experiment output data from the working directory. The output filename follows the pattern {experiment_name}_data.npy. Search in this order:
+   - glob for *_data.npy in working_dir (preferred pattern)
    - glob for experiment_data_*.npy in working_dir and os.getcwd()
    - os.path.join(os.getcwd(), "artifacts", "final", "output.npy")
    - os.path.join(working_dir, "artifacts", "final", "output.npy")
    - glob for output*.npy in working_dir and os.getcwd()
-   - a recursive search under working_dir only (do not recurse os.getcwd) for any .npy file, with preference order: experiment_data*.npy, then output*.npy, then any other .npy
-   - If the prompt context provides a list of "Available .npy files", prefer only those paths that live under working_dir or match experiment_data*.npy/output*.npy.
+   - a recursive search under working_dir only (do not recurse os.getcwd) for any .npy file, with preference order: *_data.npy, experiment_data*.npy, then output*.npy, then any other .npy
+   - If the prompt context provides a list of "Available .npy files", prefer only those paths that live under working_dir or match *_data.npy/experiment_data*.npy/output*.npy.
    - Ignore any .npy under .pydeps, .venv, site-packages, dist-packages, or similar dependency/data directories.
    If nothing is found, raise FileNotFoundError listing the attempted paths and patterns.
-2. Extract metrics for each dataset. If multiple .npy files are found, iterate over all and use the filename stem as the dataset name. Make sure to refer to the original code to understand the structure of the data.
+2. Extract metrics for each dataset. Load the .npy file and inspect its top-level keys to discover dataset/case names (e.g., the keys of the loaded dictionary). Use those internal keys as the dataset names — do NOT use the .npy filename stem as the dataset name, since it reflects the experiment name, not the actual datasets tested. If the loaded data is not a dictionary or has no meaningful sub-keys, use the experiment name as a fallback. Make sure to refer to the original code to understand the structure of the data.
 3. Always print the name of the dataset before printing the metrics
 4. Always print the name of the metric before printing the value by specifying the metric name clearly. Avoid vague terms like 'run1,' 'result,' or 'output.' Instead, use precise labels such as 'execution time (s),' 'throughput (GFLOPS),' 'convergence error,' 'final accuracy,' etc.
 5. You only need to print the best or final value for each metric for each dataset

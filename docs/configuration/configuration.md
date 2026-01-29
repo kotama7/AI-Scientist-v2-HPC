@@ -19,9 +19,9 @@ exec:
   singularity_image: /path/to/base.sif
   use_gpu: true                     # enable --nv for Singularity
   workspace_mount: /workspace       # Container mount point
-  phase1_max_steps: 12              # Max Phase 1 installer iterations
+  phase1_max_steps: 100             # Max Phase 1 installer iterations
   log_prompts: true                 # Log prompts as JSON/Markdown
-  timeout: 7200                     # Execution timeout in seconds
+  timeout: 3600                     # Execution timeout in seconds
 
 agent:
   type: parallel                    # Agent type (parallel recommended)
@@ -30,7 +30,7 @@ agent:
   stages:
     stage1_max_iters: 20            # Per-stage iteration limits
     stage2_max_iters: 20
-    stage3_max_iters: 40
+    stage3_max_iters: 20
     stage4_max_iters: 20
   steps: 5                          # Fallback iteration count
   multi_seed_eval:
@@ -61,9 +61,9 @@ experiment:
 
 memory:
   enabled: true                     # Memory is ENABLED by default
-  core_max_chars: 16000
-  recall_max_events: 20
-  retrieval_k: 8
+  core_max_chars: 10000
+  recall_max_events: 5
+  retrieval_k: 4
   use_fts: auto
   final_memory_enabled: true
   final_memory_filename_md: final_memory_for_paper.md
@@ -71,7 +71,7 @@ memory:
   redact_secrets: true
   memory_budget_chars: 24000
   memory_log_enabled: true
-  memory_log_max_chars: 1600
+  memory_log_max_chars: 1000
   use_llm_compression: true
   compression_model: gpt-5.2
   paper_section_mode: idea_then_memory  # memory_summary | idea_then_memory
@@ -81,7 +81,7 @@ memory:
   datasets_tested_budget_chars: 8000
   metrics_extraction_budget_chars: 12000
   plotting_code_budget_chars: 8000
-  plot_selection_budget_chars: 4000
+  plot_selection_budget_chars: 8000
   vlm_analysis_budget_chars: 12000
   node_summary_budget_chars: 8000
   parse_metrics_budget_chars: 12000
@@ -97,7 +97,7 @@ memory:
   auto_consolidate: true
   consolidation_trigger: high
   recall_consolidation_threshold: 1.5
-  max_memory_read_rounds: 3
+  max_memory_read_rounds: 5
   pressure_thresholds:
     medium: 0.7
     high: 0.85
@@ -142,9 +142,9 @@ The copy inside the experiment directory is the source of truth for the run.
 - `writable_tmpfs`, `container_overlay`, `writable_mode`: Phase 1 write access.
 - `container_extra_args`: extra Singularity args for instance start.
 - `per_worker_sif`, `keep_sandbox`, `use_fakeroot`: per-worker SIF behavior.
-- `phase1_max_steps`: max iterative installer steps (default 12).
+- `phase1_max_steps`: max iterative installer steps (default 100).
 - `log_prompts`: write prompt logs (JSON + Markdown) for split/single runs.
-- `timeout`: execution timeout in seconds (default 7200).
+- `timeout`: execution timeout in seconds (default 3600).
 - `resources`: optional path to a JSON/YAML resource file.
 
 ### `agent`
@@ -211,7 +211,7 @@ LLM compression (for intelligent memory truncation):
   - `datasets_tested_budget_chars`: budget for tested datasets summary (default 8000).
   - `metrics_extraction_budget_chars`: budget for metrics extraction (default 12000).
   - `plotting_code_budget_chars`: budget for plotting code summary (default 8000).
-  - `plot_selection_budget_chars`: budget for plot selection summary (default 4000).
+  - `plot_selection_budget_chars`: budget for plot selection summary (default 8000).
   - `vlm_analysis_budget_chars`: budget for VLM analysis summary (default 12000).
   - `node_summary_budget_chars`: budget for node summaries (default 8000).
   - `parse_metrics_budget_chars`: budget for parsed metrics (default 12000).
@@ -222,7 +222,7 @@ Memory logging (for debugging):
 
 - `memory_log_enabled`: write memory event logs (default true).
 - `memory_log_dir`: directory for memory logs (default under `experiments/<run>/memory/`).
-- `memory_log_max_chars`: max chars per log entry (default 1600).
+- `memory_log_max_chars`: max chars per log entry (default 1000).
 
 Writeup memory limits (for `final_writeup_memory.json` generation):
 
@@ -237,7 +237,7 @@ Memory Pressure Management (MemGPT-style):
 - `auto_consolidate`: enable automatic memory consolidation (default true).
 - `consolidation_trigger`: pressure level to trigger consolidation (`medium`, `high`, or `critical`).
 - `recall_consolidation_threshold`: multiplier for recall overflow threshold (default 1.5).
-- `max_memory_read_rounds`: maximum rounds for memory read operations (default 3).
+- `max_memory_read_rounds`: maximum rounds for memory read operations (default 5).
 - `pressure_thresholds`: pressure level thresholds:
   - `medium`: 70% usage (default 0.7).
   - `high`: 85% usage (default 0.85).

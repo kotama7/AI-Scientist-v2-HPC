@@ -27,7 +27,7 @@ exec:
   # プロンプトのログ記録を有効化
   log_prompts: true
   # 各コード実行のタイムアウト時間（秒）
-  timeout: 7200
+  timeout: 3600
 
 
 # メモリ・記憶管理の設定
@@ -35,11 +35,11 @@ memory:
   # メモリ機能の有効化（true: 有効, false: 無効）
   enabled: true
   # コアメモリの最大文字数
-  core_max_chars: 16000
+  core_max_chars: 10000
   # 想起する最大イベント数
-  recall_max_events: 20
+  recall_max_events: 5
   # 検索時に取得する上位k件
-  retrieval_k: 8
+  retrieval_k: 4
   # 全文検索（FTS）の使用（auto: 自動判定）
   use_fts: auto
   # 最終メモリ機能を有効化
@@ -55,7 +55,7 @@ memory:
   # メモリログを有効化
   memory_log_enabled: true
   # メモリログの最大文字数
-  memory_log_max_chars: 1600
+  memory_log_max_chars: 1000
   # LLMベースの圧縮を使用
   use_llm_compression: true
   # 圧縮に使用するLLMモデル
@@ -94,7 +94,7 @@ memory:
   consolidation_trigger: high            # 統合をトリガーする圧力レベル (medium/high/critical)
   recall_consolidation_threshold: 1.5    # recall_max_events * threshold を超えると統合
 
-  max_memory_read_rounds: 3            # メモリ読み取りの最大ラウンド数
+  max_memory_read_rounds: 5            # メモリ読み取りの最大ラウンド数
 
   # メモリ圧力の閾値設定
   pressure_thresholds:
@@ -130,7 +130,7 @@ agent:
   stages:
     stage1_max_iters: 20
     stage2_max_iters: 20
-    stage3_max_iters: 40
+    stage3_max_iters: 20
     stage4_max_iters: 20
   # 改善反復の実行回数（ステージ別max_itersが未指定の場合に使用）
   steps: 5

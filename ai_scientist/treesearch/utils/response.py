@@ -170,18 +170,19 @@ def check_malformed_memory_update(text: str) -> bool:
 
 
 def remove_memory_update_tags(text: str) -> str:
-    """Remove <memory_update>...</memory_update> blocks from text.
+    """Remove <memory_update>...</memory_update> and <memory_results>...</memory_results> blocks from text.
 
     Handles various malformed patterns from LLM output:
     - Normal: <memory_update>...</memory_update>
     - Escaped slash: <memory_update>...<\/memory_update>
     - Malformed: <memory_update...}}/>
+    - LLM-generated memory_results (should only be output by system)
 
     Args:
         text: The text to clean.
 
     Returns:
-        Text with memory update blocks removed.
+        Text with memory update and memory results blocks removed.
     """
     if not text:
         return text
@@ -190,4 +191,11 @@ def remove_memory_update_tags(text: str) -> str:
     # - <\/memory_update> (escaped slash)
     # - }}/> (malformed self-closing)
     pattern = r'<memory_update.*?(?:</memory_update>|<\\/memory_update>|\}\}\s*/>)'
-    return re.sub(pattern, '', text, flags=re.DOTALL).strip()
+    text = re.sub(pattern, '', text, flags=re.DOTALL).strip()
+
+    # Also remove any <memory_results> blocks that the LLM may have incorrectly output
+    # (memory_results should only be output by the system, not the LLM)
+    memory_results_pattern = r'<memory_results>.*?</memory_results>'
+    text = re.sub(memory_results_pattern, '', text, flags=re.DOTALL).strip()
+
+    return text

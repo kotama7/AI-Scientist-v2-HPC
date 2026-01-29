@@ -420,7 +420,7 @@ Section budgets control per-section character limits. Configure directly under
 | `datasets_tested_budget_chars` | 8000 | Tested datasets summary |
 | `metrics_extraction_budget_chars` | 12000 | Metrics extraction |
 | `plotting_code_budget_chars` | 8000 | Plotting code summary |
-| `plot_selection_budget_chars` | 4000 | Plot selection summary |
+| `plot_selection_budget_chars` | 8000 | Plot selection summary |
 | `vlm_analysis_budget_chars` | 12000 | VLM analysis summary |
 | `node_summary_budget_chars` | 8000 | Node summaries |
 | `parse_metrics_budget_chars` | 12000 | Parsed metrics |
@@ -460,6 +460,64 @@ For details on the memory visualization tool, see
 - If your SQLite build lacks FTS5, archival search falls back to keyword search.
 - Large resource snapshots can increase memory size and injection time; tighten
   `max_chars` or `max_total_chars` in resource files if prompts grow too large.
+
+## Centralized Database Writer (Parallel Execution)
+
+When running with multiple parallel workers (`num_workers > 1`), the system uses
+a centralized database writer process to avoid SQLite "database is locked" errors.
+
+### Architecture
+
+```
+Worker Process 1 ─┐
+Worker Process 2 ─┼─> Write Queue ─> DatabaseWriterProcess ─> SQLite DB
+Worker Process N ─┘
+```
+
+All database write operations from worker processes are serialized through a
+single dedicated writer process, eliminating concurrent write conflicts while
+maintaining high throughput through batching.
+
+### How it works
+
+1. **Main process** starts `DatabaseWriterProcess` before spawning workers
+2. **Writer process** owns the sole write connection to SQLite
+3. **Worker processes** receive a `writer_queue` (multiprocessing.Queue)
+4. **MemoryManager** routes writes through the queue instead of direct connection
+5. **Reads** remain local to each worker (SQLite WAL handles concurrent reads)
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Serialized writes** | Eliminates "database is locked" errors |
+| **Batched commits** | Groups multiple writes for better I/O performance |
+| **Automatic retry** | Exponential backoff on transient errors |
+| **Graceful shutdown** | Drains queue and commits pending writes |
+| **Health check** | `ping()` method for monitoring writer status |
+
+### Configuration
+
+The database writer is automatically enabled when:
+- `memory.enabled=true`
+- `num_workers > 1` (parallel execution)
+
+No additional configuration is required. The writer uses the same `db_path`
+specified in `memory.db_path` or defaults to
+`experiments/<run>/memory/memory.sqlite`.
+
+### Troubleshooting
+
+If you still see "database is locked" errors:
+
+1. Check that `DatabaseWriterProcess` started successfully (look for
+   "DatabaseWriterProcess started" in logs)
+2. Verify workers are receiving the `writer_queue` (look for
+   "Using centralized database writer process" in worker logs)
+3. Increase `busy_timeout` in memgpt_store.py if needed (default: 60s)
+
+See [troubleshooting.md](../development/troubleshooting.md#database-is-locked-errors)
+for more details.
 
 ## Memory Pressure Management (MemGPT-style)
 
@@ -750,7 +808,7 @@ For a complete flow diagram, see [memory-flow.md](memory-flow.md).
 
 ```yaml
 memory:
-  max_memory_read_rounds: 2  # Maximum re-query cycles (default: 2)
+  max_memory_read_rounds: 5  # Maximum re-query cycles (default: 5)
 ```
 
 #### What happens when max rounds exceeded

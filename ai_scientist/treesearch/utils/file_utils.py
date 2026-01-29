@@ -5,10 +5,68 @@ in the treesearch module.
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from ai_scientist.treesearch.utils.phase_execution import summarize_text
+
+
+# Default output filename (for backwards compatibility)
+DEFAULT_EXPERIMENT_OUTPUT_FILENAME = "experiment_data.npy"
+
+
+def sanitize_experiment_name(name: str, max_length: int = 50) -> str:
+    """Sanitize an experiment name for use in filenames.
+
+    Args:
+        name: The experiment name to sanitize.
+        max_length: Maximum length of the sanitized name.
+
+    Returns:
+        A filesystem-safe version of the name.
+    """
+    if not name:
+        return "experiment"
+    # Remove leading date/timestamp patterns (e.g., "2026-01-28_17-46-11_")
+    name = re.sub(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_", "", name)
+    # Remove trailing attempt suffix (e.g., "_attempt_0")
+    name = re.sub(r"_attempt_\d+$", "", name)
+    # Replace non-alphanumeric characters with underscores
+    name = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+    # Collapse multiple underscores
+    name = re.sub(r"_+", "_", name)
+    # Remove leading/trailing underscores
+    name = name.strip("_")
+    # Truncate if too long
+    if len(name) > max_length:
+        name = name[:max_length].rstrip("_")
+    return name.lower() if name else "experiment"
+
+
+def get_experiment_output_filename(experiment_name: str | None = None) -> str:
+    """Generate the output data filename for an experiment.
+
+    Args:
+        experiment_name: The name of the experiment. If None or empty,
+            returns the default filename.
+
+    Returns:
+        The output filename (e.g., "stability_oriented_autotuning_v2_data.npy").
+    """
+    if not experiment_name:
+        return DEFAULT_EXPERIMENT_OUTPUT_FILENAME
+    sanitized = sanitize_experiment_name(experiment_name)
+    return f"{sanitized}_data.npy"
+
+
+def get_experiment_output_pattern() -> str:
+    """Get the glob pattern for finding experiment output files.
+
+    Returns:
+        A glob pattern that matches experiment output files.
+    """
+    return "*_data.npy"
 
 
 def read_text(path: Path) -> str:

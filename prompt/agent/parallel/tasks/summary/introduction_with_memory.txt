@@ -32,21 +32,40 @@ When summarizing, record:
 - **Core**: `iteration_number`, `success_status`, `key_metric`, `main_insight`
 - **Archival**: Detailed findings, comparisons with previous iterations, lessons learned
 
-Example:
+### IMPORTANT: Search Before Summarizing (REQUIRED)
+
+**You MUST search archival memory FIRST before summarizing.** Past summaries provide context for comparing current results and understanding the experimental trajectory.
+
+Include this at the START of your response:
+```
+<memory_update>
+{
+  "mem_archival_search": {"query": "SUMMARY iteration results key_metric", "k": 5},
+  "mem_core_get": ["iteration_number", "best_result", "key_metric"]
+}
+</memory_update>
+```
+
+**Trigger conditions for archival_search:**
+- Comparing iterations → search: `"SUMMARY iteration comparison"`
+- Best results → search: `"SUMMARY best_result improvement"`
+- Lessons learned → search: `"SUMMARY lessons_learned insight"`
+- Regression check → search: `"SUMMARY regression degradation"`
+
+After receiving search results, use them to:
+1. Compare current results with previous iterations
+2. Identify trends and patterns
+3. Highlight improvements or regressions
+4. Build on previous insights
+
+### Writing Summary Results
+
+After summarizing, record for future reference:
 ```
 <memory_update>
 {
   "mem_core_set": {"iteration_number": 5, "success_status": "improved", "key_metric": "0.912 accuracy"},
   "mem_archival_write": [{"text": "SUMMARY iter 5: Achieved 0.912 accuracy (+0.03 from iter 4). Key changes: (1) increased batch size to 128, (2) added dropout 0.3. Convergence was stable, no overfitting observed. Loss curve smooth. Recommend trying learning rate decay next.", "tags": ["SUMMARY", "ITERATION_5", "IMPROVEMENT"]}]
-}
-</memory_update>
-```
-
-Before summarizing, retrieve context from previous iterations:
-```
-<memory_update>
-{
-  "mem_archival_search": {"query": "previous iteration summary results", "k": 3}
 }
 </memory_update>
 ```
@@ -62,6 +81,11 @@ Before summarizing, retrieve context from previous iterations:
 - `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
 - `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
 - `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
 
 **Management operations:**
 - `"mem_core_del": ["key"]` - Delete keys from core memory

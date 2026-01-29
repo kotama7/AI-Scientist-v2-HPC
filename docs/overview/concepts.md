@@ -145,7 +145,7 @@ HPC環境では、依存関係のインストールからコード実行まで�
 │ 実行環境: Singularityコンテナ内                                               │
 │                                                                              │
 │ 特徴:                                                                        │
-│   - 反復的インストーラー: 最大12ステップで段階的に構築                        │
+│   - 反復的インストーラー: 最大100ステップで段階的に構築                       │
 │   - コマンド種類: apt-get, pip install, ソースビルド                          │
 │   - 進捗追跡: 各ステップの結果（exit_code, stdout, stderr）を記録            │
 │   - エラー回復: LLMが失敗原因を分析し、次のコマンドを決定                     │
@@ -203,7 +203,7 @@ HPC環境では、依存関係のインストールからコード実行まで�
 │ 目的: ビルドしたプログラムを実行し、結果を収集                                 │
 │                                                                              │
 │ 期待される出力:                                                              │
-│   - working/experiment_data.npy (デフォルト)                                 │
+│   - working/{experiment_name}_data.npy (動的ファイル名)                      │
 │   - または expected_outputs で指定されたファイル                              │
 │                                                                              │
 │ 実行後処理:                                                                  │
@@ -234,10 +234,12 @@ LLMには**コンテキストウィンドウ**の制限があります。長時�
 │                           Core Memory (コアメモリ)                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 特徴: 常にプロンプトに含まれる重要情報                                        │
-│ 容量: core_max_chars (デフォルト 16000文字)                                   │
+│ 容量: core_max_chars (デフォルト 10000文字、コードフォールバック 2000文字)      │
 │                                                                              │
 │ 典型的な内容:                                                                │
 │   - RESOURCE_INDEX: 利用可能なリソースのダイジェスト (自動保存、別セクション)   │
+│   - RESOURCE_INDEX_JSON: リソースインデックスのJSON形式                       │
+│   - RESOURCE_DIGEST: リソースダイジェスト                                     │
 │   - LLMが設定したキー: optimal_threads, best_flags など (予約キーなし)        │
 │                                                                              │
 │ 管理:                                                                        │
@@ -251,7 +253,7 @@ LLMには**コンテキストウィンドウ**の制限があります。長時�
 │                         Recall Memory (リコールメモリ)                         │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │ 特徴: 最近のイベントタイムライン                                               │
-│ 容量: recall_max_events (デフォルト 20件)                                     │
+│ 容量: recall_max_events (デフォルト 5件、コードフォールバック 20件)            │
 │                                                                              │
 │ 記録されるイベント:                                                          │
 │   - node_created: ノード作成                                                  │
@@ -286,7 +288,7 @@ LLMには**コンテキストウィンドウ**の制限があります。長時�
 │   - LLM_INSIGHT: LLMが記録した洞察                                           │
 │                                                                              │
 │ 注入:                                                                        │
-│   - retrieval_k (デフォルト 8): 関連性上位k件をプロンプトに含める              │
+│   - retrieval_k (デフォルト 4、コードフォールバック 8): 関連性上位k件をプロンプトに含める │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -389,14 +391,16 @@ Injects external data, repositories, and models into prompts and containers:
 
 ### Class-based Injection Rules
 
-| Class | Phase 0 | Phase 1 | Phase 2 | Phase 3/4 |
-|-------|---------|---------|---------|-----------|
-| template | ✓ | ✓ | ✓ | - |
-| document | ✓ | ✓ | ✓ | ✓ |
-| setup | ✓ | ✓ | - | - |
-| library | meta only | ✓ | - | - |
-| dataset | meta only | ✓ | - | - |
-| model | meta only | ✓ | - | - |
+全クラスが全フェーズに含まれますが、コンテンツ注入とツリー表示の範囲が異なります：
+
+| Class | Phase 0 content | Phase 1 content | Phase 2 content | Phase 3/4 content |
+|-------|----------------|----------------|----------------|-------------------|
+| template | ✓ (tree+content) | ✓ (tree+content) | ✓ (content) | - |
+| document | ✓ (content) | ✓ (content) | ✓ (content) | ✓ (content) |
+| setup | ✓ (tree+content) | ✓ (tree+content) | - | - |
+| library | meta only | meta only | - | - |
+| dataset | meta only | meta only | - | - |
+| model | meta only | meta only | - | - |
 
 ## 6. Persona System
 

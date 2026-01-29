@@ -62,3 +62,82 @@ Install `huggingface_hub` inside the worker image and provide
 
 - Ensure `unified_tree_viz.html` and the per-stage `tree_data.json` files exist.
 - Open the HTML file from the `logs/` directory so relative paths resolve.
+
+## Database is locked errors
+
+SQLite "database is locked" errors occur when multiple parallel workers try to
+write to the memory database simultaneously. The system includes a centralized
+database writer to prevent this, but issues can still occur in edge cases.
+
+### Symptoms
+
+```
+WARNING  Auto-consolidation of inherited memory failed: database is locked
+WARNING  Failed to write node_created event: database is locked
+WARNING  Failed to apply Phase 1 memory updates: database is locked
+```
+
+### Solutions
+
+1. **Verify DatabaseWriterProcess is running**
+
+   Check logs for:
+   ```
+   DatabaseWriterProcess started (pid=XXXXX)
+   ```
+
+   If not present, check for initialization errors in the main process.
+
+2. **Verify workers are using the writer queue**
+
+   Each worker should log:
+   ```
+   [Worker N] Using centralized database writer process
+   ```
+
+   If not present, the `writer_queue` may not be passed correctly.
+
+3. **Check for process crashes**
+
+   If the writer process crashes, workers will fall back to local connections
+   which can cause locking. Look for:
+   ```
+   DatabaseWriterProcess exited
+   ```
+
+4. **Increase timeouts (temporary workaround)**
+
+   In `memgpt_store.py`, the following settings control retry behavior:
+   ```python
+   # _execute_with_retry defaults
+   max_retries: int = 10
+   base_delay: float = 0.5
+
+   # SQLite connection
+   PRAGMA busy_timeout=60000  # 60 seconds
+   ```
+
+5. **Reduce parallelism**
+
+   If issues persist, try reducing `num_workers` or running with
+   `num_workers=1` to isolate the problem.
+
+### Architecture
+
+The centralized writer serializes all writes through a single process:
+
+```
+Worker 1 ─┐
+Worker 2 ─┼─> Write Queue ─> DatabaseWriterProcess ─> SQLite
+Worker N ─┘
+```
+
+This avoids SQLite's concurrent write limitations while maintaining throughput
+through batched commits. See [memory.md](../memory/memory.md#centralized-database-writer-parallel-execution)
+for details.
+
+### Related files
+
+- `ai_scientist/memory/db_writer.py`: DatabaseWriterProcess implementation
+- `ai_scientist/memory/memgpt_store.py`: MemoryManager with writer integration
+- `ai_scientist/treesearch/parallel_agent.py`: Writer initialization and shutdown

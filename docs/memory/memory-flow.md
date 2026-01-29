@@ -51,7 +51,7 @@ For detailed phase-by-phase documentation, see:
 │                                   ▼                                              │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │                        FINAL MEMORY EXPORT                               │    │
-│  │  • final_memory-for-paper.md                                            │    │
+│  │  • final_memory_for_paper.md                                            │    │
 │  │  • final_memory_for_paper.json                                          │    │
 │  └─────────────────────────────────────────────────────────────────────────┘    │
 │                                                                                  │
@@ -234,7 +234,7 @@ if response_text and worker_agent.memory_manager and child_branch_id:
 
         # Handle memory read operations with re-query loop
         if _has_memory_read_results(memory_results):
-            max_rounds = getattr(memory_cfg, "max_memory_read_rounds", 2)
+            max_rounds = getattr(memory_cfg, "max_memory_read_rounds", 5)
             if max_rounds > 0:
                 _run_memory_update_phase(...)  # Re-query for read results
 ```
@@ -272,7 +272,7 @@ When memory is enabled and LLM uses read operations:
 │  │   2. Write operations persisted                            │  │
 │  │   3. Read operations return results                        │  │
 │  │   4. _has_memory_read_results() == True                    │  │
-│  │   5. Round (0) < max_memory_read_rounds (2)                │  │
+│  │   5. Round (0) < max_memory_read_rounds (5)                │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                          │                                       │
 │                          ▼                                       │
@@ -374,12 +374,12 @@ memory:
   node_summary_budget_chars: 2000
 
   # Multi-turn flow
-  max_memory_read_rounds: 2           # Max re-query cycles for read operations
+  max_memory_read_rounds: 5           # Max re-query cycles for read operations
 
   # Memory limits
   core_max_chars: 2000
-  recall_max_events: 20
-  retrieval_k: 8                      # Top-K archival hits
+  recall_max_events: 5
+  retrieval_k: 4                      # Top-K archival hits
 ```
 
 ## Files Involved

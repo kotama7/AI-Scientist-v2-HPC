@@ -32,21 +32,39 @@ During improvement iterations, record:
 - **Core**: `improvement_count`, `best_metric_achieved`, `current_approach`
 - **Archival**: What was tried, what worked, what didn't, performance comparisons
 
-Example:
+### IMPORTANT: Search Before Improving (REQUIRED)
+
+**You MUST search archival memory FIRST before implementing improvements.** Past iterations contain valuable information about what worked, what failed, and why.
+
+Include this at the START of your response:
+```
+<memory_update>
+{
+  "mem_archival_search": {"query": "improvement optimization strategy", "k": 5},
+  "mem_recall_search": {"query": "previous improvement iteration", "k": 5}
+}
+</memory_update>
+```
+
+**Trigger conditions for archival_search:**
+- Performance optimization → search: `"OPTIMIZATION performance improvement"`
+- Algorithm tuning → search: `"algorithm_approach tuning"`
+- Memory/speed tradeoff → search: `"memory efficiency optimization"`
+- Failed approaches → search: `"IMPROVE failed did not work"`
+
+After receiving search results, use them to:
+1. Avoid repeating failed approaches
+2. Build on successful strategies
+3. Understand the improvement trajectory
+
+### Writing Improvement Results
+
+After improving, record for future reference:
 ```
 <memory_update>
 {
   "mem_core_set": {"improvement_count": 3, "best_metric_achieved": "0.847 accuracy"},
   "mem_archival_write": [{"text": "IMPROVE iteration 3: Added learning rate warmup. Performance improved from 0.82 to 0.847 accuracy. Warmup steps=1000 worked best. Tried cosine annealing but saw no improvement over step decay.", "tags": ["PHASE2_IMPROVE", "OPTIMIZATION", "LR_SCHEDULE"]}]
-}
-</memory_update>
-```
-
-Before improving, retrieve past strategies:
-```
-<memory_update>
-{
-  "mem_archival_search": {"query": "improvement strategy that worked", "k": 5}
 }
 </memory_update>
 ```
@@ -62,6 +80,11 @@ Before improving, retrieve past strategies:
 - `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
 - `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
 - `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
 
 **Management operations:**
 - `"mem_core_del": ["key"]` - Delete keys from core memory

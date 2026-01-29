@@ -2,7 +2,7 @@ The code should be in the same language as the base implementation, and it must 
 In split-phase, multiple files are allowed; keep the file set minimal and organized.
 No parts of the code should be skipped; do not terminate execution before finishing the script.
 Data saving requirements:
-- Save all plottable data (metrics, measurements, outputs, etc.) in numpy-compatible .npy format to working/experiment_data.npy.
+- Save all plottable data (metrics, measurements, outputs, etc.) in numpy-compatible .npy format to working/{experiment_name}_data.npy.
 - For Python, use np.save(); for non-Python, use cnpy or a compatible .npy writer.
 - Use the following naming convention for saved data:
   ```python
@@ -21,4 +21,4 @@ Data saving requirements:
       # Add additional ablation types as needed
   }
   ```
-Make sure to use a filename 'experiment_data.npy' to save the data. Do not use any other filename.
+Make sure to use a descriptive filename based on the experiment name (e.g., '{experiment_name}_data.npy') to save the data.

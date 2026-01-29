@@ -1,7 +1,7 @@
 AVAILABLE DATA:
-- Primary: experiment_data.npy in working_dir
+- Primary: *_data.npy files in working_dir (e.g., {experiment_name}_data.npy)
 - Also: experiment_data_*.npy or output*.npy (and any other .npy) in working_dir or subfolders
-REQUIREMENTS: 
+REQUIREMENTS:
 The code should start with:
   import matplotlib.pyplot as plt
   import numpy as np
@@ -11,7 +11,7 @@ The code should start with:
 Return only runnable Python code (no JSON or schemas).
 Create standard visualizations of experiment results
 Save all plots to working_dir
-If experiment_data.npy is missing, enumerate available .npy files (prefer experiment_data*.npy and output*.npy) and load each file; when multiple files exist, treat each filename stem as a dataset name in plot titles and filenames.
+Enumerate available .npy files (prefer *_data.npy, experiment_data*.npy and output*.npy) and load each file; when multiple files exist, treat each filename stem as a dataset name in plot titles and filenames.
 Dynamically discover plottable metrics by introspecting the data structure. Iterate over available keys and identify numeric arrays or time series suitable for plotting.
 ONLY plot data that exists in the available .npy files - DO NOT make up or simulate any values
 Use basic matplotlib without custom styles

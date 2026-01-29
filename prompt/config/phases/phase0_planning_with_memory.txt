@@ -84,7 +84,7 @@ Schema:
         "notes": "short"
       },
       "phase4": {
-        "output_policy": "must generate /workspace/working/experiment_data.npy",
+        "output_policy": "must generate /workspace/working/{experiment_name}_data.npy",
         "validation": ["numpy magic check", "file exists"]
       }
     },
@@ -124,8 +124,30 @@ Management operations:
 **Read Operation Flow:**
 If you include read operations (mem_core_get, mem_archival_search, mem_recall_search), the system will:
 1. Execute all operations (writes + reads)
-2. Return read results to you in a <memory_results> block
+2. The SYSTEM (not you) will return read results in a <memory_results> block
 3. You then output your final response using the retrieved information
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
+
+**IMPORTANT: Search Before Planning (RECOMMENDED)**
+If this is not the first experiment run, you SHOULD search archival memory for past planning decisions:
+```
+<memory_update>
+{
+  "mem_archival_search": {"query": "PHASE0_INTERNAL plan design decision", "k": 5},
+  "mem_core_get": ["phase0_summary", "algorithm_approach"]
+}
+</memory_update>
+```
+
+**Trigger conditions for archival_search:**
+- Similar experiment type → search: `"implementation_strategy goal_summary"`
+- Time budget issues → search: `"time_budget_estimate timeout"`
+- Past failures → search: `"PHASE0_INTERNAL risks_and_mitigations failed"`
+- Dependency issues → search: `"PHASE1_INSTALL dependencies apt pip"`
 
 **Memory Update Guidelines:**
 - Use "mem_core_set" for: optimal parameters, key constraints, concise Phase 0 summary

@@ -30,7 +30,7 @@ Immediately after the </memory_update> tag, output the JSON for the 4-phase pipe
     "compile": {
       "build_plan": {
         "language": "c"|"cpp"|"fortran"|"python"|"other",
-        "compiler_selected": "<one of available_compilers.name>",
+        "compiler_selected": "<one of available_compilers.name, or empty string for python>",
         "cflags": [],
         "ldflags": [],
         "workdir": "/workspace",
@@ -41,7 +41,7 @@ Immediately after the </memory_update> tag, output the JSON for the 4-phase pipe
     },
     "run": {
       "commands": ["..."],
-      "expected_outputs": ["working/experiment_data.npy"],
+      "expected_outputs": ["working/{experiment_name}_data.npy"],
       "notes": "short"
     }
   },
@@ -76,8 +76,14 @@ Management operations:
 **Read Operation Flow:**
 If you include read operations (mem_core_get, mem_archival_search, mem_recall_search), the system will:
 1. Execute all operations (writes + reads)
-2. Return read results to you in a <memory_results> block
+2. The SYSTEM (not you) will return read results in a <memory_results> block
 3. You then output your final response using the retrieved information
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
+- Only output write operations and your phase_artifacts JSON in a single response
 
 **Memory Update Guidelines:**
 - Use "mem_core_set" for: optimal parameters, best configurations, key constraints, important thresholds
@@ -93,12 +99,14 @@ If you include read operations (mem_core_get, mem_archival_search, mem_recall_se
 
 Rules and reminders:
 - The <memory_update> block is MANDATORY. Missing it will cause a retry.
+- NEVER output <memory_results> tags - this tag is reserved for the SYSTEM to provide read operation results. Outputting this tag yourself will cause a parse failure.
 - Follow the four phases in order. Phase 1 handles downloads/installs (sudo/apt-get allowed inside Singularity with writable-tmpfs/overlay; if unavailable, install under /workspace such as pip --target /workspace/.pydeps or source builds).
 - All commands will be executed inside Singularity containers; never suggest host-only actions or host package installs.
 - Do not wrap commands with singularity/apptainer; provide the inner command only.
 - Keep every path relative to /workspace; never emit absolute paths or parent traversal.
 - In download/install, probe for tools before installing (e.g., `command -v git || sudo apt-get update && sudo apt-get install -y git`); avoid redundant installs.
-- coding must list the workspace tree and every file to create; include working/ so /workspace/working/experiment_data.npy can be written.
-- compile must honor build_plan.compiler_selected taken from available_compilers; do not invent compilers or switch away from compiler_selected.
-- run must produce /workspace/working/experiment_data.npy. If language is python, call numpy.save; otherwise output in .npy format (no Python post-processing for non-Python languages).
+- coding must list the workspace tree and every file to create; include working/ so /workspace/working/{experiment_name}_data.npy can be written.
+- **Python experiments (language="python")**: Set compiler_selected to empty string (""), leave compile.commands as empty array [], and set output to "working/{experiment_name}_data.npy". The compile phase will be skipped. Run phase should execute python3 directly (e.g., "python3 src/main.py").
+- **Compiled languages (c/cpp/fortran)**: compile must honor build_plan.compiler_selected taken from available_compilers; do not invent compilers or switch away from compiler_selected.
+- run must produce /workspace/working/{experiment_name}_data.npy. If language is python, call numpy.save; otherwise output in .npy format (no Python post-processing for non-Python languages).
 - Never mention or depend on language adapters, interpreter adapters, or external routers.

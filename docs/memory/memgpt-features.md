@@ -22,7 +22,7 @@ HPC-AutoResearch system.
 **Purpose**: Key-value store for essential context that persists across prompts.
 
 **Characteristics**:
-- Bounded by `memory.core_max_chars` (default 16000)
+- Bounded by `memory.core_max_chars` (default 10000)
 - Contains entries with importance levels (1-5)
 - Automatic eviction when budget exceeded (lowest importance first)
 - Entries can have TTL (time-to-live)
@@ -59,7 +59,7 @@ Recall Memory:
 **Purpose**: Recent event timeline for the current branch.
 
 **Characteristics**:
-- Windowed by `memory.recall_max_events` (default 20)
+- Windowed by `memory.recall_max_events` (default 5)
 - Events include timestamp, type, and content
 - Branch-specific (child inherits parent's timeline)
 - FIFO eviction when window exceeded
@@ -80,7 +80,7 @@ Recall Memory:
 - Unlimited storage (SQLite-backed)
 - FTS5 full-text search (with keyword fallback)
 - Tagged entries for efficient retrieval
-- Retrieved via `memory.retrieval_k` limit (default 8)
+- Retrieved via `memory.retrieval_k` limit (default 4)
 
 **Common Tags**:
 | Tag | Content |
@@ -137,7 +137,7 @@ memory:
   datasets_tested_budget_chars: 8000
   metrics_extraction_budget_chars: 12000
   plotting_code_budget_chars: 8000
-  plot_selection_budget_chars: 4000
+  plot_selection_budget_chars: 8000
   vlm_analysis_budget_chars: 12000
   node_summary_budget_chars: 8000
   parse_metrics_budget_chars: 12000
@@ -268,9 +268,9 @@ memory:
   # Core settings
   enabled: true                     # Memory is ENABLED by default
   db_path: null                     # Auto: experiments/<run>/memory/memory.sqlite
-  core_max_chars: 16000
-  recall_max_events: 20
-  retrieval_k: 8
+  core_max_chars: 10000
+  recall_max_events: 5
+  retrieval_k: 4
   use_fts: auto                     # auto/true/false
 
   # Persistence toggles
@@ -291,7 +291,7 @@ memory:
   datasets_tested_budget_chars: 8000
   metrics_extraction_budget_chars: 12000
   plotting_code_budget_chars: 8000
-  plot_selection_budget_chars: 4000
+  plot_selection_budget_chars: 8000
   vlm_analysis_budget_chars: 12000
   node_summary_budget_chars: 8000
   parse_metrics_budget_chars: 12000
@@ -308,13 +308,13 @@ memory:
   # Logging
   memory_log_enabled: true
   memory_log_dir: null              # Auto: experiments/<run>/memory/
-  memory_log_max_chars: 1600
+  memory_log_max_chars: 1000
 
   # Memory Pressure Management
   auto_consolidate: true
   consolidation_trigger: high
   recall_consolidation_threshold: 1.5
-  max_memory_read_rounds: 3
+  max_memory_read_rounds: 5
   pressure_thresholds:
     medium: 0.7
     high: 0.85
@@ -331,9 +331,9 @@ memory:
 --memory_db /path/to/memory.sqlite
 
 # Tune injection limits
---memory_core_max_chars 16000
---memory_recall_max_events 20
---memory_retrieval_k 8
+--memory_core_max_chars 10000
+--memory_recall_max_events 5
+--memory_retrieval_k 4
 
 # Compression settings
 --memory_max_compression_iterations 3
@@ -403,7 +403,7 @@ approaching your LLM's context limit, enable MemGPT to prevent failures:
 ```bash
 python launch_scientist_bfts.py \
   --enable_memgpt \
-  --memory_core_max_chars 16000 \
-  --memory_retrieval_k 8 \
+  --memory_core_max_chars 10000 \
+  --memory_retrieval_k 4 \
   ...
 ```

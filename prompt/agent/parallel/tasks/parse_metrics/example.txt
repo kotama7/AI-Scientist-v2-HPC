@@ -7,14 +7,14 @@ import numpy as np
 cwd = os.getcwd()
 working_dir = cwd if os.path.basename(cwd) == "working" else os.path.join(cwd, "working")
 
-candidate_paths = [
-    os.path.join(working_dir, "experiment_data.npy"),
-    os.path.join(cwd, "experiment_data.npy"),
+# Prefer *_data.npy pattern (e.g., {experiment_name}_data.npy)
+candidate_paths = glob.glob(os.path.join(working_dir, "*_data.npy"))
+candidate_paths += glob.glob(os.path.join(working_dir, "experiment_data_*.npy"))
+candidate_paths += glob.glob(os.path.join(cwd, "experiment_data_*.npy"))
+candidate_paths += [
     os.path.join(cwd, "artifacts", "final", "output.npy"),
     os.path.join(working_dir, "artifacts", "final", "output.npy"),
 ]
-candidate_paths += glob.glob(os.path.join(working_dir, "experiment_data_*.npy"))
-candidate_paths += glob.glob(os.path.join(cwd, "experiment_data_*.npy"))
 candidate_paths += glob.glob(os.path.join(working_dir, "output*.npy"))
 candidate_paths += glob.glob(os.path.join(cwd, "output*.npy"))
 candidate_paths = [p for p in candidate_paths if os.path.isfile(p)]
@@ -47,3 +47,10 @@ for npy_path in candidate_paths:
     experiment_data = (
         loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
     )
+    # Use the top-level keys of experiment_data as dataset names (NOT the filename stem).
+    # Example: if experiment_data = {"dataset_A": {...}, "dataset_B": {...}},
+    #          dataset names are "dataset_A" and "dataset_B".
+    if isinstance(experiment_data, dict):
+        for dataset_name, dataset_results in experiment_data.items():
+            print(f"dataset: {dataset_name}")
+            # Extract and print metrics from dataset_results ...

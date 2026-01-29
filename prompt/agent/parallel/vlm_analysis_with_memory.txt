@@ -33,16 +33,30 @@ Example:
 </memory_update>
 ```
 
-### Reading Past Analyses
+### IMPORTANT: Search Before Analyzing (RECOMMENDED)
 
-Retrieve previous analysis context:
+**You SHOULD search archival memory FIRST to compare with previous plot analyses.** This helps identify trends, regressions, or improvements across iterations.
+
+Include this at the START of your response:
 ```
 <memory_update>
 {
-  "mem_archival_search": {"query": "previous plot analysis trends", "k": 3}
+  "mem_archival_search": {"query": "VLM_ANALYSIS plot trends previous", "k": 5},
+  "mem_core_get": ["plots_analyzed", "main_finding", "trend_direction"]
 }
 </memory_update>
 ```
+
+**Trigger conditions for archival_search:**
+- Compare trends → search: `"VLM_ANALYSIS trend_direction improving"`
+- Check anomalies → search: `"VLM_ANALYSIS anomaly detection"`
+- Previous findings → search: `"PLOT_INSIGHTS convergence accuracy"`
+- Recommendations → search: `"VLM_ANALYSIS RECOMMENDATIONS"`
+
+After receiving search results, use them to:
+1. Compare current plots with previous iterations
+2. Identify consistent patterns or new anomalies
+3. Track improvement or regression over time
 
 ### All Memory Operations Reference
 
@@ -55,6 +69,11 @@ Retrieve previous analysis context:
 - `"mem_core_get": ["key1", "key2"]` - Retrieve core memory values
 - `"mem_archival_search": {"query": "...", "k": 5}` - Search long-term memory
 - `"mem_recall_search": {"query": "...", "k": 10}` - Search recent events
+
+CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER output <memory_results> yourself.
+- DO NOT simulate or predict what the memory results might be
+- DO NOT output <memory_results>...</memory_results> in your response
+- If you need to read memory, include read operations in <memory_update>, then STOP and WAIT for the system to provide results
 
 **Management operations:**
 - `"mem_core_del": ["key"]` - Delete keys from core memory

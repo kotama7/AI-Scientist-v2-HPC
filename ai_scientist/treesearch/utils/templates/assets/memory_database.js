@@ -43,6 +43,7 @@ const MEMORY_OP_TYPES = {
     'mem_resources_snapshot_upsert': { type: 'system', label: 'Resources Snapshot', category: 'resources' },
 
     // Memory Management
+    'apply_llm_memory_updates': { type: 'system', label: 'LLM Memory Updates', category: 'management' },
     'check_memory_pressure': { type: 'system', label: 'Pressure Check', category: 'management' },
     'consolidate': { type: 'system', label: 'Consolidation', category: 'management' },
     'importance_evaluation': { type: 'system', label: 'Importance Eval', category: 'management' },
@@ -69,6 +70,8 @@ const PHASE_LABELS = {
     'phase3': 'Phase 3: Evaluation',
     'phase4': 'Phase 4: Analysis',
     'summary': 'Summary',
+    'memory_management': 'Memory Management',
+    'tree_structure': 'Tree Structure',
 };
 
 // ===== Utility Functions =====

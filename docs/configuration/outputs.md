@@ -38,7 +38,22 @@ node_logs/node_<id>/
 ├── bin/           # Compiled binaries
 ├── input/         # Input data (excluding mounted data)
 └── working/       # Working directory with experiment outputs
+    └── {experiment_name}_data.npy  # Experiment results (dynamic filename)
 ```
+
+## Experiment Output Filename Convention
+
+The experiment output file uses a dynamic filename based on the experiment name:
+- **Pattern**: `{experiment_name}_data.npy`
+- **Example**: `stability_oriented_autotuning_v2_data.npy` for an experiment named `stability_oriented_autotuning_v2`
+
+The filename is derived by:
+1. Removing the timestamp prefix (e.g., `2026-01-28_17-46-11_`)
+2. Removing the attempt suffix (e.g., `_attempt_0`)
+3. Sanitizing special characters to underscores
+4. Converting to lowercase
+
+This makes it easier to identify which experiment produced each output file when reviewing results.
 
 These directories enable safe workspace inheritance without race conditions
 between parallel workers. See [../architecture/execution-flow.md](../architecture/execution-flow.md#workspace-inheritance) for details.
@@ -62,7 +77,7 @@ between parallel workers. See [../architecture/execution-flow.md](../architectur
 
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/memory.sqlite`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/resource_snapshot.json`
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory-for-paper.md`
+- `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory_for_paper.md`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory_for_paper.json`
 - `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_writeup_memory.json`
 

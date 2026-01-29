@@ -16,7 +16,7 @@ Return JSON only (no prose, no markdown fences). Use this schema to drive the 4-
     "compile": {
       "build_plan": {
         "language": "c"|"cpp"|"fortran"|"python"|"other",
-        "compiler_selected": "<one of available_compilers.name>",
+        "compiler_selected": "<one of available_compilers.name, or empty string for python>",
         "cflags": [],
         "ldflags": [],
         "workdir": "/workspace",
@@ -27,7 +27,7 @@ Return JSON only (no prose, no markdown fences). Use this schema to drive the 4-
     },
     "run": {
       "commands": ["..."],
-      "expected_outputs": ["working/experiment_data.npy"],
+      "expected_outputs": ["working/{experiment_name}_data.npy"],
       "notes": "short"
     }
   },
@@ -48,7 +48,8 @@ Rules and reminders:
 - Do not wrap commands with singularity/apptainer; provide the inner command only.
 - Keep every path relative to /workspace; never emit absolute paths or parent traversal.
 - In download/install, probe for tools before installing (e.g., `command -v git || sudo apt-get update && sudo apt-get install -y git`); avoid redundant installs.
-- coding must list the workspace tree and every file to create; include working/ so /workspace/working/experiment_data.npy can be written.
-- compile must honor build_plan.compiler_selected taken from available_compilers; do not invent compilers or switch away from compiler_selected.
-- run must produce /workspace/working/experiment_data.npy. If language is python, call numpy.save; otherwise output in .npy format (no Python post-processing for non-Python languages).
+- coding must list the workspace tree and every file to create; include working/ so /workspace/working/{experiment_name}_data.npy can be written.
+- **Python experiments (language="python")**: Set compiler_selected to empty string (""), leave compile.commands as empty array [], and set output to "working/{experiment_name}_data.npy". The compile phase will be skipped. Run phase should execute python3 directly (e.g., "python3 src/main.py").
+- **Compiled languages (c/cpp/fortran)**: compile must honor build_plan.compiler_selected taken from available_compilers; do not invent compilers or switch away from compiler_selected.
+- run must produce /workspace/working/{experiment_name}_data.npy. If language is python, call numpy.save; otherwise output in .npy format (no Python post-processing for non-Python languages).
 - Never mention or depend on language adapters, interpreter adapters, or external routers.

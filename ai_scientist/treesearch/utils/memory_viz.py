@@ -756,6 +756,17 @@ def generate_memory_database_html(
         own_archival = memory_data["archival"].get(branch_id, [])
         own_memory_calls = memory_calls_by_branch.get(branch_id, [])
 
+        # Hide the root creation fork (mem_node_fork with no parent) from root node display.
+        # This is a system bookkeeping event, not a meaningful user-visible operation.
+        if branch.get("parent_id") is None:
+            own_memory_calls = [
+                ev for ev in own_memory_calls
+                if not (
+                    ev.get("op") == "mem_node_fork"
+                    and ev.get("details", {}).get("parent_branch_id") is None
+                )
+            ]
+
         # Extract keys from own_core_kv to exclude from inherited data
         # (keys that are overridden by this node should not appear in inherited)
         own_core_keys = {kv.get("key") for kv in own_core_kv if kv.get("key")}
