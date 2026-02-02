@@ -609,8 +609,6 @@ function mergeSubstageTrees(substageDataList) {
       for (const f of nodeFields) {
         if (data[f] && Array.isArray(data[f]) && i < data[f].length) {
           combined[f].push(data[f][i]);
-        } else if (f === 'is_best_node') {
-          combined[f].push(false);
         } else if (f === 'memory_events') {
           combined[f].push([]);
         } else {
@@ -777,8 +775,6 @@ function buildCombinedStageData() {
       for (const f of nodeFields) {
         if (data[f] && Array.isArray(data[f]) && i < data[f].length) {
           combined[f].push(data[f][i]);
-        } else if (f === 'is_best_node') {
-          combined[f].push(false);
         } else if (f === 'memory_events') {
           combined[f].push([]);
         } else {
