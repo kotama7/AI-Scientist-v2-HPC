@@ -243,8 +243,8 @@ def parse_arguments():
     parser.add_argument(
         "--memory_max_compression_iterations",
         type=int,
-        default=3,
-        help="Maximum number of iterative compression attempts (default: 3).",
+        default=None,
+        help="Maximum number of iterative compression attempts.",
     )
     return parser.parse_args()
 

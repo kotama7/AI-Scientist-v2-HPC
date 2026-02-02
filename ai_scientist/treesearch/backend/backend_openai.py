@@ -6,6 +6,7 @@ from .utils import FunctionSpec, OutputType, opt_messages_to_list, backoff_creat
 from funcy import notnone, once, select_values
 import openai
 from rich import print
+from ai_scientist.utils.token_tracker import track_openai_response
 
 logger = logging.getLogger("ai-scientist")
 
@@ -69,6 +70,9 @@ def query(
         last_completion = completion
         req_time = time.time() - t0
         total_req_time += req_time
+
+        # Track token usage
+        track_openai_response(completion, system_message, user_message)
 
         choice = completion.choices[0]
         usage = completion.usage

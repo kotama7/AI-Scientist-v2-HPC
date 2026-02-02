@@ -13,9 +13,15 @@ Example data loading and plot saving code:
 
                     all_experiment_data = []
                     for p in candidate_paths:
-                        loaded = np.load(p, allow_pickle=True)
-                        experiment_data = loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
-                        all_experiment_data.append((p, experiment_data))
+                        if not os.path.isfile(p):
+                            print(f'Warning: experiment data file not found, skipping: {p}')
+                            continue
+                        try:
+                            loaded = np.load(p, allow_pickle=True)
+                            experiment_data = loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
+                            all_experiment_data.append((p, experiment_data))
+                        except Exception as e:
+                            print(f'Error loading experiment data {p}: {e}')
                 except Exception as e:
                     print(f'Error loading experiment data: {e}')
 

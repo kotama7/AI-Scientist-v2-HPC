@@ -394,48 +394,80 @@ def annotate_history(journal, cfg=None):
             node.overall_plan = node.plan
 
 
+def _get_main_stage_number(stage_name):
+    """Extract the main stage number (1-based) from a stage name like '3_research_0_init'."""
+    import re
+    numbers = [int(n) for n in re.findall(r"\d+", stage_name)]
+    return numbers[0] if numbers else None
+
+
 def overall_summarize(journals, cfg=None):
     from concurrent.futures import ThreadPoolExecutor
+    from collections import OrderedDict
 
-    def process_stage(idx, stage_tuple):
-        stage_name, journal = stage_tuple
+    # Group journals by main stage number, preserving all substages.
+    journals_list = list(journals)
+    # main_stage_number -> list of (stage_name, journal) in order
+    main_stage_journals = OrderedDict()
+    for stage_name, journal in journals_list:
+        main_num = _get_main_stage_number(stage_name)
+        if main_num is not None:
+            main_stage_journals.setdefault(main_num, []).append((stage_name, journal))
+
+    def _summarize_substage_best_node(stage_name, journal):
+        """Summarize a single substage for main stages 2/3."""
         annotate_history(journal, cfg=cfg)
-        if idx in [1, 2]:
-            best_node = journal.get_best_node(cfg=cfg)
-            # get multi-seed results and aggregater node
-            child_nodes = best_node.children
-            multi_seed_nodes = [
-                n for n in child_nodes if n.is_seed_node and not n.is_seed_agg_node
-            ]
-            agg_node = None
-            for n in child_nodes:
-                if n.is_seed_node and n.is_seed_agg_node:
-                    agg_node = n
-                    break
-            if agg_node is None:
-                # skip agg node
-                return {
-                    "best node": get_node_log(best_node),
-                    "best node with different seeds": [
-                        get_node_log(n) for n in multi_seed_nodes
-                    ],
-                }
-            else:
-                return {
-                    "best node": get_node_log(best_node),
-                    "best node with different seeds": [
-                        get_node_log(n) for n in multi_seed_nodes
-                    ],
-                    "aggregated results of nodes with different seeds": get_node_log(
-                        agg_node
-                    ),
-                }
-        elif idx == 3:
-            good_leaf_nodes = [
-                n for n in journal.good_nodes if n.is_leaf and n.ablation_name
-            ]
-            return [get_node_log(n) for n in good_leaf_nodes]
-        elif idx == 0:
+        best_node = journal.get_best_node(cfg=cfg)
+        if best_node is None:
+            return None
+        child_nodes = best_node.children
+        multi_seed_nodes = [
+            n for n in child_nodes if n.is_seed_node and not n.is_seed_agg_node
+        ]
+        agg_node = None
+        for n in child_nodes:
+            if n.is_seed_node and n.is_seed_agg_node:
+                agg_node = n
+                break
+        result = {
+            "substage": stage_name,
+            "best node": get_node_log(best_node),
+            "best node with different seeds": [
+                get_node_log(n) for n in multi_seed_nodes
+            ],
+        }
+        if agg_node is not None:
+            result["aggregated results of nodes with different seeds"] = get_node_log(
+                agg_node
+            )
+        return result
+
+    def process_main_stage(main_stage_num, substages):
+        """Process all substages for a given main stage number."""
+        if main_stage_num in [2, 3]:
+            # Summarize each substage separately; return list if multiple.
+            substage_results = []
+            for stage_name, journal in substages:
+                res = _summarize_substage_best_node(stage_name, journal)
+                if res is not None:
+                    substage_results.append(res)
+            if len(substage_results) == 1:
+                return substage_results[0]
+            return substage_results
+        elif main_stage_num == 4:
+            # Collect ablation nodes from all substages.
+            all_ablation_logs = []
+            for stage_name, journal in substages:
+                annotate_history(journal, cfg=cfg)
+                good_leaf_nodes = [
+                    n for n in journal.good_nodes if n.is_leaf and n.ablation_name
+                ]
+                all_ablation_logs.extend(get_node_log(n) for n in good_leaf_nodes)
+            return all_ablation_logs
+        elif main_stage_num == 1:
+            # Use the last substage for the draft summary.
+            stage_name, journal = substages[-1]
+            annotate_history(journal, cfg=cfg)
             if cfg.agent.get("summary", None) is not None:
                 model = cfg.agent.summary.get("model", "")
             else:
@@ -446,15 +478,22 @@ def overall_summarize(journals, cfg=None):
 
     from tqdm import tqdm
 
+    sorted_stages = sorted(main_stage_journals.items())  # list of (num, substages_list)
+
     with ThreadPoolExecutor() as executor:
-        results = list(
-            tqdm(
-                executor.map(process_stage, range(len(list(journals))), journals),
-                desc="Processing stages",
-                total=len(list(journals)),
-            )
-        )
-        draft_summary, baseline_summary, research_summary, ablation_summary = results
+        futures = []
+        for main_num, substages in sorted_stages:
+            futures.append(executor.submit(process_main_stage, main_num, substages))
+        results = {}
+        for (main_num, _), future in tqdm(
+            zip(sorted_stages, futures), desc="Processing stages", total=len(futures)
+        ):
+            results[main_num] = future.result()
+
+    draft_summary = results.get(1)
+    baseline_summary = results.get(2)
+    research_summary = results.get(3)
+    ablation_summary = results.get(4)
 
     return draft_summary, baseline_summary, research_summary, ablation_summary
 

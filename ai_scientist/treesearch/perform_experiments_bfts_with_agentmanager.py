@@ -159,6 +159,8 @@ def perform_experiments_bfts(config_path: str):
         return exec_callback
 
     def step_callback(stage, journal):
+        nonlocal global_step
+        global_step += 1
         print("Step complete")
         try:
             # Generate and save notes for this step

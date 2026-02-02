@@ -30,9 +30,15 @@ try:
                 full_path = os.path.join(root, experiment_data_path)
             if not os.path.isfile(full_path):
                 full_path = os.path.join(os.getcwd(), experiment_data_path)
-        loaded = np.load(full_path, allow_pickle=True)
-        experiment_data = loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
-        all_experiment_data.append((experiment_data_path, experiment_data))
+        if not os.path.isfile(full_path):
+            print(f'Warning: experiment data file not found, skipping: {full_path}')
+            continue
+        try:
+            loaded = np.load(full_path, allow_pickle=True)
+            experiment_data = loaded.item() if isinstance(loaded, np.ndarray) and loaded.shape == () else loaded
+            all_experiment_data.append((experiment_data_path, experiment_data))
+        except Exception as e:
+            print(f'Error loading experiment data {full_path}: {e}')
 except Exception as e:
     print(f'Error loading experiment data: {e}')
 

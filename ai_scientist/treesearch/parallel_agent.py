@@ -658,6 +658,9 @@ def _run_memory_update_phase(
             "Respond with ONLY a <memory_update> block containing your memory operations."
         )
 
+    _DB_LOCKED_MAX_RETRIES = 5
+    _DB_LOCKED_BASE_DELAY = 1.0
+
     memory_read_round = 0
     while memory_read_round <= max_rounds:
         try:
@@ -766,8 +769,51 @@ def _run_memory_update_phase(
                 break
 
         except Exception as exc:
-            logger.warning(f"{phase_name} memory update failed (round {memory_read_round}): %s", exc)
-            break
+            if "database is locked" in str(exc):
+                # Retry with exponential backoff for transient SQLite lock errors
+                retry_ok = False
+                for _retry in range(_DB_LOCKED_MAX_RETRIES):
+                    delay = _DB_LOCKED_BASE_DELAY * (2 ** _retry) + random.uniform(0, 0.5)
+                    logger.info(
+                        "%s memory update: database locked, retrying in %.1fs (attempt %d/%d)",
+                        phase_name, delay, _retry + 1, _DB_LOCKED_MAX_RETRIES,
+                    )
+                    time.sleep(delay)
+                    try:
+                        memory_results = memory_manager.apply_llm_memory_updates(
+                            branch_id,
+                            memory_updates,
+                            node_id=node_id,
+                            phase=f"{phase_name}_memory_round{memory_read_round}",
+                        )
+                        retry_ok = True
+                        break
+                    except Exception as retry_exc:
+                        if "database is locked" not in str(retry_exc):
+                            logger.warning(f"{phase_name} memory update failed (round {memory_read_round}): %s", retry_exc)
+                            break
+                if not retry_ok:
+                    logger.warning(f"{phase_name} memory update failed after retries (round {memory_read_round}): %s", exc)
+                    break
+                # If retry succeeded, continue the normal flow (check read results etc.)
+                if _has_memory_read_results(memory_results) and memory_read_round < max_rounds:
+                    memory_read_round += 1
+                    results_text = _format_memory_results_for_llm(memory_results)
+                    memory_prompt["Memory Read Results"] = (
+                        "Your memory read operations returned the following results:\n\n"
+                        f"{results_text}\n\n"
+                        "Based on this information, you may:\n"
+                        "1. Write additional insights to memory\n"
+                        "2. Search for more related information\n"
+                        "3. Complete with an empty update if done\n\n"
+                        "Respond with ONLY a <memory_update> block."
+                    )
+                    continue
+                else:
+                    break
+            else:
+                logger.warning(f"{phase_name} memory update failed (round {memory_read_round}): %s", exc)
+                break
 
 
 def _resolve_run_root(cfg: Config) -> Path:
@@ -1289,24 +1335,32 @@ def _extract_npy_schema(file_path: Path, max_depth: int = 2) -> str:
 def _parse_keyword_prefix_response(
     response: str, keyword_prefix1: str, keyword_prefix2: str
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Parse the response into name and description based on keyword prefix"""
+    """Parse the response into name and description based on keyword prefix.
+
+    Matching is case-insensitive: e.g. both "REASONING:" and "Reasoning:" are accepted.
+    """
     try:
         # Split response into lines and clean up
         lines = [line.strip() for line in response.split("\n") if line.strip()]
+
+        prefix1_lower = keyword_prefix1.lower()
+        prefix2_lower = keyword_prefix2.lower()
 
         # Find the idea and description
         name = None
         description = None
 
         for line in lines:
-            if line.startswith(keyword_prefix1):
-                name = line.replace(keyword_prefix1, "").strip()
-            elif line.startswith(keyword_prefix2):
-                description = line.replace(keyword_prefix2, "").strip()
+            line_lower = line.lower()
+            if line_lower.startswith(prefix1_lower):
+                name = line[len(keyword_prefix1):].strip()
+            elif line_lower.startswith(prefix2_lower):
+                description = line[len(keyword_prefix2):].strip()
                 # Combine any following lines that don't start with a marker
                 desc_lines = []
                 for next_line in lines[lines.index(line) + 1 :]:
-                    if not next_line.startswith((keyword_prefix1, keyword_prefix2)):
+                    next_lower = next_line.lower()
+                    if not next_lower.startswith((prefix1_lower, prefix2_lower)):
                         desc_lines.append(next_line)
                     else:
                         break
@@ -4274,7 +4328,18 @@ class ParallelAgent:
                             final_path = exp_results_dir / plot_file.name
                             print("mv_from:plot_file.resolve(): ", plot_file.resolve())
                             print("mv_to:final_path: ", final_path)
-                            plot_file.resolve().rename(final_path)
+                            try:
+                                shutil.move(str(plot_file.resolve()), str(final_path))
+                            except Exception as move_exc:
+                                logger.warning(f"Failed to move plot {plot_file} to {final_path}: {move_exc}")
+                                try:
+                                    shutil.copy2(str(plot_file.resolve()), str(final_path))
+                                except Exception:
+                                    logger.warning(f"Failed to copy plot {plot_file} to {final_path}, skipping")
+                                    continue
+                            if not final_path.exists():
+                                logger.warning(f"Plot file not found after move: {final_path}")
+                                continue
                             web_path = f"../../logs/{Path(self.cfg.workspace_dir).name}/experiment_results/seed_aggregation_{agg_node.id}/{plot_file.name}"
                             agg_node.plots.append(web_path)
                             agg_node.plot_paths.append(str(final_path.absolute()))
@@ -5562,6 +5627,7 @@ class ParallelAgent:
                                     }
                                     term_outputs.append(exc_info["message"])
 
+                                # --- Compile phase (compiled languages only) ---
                                 if exc_type is None and not is_python_experiment:
                                     term_outputs.append(f"Using compiler_selected: {selected_compiler}")
                                     fmt_ctx = {**build_plan, "compiler_selected": selected_compiler}
@@ -5623,35 +5689,68 @@ class ParallelAgent:
                                                 })
                                             except Exception as exc:
                                                 logger.warning("Failed to write compile_complete event: %s", exc)
-                                        formatted_run_cmds = []
-                                        for cmd in run_commands:
-                                            if isinstance(cmd, str):
-                                                try:
-                                                    formatted_run_cmds.append(cmd.format(**fmt_ctx))
-                                                except Exception:
-                                                    formatted_run_cmds.append(cmd)
-                                            else:
+
+                                # --- Run phase (both Python and compiled languages) ---
+                                if exc_type is None:
+                                    fmt_ctx = fmt_ctx if not is_python_experiment else {**build_plan}
+                                    formatted_run_cmds = []
+                                    for cmd in run_commands:
+                                        if isinstance(cmd, str):
+                                            try:
+                                                formatted_run_cmds.append(cmd.format(**fmt_ctx))
+                                            except Exception:
                                                 formatted_run_cmds.append(cmd)
-                                        run_cwd = resolve_workdir(build_plan.get("workdir"))
-                                        run_cwd.mkdir(parents=True, exist_ok=True)
-                                        success, outputs, failure = run_commands_with_logging(
-                                            active_env,
-                                            formatted_run_cmds,
-                                            run_cwd,
-                                            phase_log_dir / "run.log",
-                                            "run",
-                                        )
-                                        term_outputs.extend(outputs)
-                                        if not success:
+                                        else:
+                                            formatted_run_cmds.append(cmd)
+                                    run_cwd = resolve_workdir(build_plan.get("workdir"))
+                                    run_cwd.mkdir(parents=True, exist_ok=True)
+                                    success, outputs, failure = run_commands_with_logging(
+                                        active_env,
+                                        formatted_run_cmds,
+                                        run_cwd,
+                                        phase_log_dir / "run.log",
+                                        "run",
+                                    )
+                                    term_outputs.extend(outputs)
+                                    if not success:
+                                        exc_type = "RuntimeError"
+                                        exc_info = {
+                                            "returncode": getattr(failure, "returncode", None),
+                                            "stderr": getattr(failure, "stderr", ""),
+                                        }
+                                        # Memory event: Run phase failed
+                                        if memory_manager and child_branch_id:
+                                            try:
+                                                stderr_snippet = getattr(failure, "stderr", "")[:300] if failure else ""
+                                                memory_manager.mem_recall_append({
+                                                    "ts": time.time(),
+                                                    "run_id": memory_manager.run_id,
+                                                    "node_id": child_node.id,
+                                                    "branch_id": child_branch_id,
+                                                    "phase": stage_name,
+                                                    "kind": "run_failed",
+                                                    "summary": f"Run phase failed for node {child_node.id}\nError: {stderr_snippet}",
+                                                    "refs": [],
+                                                })
+                                            except Exception as exc:
+                                                logger.warning("Failed to write run_failed event: %s", exc)
+                                    else:
+                                        missing_outputs = [
+                                            str(path)
+                                            for path in expected_output_paths
+                                            if not path.exists()
+                                        ]
+                                        if missing_outputs:
                                             exc_type = "RuntimeError"
                                             exc_info = {
-                                                "returncode": getattr(failure, "returncode", None),
-                                                "stderr": getattr(failure, "stderr", ""),
+                                                "message": "Expected output file(s) missing after run phase.",
+                                                "missing": missing_outputs,
+                                                "expected_outputs": expected_outputs,
                                             }
-                                            # Memory event: Run phase failed
+                                            term_outputs.append(exc_info["message"])
+                                            # Memory event: Run phase failed (missing outputs)
                                             if memory_manager and child_branch_id:
                                                 try:
-                                                    stderr_snippet = getattr(failure, "stderr", "")[:300] if failure else ""
                                                     memory_manager.mem_recall_append({
                                                         "ts": time.time(),
                                                         "run_id": memory_manager.run_id,
@@ -5659,56 +5758,27 @@ class ParallelAgent:
                                                         "branch_id": child_branch_id,
                                                         "phase": stage_name,
                                                         "kind": "run_failed",
-                                                        "summary": f"Run phase failed for node {child_node.id}\nError: {stderr_snippet}",
+                                                        "summary": f"Run phase failed for node {child_node.id}: missing outputs {missing_outputs[:3]}",
                                                         "refs": [],
                                                     })
                                                 except Exception as exc:
                                                     logger.warning("Failed to write run_failed event: %s", exc)
                                         else:
-                                            missing_outputs = [
-                                                str(path)
-                                                for path in expected_output_paths
-                                                if not path.exists()
-                                            ]
-                                            if missing_outputs:
-                                                exc_type = "RuntimeError"
-                                                exc_info = {
-                                                    "message": "Expected output file(s) missing after run phase.",
-                                                    "missing": missing_outputs,
-                                                    "expected_outputs": expected_outputs,
-                                                }
-                                                term_outputs.append(exc_info["message"])
-                                                # Memory event: Run phase failed (missing outputs)
-                                                if memory_manager and child_branch_id:
-                                                    try:
-                                                        memory_manager.mem_recall_append({
-                                                            "ts": time.time(),
-                                                            "run_id": memory_manager.run_id,
-                                                            "node_id": child_node.id,
-                                                            "branch_id": child_branch_id,
-                                                            "phase": stage_name,
-                                                            "kind": "run_failed",
-                                                            "summary": f"Run phase failed for node {child_node.id}: missing outputs {missing_outputs[:3]}",
-                                                            "refs": [],
-                                                        })
-                                                    except Exception as exc:
-                                                        logger.warning("Failed to write run_failed event: %s", exc)
-                                            else:
-                                                # Memory event: Run phase complete
-                                                if memory_manager and child_branch_id:
-                                                    try:
-                                                        memory_manager.mem_recall_append({
-                                                            "ts": time.time(),
-                                                            "run_id": memory_manager.run_id,
-                                                            "node_id": child_node.id,
-                                                            "branch_id": child_branch_id,
-                                                            "phase": stage_name,
-                                                            "kind": "run_complete",
-                                                            "summary": f"Run phase complete for node {child_node.id}\nOutputs: {expected_outputs[:3]}",
-                                                            "refs": [],
-                                                        })
-                                                    except Exception as exc:
-                                                        logger.warning("Failed to write run_complete event: %s", exc)
+                                            # Memory event: Run phase complete
+                                            if memory_manager and child_branch_id:
+                                                try:
+                                                    memory_manager.mem_recall_append({
+                                                        "ts": time.time(),
+                                                        "run_id": memory_manager.run_id,
+                                                        "node_id": child_node.id,
+                                                        "branch_id": child_branch_id,
+                                                        "phase": stage_name,
+                                                        "kind": "run_complete",
+                                                        "summary": f"Run phase complete for node {child_node.id}\nOutputs: {expected_outputs[:3]}",
+                                                        "refs": [],
+                                                    })
+                                                except Exception as exc:
+                                                    logger.warning("Failed to write run_complete event: %s", exc)
                         exec_time = time.time() - exec_start
                         exec_result = ExecutionResult(
                             term_outputs,
@@ -6102,22 +6172,34 @@ class ParallelAgent:
                         with open(exp_code_path, "w") as f:
                             f.write(child_node.code)
                         logger.info(f"Saved experiment code to {exp_code_path}")
-                        # Move experiment data files to experiment_results directory
+                        # Copy experiment data files to experiment_results directory
+                        # Use copy instead of move to preserve originals for downstream use
                         for plots_dir in existing_plot_dirs:
                             for exp_data_file in plots_dir.glob("*.npy"):
                                 exp_data_path = exp_results_dir / exp_data_file.name
-                                exp_data_file.resolve().rename(exp_data_path)
+                                shutil.copy2(str(exp_data_file.resolve()), str(exp_data_path))
                                 logger.info(f"Saved experiment data to {exp_data_path}")
 
                         for plots_dir in existing_plot_dirs:
                             for plot_file in plots_dir.glob("*.png"):
-                                # Get the base directory (parent of workspaces/logs)
-                                base_dir = Path(cfg.workspace_dir).parent.parent
-                                run_name = Path(cfg.workspace_dir).name
-
-                                # Create the final path in logs directory
+                                # Create the final path in experiment_results directory
                                 final_path = exp_results_dir / plot_file.name
-                                plot_file.resolve().rename(final_path)
+
+                                # Use shutil.move instead of rename to handle cross-device moves
+                                try:
+                                    shutil.move(str(plot_file.resolve()), str(final_path))
+                                except Exception as move_exc:
+                                    logger.warning(f"Failed to move plot {plot_file} to {final_path}: {move_exc}")
+                                    # Try copy as fallback
+                                    try:
+                                        shutil.copy2(str(plot_file.resolve()), str(final_path))
+                                    except Exception:
+                                        logger.warning(f"Failed to copy plot {plot_file} to {final_path}, skipping")
+                                        continue
+
+                                if not final_path.exists():
+                                    logger.warning(f"Plot file not found after move: {final_path}")
+                                    continue
 
                                 # Create a web-friendly relative path starting from logs directory
                                 web_path = f"../../logs/{Path(cfg.workspace_dir).name}/experiment_results/experiment_{child_node.id}_proc_{os.getpid()}/{plot_file.name}"
@@ -6956,11 +7038,22 @@ class ParallelAgent:
         seed_data_paths = []
         for seed_node in seed_nodes:
             exp_dir = Path(seed_node.exp_results_dir) if seed_node.exp_results_dir else None
-            if exp_dir and exp_dir.exists():
+            if not exp_dir:
+                logger.warning(f"Seed node {seed_node.id} has no exp_results_dir")
+                continue
+            # Resolve to absolute path to avoid cwd-dependent resolution
+            if not exp_dir.is_absolute():
+                exp_dir = Path(os.getcwd()) / exp_dir
+            if exp_dir.exists():
                 npy_files = sorted(exp_dir.rglob("*.npy"))
                 if npy_files:
-                    seed_data_paths.extend(str(p) for p in npy_files)
-                # Skip if no .npy files found - don't add non-existent paths
+                    # Only include files that actually exist
+                    valid_paths = [str(p.resolve()) for p in npy_files if p.is_file()]
+                    seed_data_paths.extend(valid_paths)
+                else:
+                    logger.warning(f"No .npy files found in {exp_dir} for seed node {seed_node.id}")
+            else:
+                logger.warning(f"exp_results_dir does not exist: {exp_dir} for seed node {seed_node.id}")
         if seed_data_paths:
             plotting_prompt["Instructions"] |= {
                 "Experiment Data Path": "\n".join(seed_data_paths)

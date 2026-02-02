@@ -90,6 +90,8 @@ CRITICAL: The <memory_results> tag is OUTPUT BY THE SYSTEM ONLY. You must NEVER 
 - Use "mem_archival_write" for: detailed explanations, lessons learned, patterns to avoid/prefer
 - Do NOT record: temporary debug info, system-logged info, trivial observations
 - Use read operations to retrieve past learnings before making decisions
+- **IMPORTANT: Core memory has limited capacity.** Review inherited core memory entries at every step. Use "mem_core_del" to delete entries that are obsolete, redundant, or irrelevant to the current task. Keeping unnecessary entries wastes capacity and degrades performance.
+- When you inherit core memory from a parent node, critically evaluate each entry: Is it still relevant? Is it duplicated? Has it been superseded by newer findings? If so, delete it with "mem_core_del".
 
 **Example complete response:**
 <memory_update>

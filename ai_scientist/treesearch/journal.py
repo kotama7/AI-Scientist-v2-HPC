@@ -268,7 +268,7 @@ class Node(DataClassJsonMixin):
             "exc_stack": self.exc_stack,
             "analysis": self.analysis,
             "exp_results_dir": (
-                str(Path(self.exp_results_dir).resolve().relative_to(os.getcwd()))
+                str(Path(self.exp_results_dir).resolve())
                 if self.exp_results_dir
                 else None
             ),

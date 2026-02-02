@@ -13,13 +13,17 @@ from .config import Config
 from ..journal import Journal
 
 
-def save_run(cfg: Config, journal: Journal, stage_name: str = None):
+def save_run(cfg: Config, journal: Journal, stage_name: str = None, best_node=None):
     """Save the experiment run results to disk.
 
     Args:
         cfg: Configuration object.
         journal: Journal containing experiment nodes.
         stage_name: Name of the stage (used for directory naming).
+        best_node: Optional pre-determined best node. If provided, this node
+                   will be saved instead of calling journal.get_best_node().
+                   This ensures consistency between what's saved and what's
+                   inherited to the next stage.
     """
     if stage_name is None:
         stage_name = "NoStageRun"
@@ -46,7 +50,9 @@ def save_run(cfg: Config, journal: Journal, stage_name: str = None):
         raise
     # save the best found solution
     try:
-        best_node = journal.get_best_node(only_good=False, cfg=cfg)
+        # Use provided best_node if available, otherwise determine it
+        if best_node is None:
+            best_node = journal.get_best_node(only_good=False, cfg=cfg)
         if best_node is not None:
             suffix = Path(cfg.exec.agent_file_name).suffix or ".py"
             if getattr(cfg.exec, "phase_mode", "single") == "split":

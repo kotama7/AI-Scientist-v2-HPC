@@ -118,7 +118,7 @@ class MemoryConfig:
     memory_log_max_chars: int = 400
     use_llm_compression: bool = False
     compression_model: str = "gpt-4o-mini"
-    max_compression_iterations: int = 3
+    max_compression_iterations: int = 5
     datasets_tested_budget_chars: int = 1500
     metrics_extraction_budget_chars: int = 1500
     plotting_code_budget_chars: int = 2000

@@ -13,7 +13,7 @@ from ..journal import Journal
 
 # Import from refactored modules
 from .tree_layout import get_edges, generate_layout, normalize_layout
-from .stage_helpers import get_completed_stages, get_stage_dir_map, stage_dir_to_stage_id
+from .stage_helpers import get_completed_stages, get_stage_dir_map, get_substage_dir_map, stage_dir_to_stage_id
 from .memory_viz import (
     load_memory_call_log,
     index_memory_call_log,
@@ -47,16 +47,13 @@ def cfg_to_tree_struct(cfg, jou: Journal, out_path: Path = None):
     Returns:
         Dictionary containing tree structure data for visualization
     """
-    # Check if there are any root nodes that should connect to the virtual None root
-    # (i.e., nodes with parent=None and no inherited_from_node_id)
-    has_true_root_nodes = any(
-        n.parent is None and not getattr(n, "inherited_from_node_id", None)
-        for n in jou
-    )
+    # Check if there are any parentless nodes that need a virtual None root
+    # to connect them into the tree (includes inherited nodes)
+    has_parentless_nodes = any(n.parent is None for n in jou)
 
-    # Include None root node only if there are true root nodes to connect to it
+    # Include None root node if there are any parentless nodes to connect to it
     # The None node is at index len(jou)
-    include_none_root = has_true_root_nodes
+    include_none_root = has_parentless_nodes
     edges = list(get_edges(jou, include_none_root=include_none_root))
     n_nodes = len(jou) + (1 if include_none_root else 0)
     print(f"[red]Edges (with None root={include_none_root}): {edges}[/red]")
@@ -73,7 +70,23 @@ def cfg_to_tree_struct(cfg, jou: Journal, out_path: Path = None):
         print(f"Error in normalize_layout: {e}")
         raise
 
-    best_node = jou.get_best_node(cfg=cfg)
+    # Determine best node: prefer inherited_from_node_id from the next stage
+    # (this is the node actually used for inheritance), then fall back to
+    # best_node_id.txt, then to get_best_node() as last resort.
+    best_node = None
+    if out_path:
+        best_node = _find_best_node_from_next_stage(jou, out_path)
+        if best_node:
+            print(f"[green]Best node from next stage's inherited_from_node_id: {best_node.id}[/green]")
+        else:
+            best_node_id_file = out_path.parent / "best_node_id.txt"
+            if best_node_id_file.exists():
+                saved_id = best_node_id_file.read_text().strip()
+                best_node = next((n for n in jou if str(n.id) == saved_id), None)
+                if best_node:
+                    print(f"[green]Best node loaded from best_node_id.txt: {saved_id}[/green]")
+    if best_node is None:
+        best_node = jou.get_best_node(cfg=cfg)
     metrics = []
     is_best_node = []
 
@@ -120,6 +133,48 @@ def cfg_to_tree_struct(cfg, jou: Journal, out_path: Path = None):
         _append_none_root_entries(tmp)
 
     return tmp
+
+
+def _find_best_node_from_next_stage(jou: Journal, out_path: Path):
+    """Find the best node by checking the next stage's inherited_from_node_id.
+
+    The inherited_from_node_id in the next stage's tree_data.json is the
+    authoritative record of which node was actually selected for inheritance,
+    since it comes from the _get_best_implementation() call at stage transition.
+    """
+    log_dir = out_path.parent.parent
+    current_stage_id = stage_dir_to_stage_id(out_path.parent.name)
+    if not current_stage_id:
+        return None
+
+    current_num = int(current_stage_id.split("_")[1])
+    next_stage_id = f"Stage_{current_num + 1}"
+
+    # Find the next stage's directory
+    stage_dir_map = get_stage_dir_map(log_dir)
+    next_dir_name = stage_dir_map.get(next_stage_id)
+    if not next_dir_name:
+        return None
+
+    next_tree_data = log_dir / next_dir_name / "tree_data.json"
+    if not next_tree_data.exists():
+        return None
+
+    try:
+        with open(next_tree_data) as f:
+            next_data = json.load(f)
+        inherited_ids = next_data.get("inherited_from_node_id", [])
+        if inherited_ids and inherited_ids[0]:
+            inherited_id = str(inherited_ids[0])
+            # Match by exact ID or prefix
+            for n in jou:
+                nid = str(n.id)
+                if nid == inherited_id or inherited_id.startswith(nid) or nid.startswith(inherited_id):
+                    return n
+    except Exception as e:
+        print(f"Error reading next stage tree_data.json: {e}")
+
+    return None
 
 
 def _build_tree_data(cfg, jou: Journal, edges, layout, metrics, is_best_node) -> dict:
@@ -181,6 +236,7 @@ def _add_stage_info(tmp: dict, jou: Journal, out_path: Path):
     log_dir = out_path.parent.parent
     tmp["completed_stages"] = get_completed_stages(log_dir)
     tmp["stage_dir_map"] = get_stage_dir_map(log_dir)
+    tmp["substage_dir_map"] = get_substage_dir_map(log_dir)
     tmp["log_dir_path"] = os.path.relpath(log_dir, out_path.parent)
 
     stage_id = stage_dir_to_stage_id(out_path.parent.name)
@@ -355,10 +411,13 @@ def create_unified_viz(cfg, current_stage_viz_path: Path):
     if not current_stage:
         current_stage = completed_stages[0] if completed_stages else "Stage_1"
 
+    substage_dir_map = get_substage_dir_map(log_dir)
+
     base_data = {
         "current_stage": current_stage,
         "completed_stages": completed_stages,
         "stage_dir_map": stage_dir_map,
+        "substage_dir_map": substage_dir_map,
         "log_dir_path": ".",
     }
 

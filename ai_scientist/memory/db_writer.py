@@ -123,6 +123,7 @@ class DatabaseWriterProcess:
         self._queue = _get_manager().Queue()
         self._process: Optional[mp.Process] = None
         self._started = mp.Event()
+        self._shutdown_requested = mp.Event()
         self._shutdown_complete = mp.Event()
 
     @property
@@ -141,6 +142,7 @@ class DatabaseWriterProcess:
             return
 
         self._started.clear()
+        self._shutdown_requested.clear()
         self._shutdown_complete.clear()
 
         self._process = mp.Process(
@@ -149,6 +151,7 @@ class DatabaseWriterProcess:
                 self.db_path,
                 self._queue,
                 self._started,
+                self._shutdown_requested,
                 self._shutdown_complete,
                 self.max_batch_size,
                 self.batch_timeout,
@@ -176,22 +179,25 @@ class DatabaseWriterProcess:
 
         logger.info("Shutting down DatabaseWriterProcess...")
 
-        # Send shutdown signal
+        # Signal shutdown via event (reliable even if queue is broken)
+        self._shutdown_requested.set()
+
+        # Also send shutdown signal via queue for immediate pickup
         try:
             self._queue.put(WriteRequest(op_type=WriteOpType.SHUTDOWN), timeout=5)
         except Exception as e:
-            logger.warning("Failed to send shutdown signal: %s", e)
+            logger.warning("Failed to send shutdown signal via queue: %s", e)
 
         # Wait for clean shutdown
         if not self._shutdown_complete.wait(timeout=timeout):
             logger.warning("Writer process did not shutdown cleanly, terminating...")
             self._process.terminate()
-            self._process.join(timeout=5)
+            self._process.join(timeout=30)
 
         if self._process.is_alive():
             logger.error("Writer process still alive after terminate, killing...")
             self._process.kill()
-            self._process.join(timeout=5)
+            self._process.join(timeout=10)
 
         logger.info("DatabaseWriterProcess shutdown complete")
 
@@ -230,6 +236,7 @@ class DatabaseWriterProcess:
         db_path: Path,
         queue: mp.Queue,
         started_event: mp.Event,
+        shutdown_requested_event: mp.Event,
         shutdown_event: mp.Event,
         max_batch_size: int,
         batch_timeout: float,
@@ -257,11 +264,37 @@ class DatabaseWriterProcess:
 
             while True:
                 try:
+                    # Check if shutdown was requested via event
+                    if shutdown_requested_event.is_set():
+                        logger.info("Writer detected shutdown event, draining queue...")
+                        # Drain remaining items from the queue before exiting
+                        while True:
+                            try:
+                                remaining = queue.get_nowait()
+                                if remaining.op_type == WriteOpType.SHUTDOWN:
+                                    break
+                                result = DatabaseWriterProcess._execute_request(
+                                    conn, remaining, max_retries
+                                )
+                                if remaining.response_conn:
+                                    try:
+                                        remaining.response_conn.send(result)
+                                    except (BrokenPipeError, OSError):
+                                        logger.debug("Response pipe closed for request %s (receiver gone)", remaining.request_id)
+                                pending_responses.append((remaining, result))
+                            except (Empty, OSError, EOFError):
+                                break
+                        if pending_responses:
+                            DatabaseWriterProcess._flush_pending(
+                                conn, pending_responses, max_retries
+                            )
+                        break
+
                     # Get next request with timeout
                     try:
                         request = queue.get(timeout=batch_timeout)
-                    except Empty:
-                        # Timeout - flush any pending commits
+                    except (Empty, OSError, EOFError):
+                        # Empty = normal timeout; OSError/EOFError = queue/manager gone
                         if pending_responses:
                             DatabaseWriterProcess._flush_pending(
                                 conn, pending_responses, max_retries
@@ -282,10 +315,13 @@ class DatabaseWriterProcess:
                     # Handle ping (health check)
                     if request.op_type == WriteOpType.PING:
                         if request.response_conn:
-                            request.response_conn.send(WriteResponse(
-                                request_id=request.request_id,
-                                success=True,
-                            ))
+                            try:
+                                request.response_conn.send(WriteResponse(
+                                    request_id=request.request_id,
+                                    success=True,
+                                ))
+                            except (BrokenPipeError, OSError):
+                                logger.debug("Response pipe closed for ping %s", request.request_id)
                         continue
 
                     # Process write operation
@@ -295,7 +331,10 @@ class DatabaseWriterProcess:
 
                     # Send response if requested (via Pipe connection)
                     if request.response_conn:
-                        request.response_conn.send(result)
+                        try:
+                            request.response_conn.send(result)
+                        except (BrokenPipeError, OSError):
+                            logger.debug("Response pipe closed for request %s (receiver gone)", request.request_id)
 
                     # Batch commits for better performance
                     if request.op_type in (WriteOpType.EXECUTE, WriteOpType.EXECUTE_MANY):

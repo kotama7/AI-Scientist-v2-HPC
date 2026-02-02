@@ -182,14 +182,14 @@ which supports full `<memory_update>` blocks including read operations.
 │     └─ apply_llm_memory_updates() processes operations:                      │
 │                                                                              │
 │         Write Operations (immediate):                                        │
-│         ├─ "core": {"key": "value"} → Core memory                            │
-│         ├─ "archival": [{...}] → Archival with tags                          │
-│         └─ "recall": {...} → Recall timeline                                 │
+│         ├─ "mem_core_set": {"key": "value"} → Core memory                    │
+│         ├─ "mem_archival_write": [{...}] → Archival with tags                │
+│         └─ "mem_recall_append": {...} → Recall timeline                      │
 │                                                                              │
 │         Read Operations (trigger re-query):                                  │
-│         ├─ "core_get": ["key1", "key2"]                                      │
-│         ├─ "archival_search": {"query": "...", "k": N}                       │
-│         └─ "recall_search": {"query": "...", "k": N}                         │
+│         ├─ "mem_core_get": ["key1", "key2"]                                  │
+│         ├─ "mem_archival_search": {"query": "...", "k": N}                   │
+│         └─ "mem_recall_search": {"query": "...", "k": N}                     │
 │                                                                              │
 │  4. Read Operation Re-Query Loop (if read results exist)                     │
 │     ├─ _has_memory_read_results() checks for read results                    │
@@ -225,13 +225,13 @@ if memory_cfg and getattr(memory_cfg, "enabled", False):
 
 | Use Case | Memory Operation | Tags |
 |----------|------------------|------|
-| Record package version | `"core": {"numpy_version": "1.24.0"}` | - |
-| Record git commit SHA | `"core": {"cnpy_commit": "abc1234"}` | - |
-| Log installation details | `"archival": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` | `PHASE1_INSTALL` |
-| Log error recovery | `"archival": [{"text": "...", "tags": ["PHASE1_ERROR"]}]` | `PHASE1_ERROR` |
-| Record build config | `"archival": [{"text": "...", "tags": ["BUILD_CONFIG"]}]` | `BUILD_CONFIG` |
-| Retrieve previous error | `"archival_search": {"query": "PHASE1_ERROR", "k": 3}` | - |
-| Check installed packages | `"core_get": ["numpy_version", "python_deps_path"]` | - |
+| Record package version | `"mem_core_set": {"numpy_version": "1.24.0"}` | - |
+| Record git commit SHA | `"mem_core_set": {"cnpy_commit": "abc1234"}` | - |
+| Log installation details | `"mem_archival_write": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` | `PHASE1_INSTALL` |
+| Log error recovery | `"mem_archival_write": [{"text": "...", "tags": ["PHASE1_ERROR"]}]` | `PHASE1_ERROR` |
+| Record build config | `"mem_archival_write": [{"text": "...", "tags": ["BUILD_CONFIG"]}]` | `BUILD_CONFIG` |
+| Retrieve previous error | `"mem_archival_search": {"query": "PHASE1_ERROR", "k": 3}` | - |
+| Check installed packages | `"mem_core_get": ["numpy_version", "python_deps_path"]` | - |
 
 **Read Operation Flow:**
 
@@ -684,19 +684,19 @@ prompts via `_inject_memory()` in `parallel_agent.py`.
 The following operations can be invoked by the LLM via `<memory_update>` blocks:
 
 **Core Memory:**
-- `core`: set/update key-value pairs in core memory (always-visible).
-- `core_get`: retrieve values for specified keys.
-- `core_delete`: delete (evict) keys from core memory.
+- `mem_core_set`: set/update key-value pairs in core memory (always-visible).
+- `mem_core_get`: retrieve values for specified keys.
+- `mem_core_del`: delete (evict) keys from core memory.
 
 **Archival Memory:**
-- `archival`: write new archival records with text and tags.
-- `archival_update`: update existing archival records by ID.
-- `archival_search`: search archival memory (semantic/keyword search).
+- `mem_archival_write`: write new archival records with text and tags.
+- `mem_archival_update`: update existing archival records by ID.
+- `mem_archival_search`: search archival memory (semantic/keyword search).
 
 **Recall Memory:**
-- `recall`: append an event to the recall timeline.
-- `recall_search`: search recent recall events.
-- `recall_evict`: move recall events to archival, then delete (by IDs, kind, or oldest N).
+- `mem_recall_append`: append an event to the recall timeline.
+- `mem_recall_search`: search recent recall events.
+- `mem_recall_evict`: move recall events to archival, then delete (by IDs, kind, or oldest N).
 - `recall_summarize`: consolidate and summarize recall events.
 
 **Memory Management:**
@@ -711,25 +711,25 @@ any combination of the following operations:
 
 | Operation | Key | Format | Description |
 |-----------|-----|--------|-------------|
-| SET | `core` | `{"key": "value"}` | Set key-value pairs in core memory |
-| GET | `core_get` | `["key1", "key2"]` | Retrieve values for specified keys |
-| DELETE | `core_delete` | `["key1"]` or `"key"` | Delete keys from core memory (evict) |
+| SET | `mem_core_set` | `{"key": "value"}` | Set key-value pairs in core memory |
+| GET | `mem_core_get` | `["key1", "key2"]` | Retrieve values for specified keys |
+| DELETE | `mem_core_del` | `["key1"]` or `"key"` | Delete keys from core memory (evict) |
 
 #### Archival Memory (searchable long-term store)
 
 | Operation | Key | Format | Description |
 |-----------|-----|--------|-------------|
-| WRITE | `archival` | `[{"text": "...", "tags": ["TAG"]}]` | Write new archival records |
-| UPDATE | `archival_update` | `[{"id": "...", "text": "..."}]` | Update existing records by ID |
-| SEARCH | `archival_search` | `{"query": "...", "k": 5, "tags": ["TAG"]}` | Search archival memory |
+| WRITE | `mem_archival_write` | `[{"text": "...", "tags": ["TAG"]}]` | Write new archival records |
+| UPDATE | `mem_archival_update` | `[{"id": "...", "text": "..."}]` | Update existing records by ID |
+| SEARCH | `mem_archival_search` | `{"query": "...", "k": 5, "tags": ["TAG"]}` | Search archival memory |
 
 #### Recall Memory (recent events timeline)
 
 | Operation | Key | Format | Description |
 |-----------|-----|--------|-------------|
-| APPEND | `recall` | `{"kind": "...", "content": "..."}` | Append event to recall |
-| SEARCH | `recall_search` | `{"query": "...", "k": 10}` | Search recall events |
-| EVICT | `recall_evict` | `{"oldest": N}` or `{"kind": "..."}` or `{"ids": [...]}` | Move recall events to archival, then delete |
+| APPEND | `mem_recall_append` | `{"kind": "...", "content": "..."}` | Append event to recall |
+| SEARCH | `mem_recall_search` | `{"query": "...", "k": 10}` | Search recall events |
+| EVICT | `mem_recall_evict` | `{"oldest": N}` or `{"kind": "..."}` or `{"ids": [...]}` | Move recall events to archival, then delete |
 | SUMMARIZE | `recall_summarize` | `true` | Consolidate recall events into summaries |
 
 #### Memory Management
@@ -743,22 +743,22 @@ any combination of the following operations:
 ```xml
 <memory_update>
 {
-  "core": {
+  "mem_core_set": {
     "optimal_threads": "8",
     "best_compiler_flags": "-O3 -march=native"
   },
-  "core_get": ["previous_best_time"],
-  "archival": [
+  "mem_core_get": ["previous_best_time"],
+  "mem_archival_write": [
     {
       "text": "Thread count 8 gives 2x speedup on matrix multiplication workload",
       "tags": ["PERFORMANCE", "THREADING"]
     }
   ],
-  "archival_search": {
+  "mem_archival_search": {
     "query": "compilation errors",
     "k": 3
   },
-  "recall": {
+  "mem_recall_append": {
     "kind": "discovery",
     "content": "Found optimal configuration after testing 5 variants"
   }
@@ -789,7 +789,7 @@ any combination of the following operations:
 
 ### Return values and multi-turn flow
 
-Read operations (`core_get`, `archival_search`, `recall_search`) trigger a
+Read operations (`mem_core_get`, `mem_archival_search`, `mem_recall_search`) trigger a
 **multi-turn flow** when used in split-phase execution.
 
 For a complete flow diagram, see [memory-flow.md](memory-flow.md).

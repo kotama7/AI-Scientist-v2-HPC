@@ -111,7 +111,7 @@ function addAvailableStage(stageId) {
 
 // Class definitions for nodes and edges
 class Node {
-  constructor(x, y, id, isRoot = false) {
+  constructor(x, y, id, isRoot = false, isBestNode = false) {
     this.x = x;
     this.y = y;
     this.id = id;
@@ -120,6 +120,7 @@ class Node {
     this.popEffect = 0;
     this.selected = false;
     this.isRootNode = isRoot;
+    this.isBestNode = isBestNode;
   }
 
   update() {
@@ -151,6 +152,9 @@ class Node {
     if (this.selected) {
       return accentCol; // Use the global accent color variable for selected node
     }
+    if (this.isBestNode) {
+      return '#f59f00'; // Gold color for best node
+    }
     return '#4263eb'; // Default blue color
   }
 
@@ -178,8 +182,21 @@ class Node {
       p5.fill(nodeColor);
       p5.rect(0, 0, 30 * nodeScale, 30 * nodeScale, 10);
 
-      // Draw checkmark icon if the node is selected
-      if (this.selected && this.appearProgress >= 1) {
+      // Draw star icon if this is the best node
+      if (this.isBestNode && this.appearProgress >= 1) {
+        p5.fill(255);
+        p5.noStroke();
+        p5.beginShape();
+        for (let a = 0; a < 5; a++) {
+          let angle = p5.TWO_PI * a / 5 - p5.HALF_PI;
+          p5.vertex(p5.cos(angle) * 8 * nodeScale, p5.sin(angle) * 8 * nodeScale);
+          angle += p5.TWO_PI / 10;
+          p5.vertex(p5.cos(angle) * 4 * nodeScale, p5.sin(angle) * 4 * nodeScale);
+        }
+        p5.endShape(p5.CLOSE);
+      }
+      // Draw checkmark icon if the node is selected (and not the best node)
+      else if (this.selected && this.appearProgress >= 1) {
         p5.stroke(255);
         p5.strokeWeight(2 * nodeScale);
         p5.noFill();
@@ -325,12 +342,14 @@ function createTreeSketch(stageId) {
         const [nx, ny] = data.layout[i];
         // A node is a root if it's a parent and not a child in any edge
         const isRoot = parentNodes.has(i) && data.edges.every(edge => edge[1] !== i);
+        const isBestNode = data.is_best_node ? !!data.is_best_node[i] : false;
 
         const node = new Node(
           nx * p5.width * 0.8 + p5.width * 0.1,
           ny * p5.height * 0.8 + p5.height * 0.1,
           i,
-          isRoot
+          isRoot,
+          isBestNode
         );
         nodes.push(node);
       }
@@ -341,6 +360,20 @@ function createTreeSketch(stageId) {
         const firstParentId = [...parentNodes][0];
         if (nodes[firstParentId]) {
           nodes[firstParentId].visible = true;
+        }
+      }
+
+      // Make isolated nodes (no edges at all) visible immediately.
+      // This handles nodes that lost their none_root parent in the combined view.
+      const allEdgeNodes = new Set();
+      for (const [p, c] of data.edges) {
+        allEdgeNodes.add(p);
+        allEdgeNodes.add(c);
+      }
+      for (let i = 0; i < nodes.length; i++) {
+        if (!allEdgeNodes.has(i)) {
+          nodes[i].visible = true;
+          nodes[i].appearProgress = 1;
         }
       }
 
@@ -355,10 +388,12 @@ function createTreeSketch(stageId) {
         }
       }
 
-      // Select the first node by default
+      // Select the best node by default, or fall back to first node
       if (nodes.length > 0) {
-        nodes[0].selected = true;
-        updateNodeInfo(0);
+        const bestIdx = nodes.findIndex(n => n.isBestNode);
+        const selectIdx = bestIdx >= 0 ? bestIdx : 0;
+        nodes[selectIdx].selected = true;
+        updateNodeInfo(selectIdx);
       }
     }
 
@@ -366,6 +401,32 @@ function createTreeSketch(stageId) {
       // Use the global background color if available, otherwise use the default bgCol
       const currentBgColor = window.bgColCurrent || bgCol;
       p5.background(currentBgColor);
+
+      // Draw stage separator labels in combined "All" view
+      if (treeData && treeData._stage_labels) {
+        const stageNames = {
+          'Stage_1': 'Stage 1', 'Stage_2': 'Stage 2',
+          'Stage_3': 'Stage 3', 'Stage_4': 'Stage 4'
+        };
+        const seen = new Set();
+        for (let i = 0; i < nodes.length; i++) {
+          const label = treeData._stage_labels[i];
+          if (label && !seen.has(label)) {
+            seen.add(label);
+            // Draw label at the top-left of this stage's vertical band
+            const yPos = nodes[i].y - 25;
+            p5.noStroke();
+            p5.fill(150);
+            p5.textSize(11);
+            p5.textAlign(p5.LEFT);
+            p5.text(stageNames[label] || label, 10, yPos);
+            // Draw a subtle separator line
+            p5.stroke(220);
+            p5.strokeWeight(0.5);
+            p5.line(0, yPos - 10, p5.width, yPos - 10);
+          }
+        }
+      }
 
       // Update and render edges
       for (const edge of edges) {
@@ -427,13 +488,333 @@ function createTreeSketch(stageId) {
   };
 }
 
+// Merge multiple sub-stage tree data objects into one tree for a single main stage.
+// Similar to buildCombinedStageData but arranges sub-stages vertically within one stage.
+function mergeSubstageTrees(substageDataList) {
+  if (!substageDataList || substageDataList.length === 0) return null;
+  if (substageDataList.length === 1) return substageDataList[0];
+
+  const nodeFields = [
+    'code', 'plan', 'term_out', 'analysis', 'node_id', 'branch_id',
+    'inherited_from_node_id', 'exc_type', 'exc_info', 'exc_stack',
+    'plots', 'plot_paths', 'plot_analyses', 'vlm_feedback_summary',
+    'exec_time', 'exec_time_feedback', 'datasets_successfully_tested',
+    'plot_code', 'plot_plan', 'ablation_name', 'hyperparam_name',
+    'is_seed_node', 'is_seed_agg_node', 'parse_metrics_plan',
+    'parse_metrics_code', 'parse_term_out', 'parse_exc_type',
+    'parse_exc_info', 'parse_exc_stack', 'metrics', 'is_best_node',
+    'memory_events'
+  ];
+
+  const combined = { layout: [], edges: [], _substage_labels: [] };
+  for (const f of nodeFields) combined[f] = [];
+
+  let globalIdx = 0;
+  const nSubs = substageDataList.length;
+  const nodeIdToGlobalIdx = {};
+
+  // First pass: build index maps
+  const subIndexMaps = [];
+  const subIncluded = [];
+
+  // Track the best node global index per sub-stage for cross-sub-stage linking
+  let prevBestGlobalIdx = null;
+  // Track none_root children per sub-stage
+  const subNoneRootChildren = [];
+
+  for (let si = 0; si < nSubs; si++) {
+    const data = substageDataList[si];
+    const n = data.layout.length;
+    const map = {};
+    const included = [];
+
+    const noneRootIdx = data.node_id ? data.node_id.indexOf('none_root') : -1;
+    // For sub-stages after the first, skip none_root and link its children to prev best
+    const skipNoneRoot = si > 0 && noneRootIdx >= 0;
+
+    // Handle inherited_from_node_id (for the first sub-stage inheriting from another main stage)
+    const hasInherited = data.inherited_from_node_id && data.inherited_from_node_id[0];
+    const inheritedIdx = hasInherited ? 0 : -1;
+    let inheritedParentGlobalIdx = null;
+    if (inheritedIdx >= 0) {
+      const inheritedFromId = data.inherited_from_node_id[0];
+      if (inheritedFromId in nodeIdToGlobalIdx) {
+        inheritedParentGlobalIdx = nodeIdToGlobalIdx[inheritedFromId];
+      } else {
+        for (const [nid, gidx] of Object.entries(nodeIdToGlobalIdx)) {
+          if (inheritedFromId.startsWith(nid) || nid.startsWith(inheritedFromId)) {
+            inheritedParentGlobalIdx = gidx;
+            break;
+          }
+        }
+      }
+    }
+
+    // Collect none_root's children for later cross-sub-stage linking
+    const noneRootChildLocalIdxs = [];
+    if (skipNoneRoot) {
+      for (const [pIdx, cIdx] of data.edges) {
+        if (pIdx === noneRootIdx) {
+          noneRootChildLocalIdxs.push(cIdx);
+        }
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (skipNoneRoot && i === noneRootIdx) continue;
+      if (i === inheritedIdx && inheritedParentGlobalIdx !== null) {
+        map[i] = inheritedParentGlobalIdx;
+        continue;
+      }
+      map[i] = globalIdx;
+      if (data.node_id && data.node_id[i] && data.node_id[i] !== 'none_root') {
+        nodeIdToGlobalIdx[data.node_id[i]] = globalIdx;
+      }
+      included.push(i);
+      globalIdx++;
+    }
+
+    subIndexMaps.push(map);
+    subIncluded.push(included);
+    subNoneRootChildren.push(noneRootChildLocalIdxs);
+  }
+
+  // Second pass: populate combined arrays and connect sub-stages
+  prevBestGlobalIdx = null;
+
+  for (let si = 0; si < nSubs; si++) {
+    const data = substageDataList[si];
+    const map = subIndexMaps[si];
+    const included = subIncluded[si];
+
+    const noneRootIdx = data.node_id ? data.node_id.indexOf('none_root') : -1;
+    const skipNoneRoot = si > 0 && noneRootIdx >= 0;
+
+    // Arrange sub-stages in vertical bands
+    const bandPad = 0.02;
+    const yMin = si / nSubs + bandPad;
+    const yMax = (si + 1) / nSubs - bandPad;
+
+    const origYs = included.map(i => data.layout[i][1]);
+    const origYMin = Math.min(...origYs);
+    const origYMax = Math.max(...origYs);
+    const origYRange = origYMax - origYMin || 1;
+
+    for (const i of included) {
+      const [ox, oy] = data.layout[i];
+      const ny = yMin + ((oy - origYMin) / origYRange) * (yMax - yMin);
+      combined.layout.push([ox, ny]);
+      combined._substage_labels.push(`Sub-stage ${si + 1}`);
+
+      for (const f of nodeFields) {
+        if (data[f] && Array.isArray(data[f]) && i < data[f].length) {
+          combined[f].push(data[f][i]);
+        } else if (f === 'is_best_node') {
+          combined[f].push(false);
+        } else if (f === 'memory_events') {
+          combined[f].push([]);
+        } else {
+          combined[f].push(null);
+        }
+      }
+    }
+
+    // Add remapped edges, skipping edges from none_root (handled separately below)
+    for (const [pIdx, cIdx] of data.edges) {
+      if (skipNoneRoot && pIdx === noneRootIdx) continue;
+      const gp = map[pIdx];
+      const gc = map[cIdx];
+      if (gp !== undefined && gc !== undefined && gp !== gc) {
+        combined.edges.push([gp, gc]);
+      }
+    }
+
+    // Connect none_root's children to the previous sub-stage's best node
+    if (si > 0 && prevBestGlobalIdx !== null && subNoneRootChildren[si].length > 0) {
+      for (const childLocalIdx of subNoneRootChildren[si]) {
+        const gc = map[childLocalIdx];
+        if (gc !== undefined && gc !== prevBestGlobalIdx) {
+          combined.edges.push([prevBestGlobalIdx, gc]);
+        }
+      }
+    }
+
+    // Find this sub-stage's best node for the next sub-stage to link to
+    if (data.is_best_node) {
+      for (let i = 0; i < data.is_best_node.length; i++) {
+        if (data.is_best_node[i] && map[i] !== undefined) {
+          prevBestGlobalIdx = map[i];
+          break;
+        }
+      }
+    }
+  }
+
+  // Copy over stage-level metadata from the last sub-stage
+  const last = substageDataList[substageDataList.length - 1];
+  combined._stage_labels = combined._substage_labels;
+  if (last.completed_stages) combined.completed_stages = last.completed_stages;
+  if (last.stage_dir_map) combined.stage_dir_map = last.stage_dir_map;
+  if (last.current_stage) combined.current_stage = last.current_stage;
+
+  return combined;
+}
+
+// Build a combined tree merging all loaded stages into one connected tree.
+// Inherited nodes are merged with the previous stage's best node so that
+// the tree is a single connected structure across stages.
+function buildCombinedStageData() {
+  const stageOrder = ['Stage_1', 'Stage_2', 'Stage_3', 'Stage_4'];
+  const loadedStages = stageOrder.filter(s => stageData[s]);
+
+  if (loadedStages.length === 0) return null;
+  if (loadedStages.length === 1) return stageData[loadedStages[0]];
+
+  // Per-node array field names to merge
+  const nodeFields = [
+    'code', 'plan', 'term_out', 'analysis', 'node_id', 'branch_id',
+    'inherited_from_node_id', 'exc_type', 'exc_info', 'exc_stack',
+    'plots', 'plot_paths', 'plot_analyses', 'vlm_feedback_summary',
+    'exec_time', 'exec_time_feedback', 'datasets_successfully_tested',
+    'plot_code', 'plot_plan', 'ablation_name', 'hyperparam_name',
+    'is_seed_node', 'is_seed_agg_node', 'parse_metrics_plan',
+    'parse_metrics_code', 'parse_term_out', 'parse_exc_type',
+    'parse_exc_info', 'parse_exc_stack', 'metrics', 'is_best_node',
+    'memory_events'
+  ];
+
+  const combined = { layout: [], edges: [], _stage_labels: [] };
+  for (const f of nodeFields) combined[f] = [];
+
+  let globalIdx = 0;
+  const nStages = loadedStages.length;
+
+  // Build a global node_id -> globalIdx map for cross-stage lookups
+  const nodeIdToGlobalIdx = {};
+
+  // First pass: build index maps and count included nodes per stage
+  const stageIndexMaps = {};
+  const stageIncluded = {};
+
+  for (let si = 0; si < nStages; si++) {
+    const stageId = loadedStages[si];
+    const data = stageData[stageId];
+    const n = data.layout.length;
+    const map = {};
+    const included = [];
+
+    // In the combined view, skip none_root only for stages that have an inherited
+    // node (stages 2+), since the inherited node replaces the virtual root's role
+    // by connecting to the previous stage's best node. For the first stage (no
+    // inheritance), keep none_root so parentless nodes remain connected.
+    const hasInherited = data.inherited_from_node_id && data.inherited_from_node_id[0];
+    const inheritedIdx = hasInherited ? 0 : -1;
+    const noneRootIdx = data.node_id ? data.node_id.indexOf('none_root') : -1;
+    const skipNoneRoot = hasInherited && noneRootIdx >= 0;
+
+    // Find the global index of the inherited-from node in a previous stage
+    let inheritedParentGlobalIdx = null;
+    if (inheritedIdx >= 0) {
+      const inheritedFromId = data.inherited_from_node_id[0];
+      // Look up by full ID first, then by short prefix match
+      if (inheritedFromId in nodeIdToGlobalIdx) {
+        inheritedParentGlobalIdx = nodeIdToGlobalIdx[inheritedFromId];
+      } else {
+        // Try prefix match (node_id in tree may be shorter than inherited_from_node_id)
+        for (const [nid, gidx] of Object.entries(nodeIdToGlobalIdx)) {
+          if (inheritedFromId.startsWith(nid) || nid.startsWith(inheritedFromId)) {
+            inheritedParentGlobalIdx = gidx;
+            break;
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      if (skipNoneRoot && i === noneRootIdx) continue;
+      if (i === inheritedIdx && inheritedParentGlobalIdx !== null) {
+        // Map inherited node to the actual inherited-from node in previous stage
+        map[i] = inheritedParentGlobalIdx;
+        continue;
+      }
+      map[i] = globalIdx;
+      // Register this node's ID in the global map
+      if (data.node_id && data.node_id[i] && data.node_id[i] !== 'none_root') {
+        nodeIdToGlobalIdx[data.node_id[i]] = globalIdx;
+      }
+      included.push(i);
+      globalIdx++;
+    }
+
+    stageIndexMaps[stageId] = map;
+    stageIncluded[stageId] = included;
+  }
+
+  // Second pass: populate combined arrays
+  for (let si = 0; si < nStages; si++) {
+    const stageId = loadedStages[si];
+    const data = stageData[stageId];
+    const map = stageIndexMaps[stageId];
+    const included = stageIncluded[stageId];
+
+    // Vertical band for this stage
+    const bandPad = 0.02;
+    const yMin = si / nStages + bandPad;
+    const yMax = (si + 1) / nStages - bandPad;
+
+    // Get y range of included nodes in original layout
+    const origYs = included.map(i => data.layout[i][1]);
+    const origYMin = Math.min(...origYs);
+    const origYMax = Math.max(...origYs);
+    const origYRange = origYMax - origYMin || 1;
+
+    for (const i of included) {
+      const [ox, oy] = data.layout[i];
+      const ny = yMin + ((oy - origYMin) / origYRange) * (yMax - yMin);
+      combined.layout.push([ox, ny]);
+      combined._stage_labels.push(stageId);
+
+      for (const f of nodeFields) {
+        if (data[f] && Array.isArray(data[f]) && i < data[f].length) {
+          combined[f].push(data[f][i]);
+        } else if (f === 'is_best_node') {
+          combined[f].push(false);
+        } else if (f === 'memory_events') {
+          combined[f].push([]);
+        } else {
+          combined[f].push(null);
+        }
+      }
+    }
+
+    // Add edges (remapped to global indices)
+    for (const [pIdx, cIdx] of data.edges) {
+      const gp = map[pIdx];
+      const gc = map[cIdx];
+      if (gp !== undefined && gc !== undefined && gp !== gc) {
+        combined.edges.push([gp, gc]);
+      }
+    }
+  }
+
+  return combined;
+}
+
 // Start a new p5 sketch for the given stage
 function startSketch(stageId) {
   if (currentSketch) {
     currentSketch.remove();
   }
 
-  if (stageData[stageId]) {
+  if (stageId === 'All') {
+    const combined = buildCombinedStageData();
+    if (combined) {
+      stageData['All'] = combined;
+      currentSketch = new p5(createTreeSketch('All'));
+      document.getElementById('stage-info').innerHTML =
+        `<strong>All Stages (Combined Tree)</strong>`;
+    }
+  } else if (stageData[stageId]) {
     currentSketch = new p5(createTreeSketch(stageId));
 
     // Update stage info
@@ -453,7 +834,7 @@ function startSketch(stageId) {
 
 // Handle tab selection
 function selectStage(stageId) {
-  if (!stageData[stageId] || !availableStages.includes(stageId)) {
+  if (stageId !== 'All' && (!stageData[stageId] || !availableStages.includes(stageId))) {
     return; // Don't allow selection of unavailable stages
   }
 
@@ -491,6 +872,7 @@ async function loadAllStageData(baseTreeData) {
   // Load data for each stage if available
   const stageNames = ['Stage_1', 'Stage_2', 'Stage_3', 'Stage_4'];
   const stageDirMap = baseTreeData.stage_dir_map || defaultStageDirMap;
+  const substageDirMap = baseTreeData.substage_dir_map || {};
 
   for (const stage of stageNames) {
 
@@ -498,6 +880,35 @@ async function loadAllStageData(baseTreeData) {
       if (stageData[stage]) {
         continue;
       }
+
+      // Check if this stage has multiple sub-stages
+      const substageDirs = substageDirMap[stage];
+      if (substageDirs && substageDirs.length > 1) {
+        console.log(`Stage ${stage} has ${substageDirs.length} sub-stages, loading all...`);
+        const substageDataList = [];
+        for (const subDir of substageDirs) {
+          try {
+            const url = `${logDirPath}/${subDir}/tree_data.json`;
+            console.log(`Loading sub-stage from ${url}`);
+            const response = await fetch(url);
+            if (response.ok) {
+              const data = await response.json();
+              if (data && Array.isArray(data.layout) && Array.isArray(data.edges)) {
+                substageDataList.push(data);
+              }
+            }
+          } catch (error) {
+            console.error(`Error loading sub-stage ${subDir}:`, error);
+          }
+        }
+        if (substageDataList.length > 0) {
+          stageData[stage] = mergeSubstageTrees(substageDataList);
+          addAvailableStage(stage);
+          console.log(`Merged ${substageDataList.length} sub-stages for ${stage}`);
+        }
+        continue;
+      }
+
       try {
         const stageDirName = stageDirMap[stage] || stage.toLowerCase();
         if (!stageDirName) {
@@ -532,8 +943,11 @@ async function loadAllStageData(baseTreeData) {
   // Update tab visibility based on available stages
   updateTabVisibility();
 
-  // Start with the first available stage
-  if (availableStages.length > 0) {
+  // Start with the combined "All" view if multiple stages are available,
+  // otherwise show the single available stage
+  if (availableStages.length > 1) {
+    selectStage('All');
+  } else if (availableStages.length > 0) {
     selectStage(availableStages[0]);
   } else {
     console.warn("No stages available to display");
@@ -548,7 +962,14 @@ function updateTabVisibility() {
   const tabs = document.querySelectorAll('.tab');
   tabs.forEach(tab => {
     const stageId = tab.getAttribute('data-stage');
-    if (availableStages.includes(stageId)) {
+    if (stageId === 'All') {
+      // "All" tab is enabled when more than one stage is available
+      if (availableStages.length > 1) {
+        tab.classList.remove('disabled');
+      } else {
+        tab.classList.add('disabled');
+      }
+    } else if (availableStages.includes(stageId)) {
       tab.classList.remove('disabled');
     } else {
       tab.classList.add('disabled');

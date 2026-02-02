@@ -522,6 +522,7 @@ def load_journal_nodes_from_tree_data(log_dir: Path) -> list[dict]:
 
             node_ids = tree_data.get("node_id", [])
             edges = tree_data.get("edges", [])
+            is_best_node = tree_data.get("is_best_node", [])
 
             # Build parent mapping from edges
             # edges are in format [[parent_idx, child_idx], ...]
@@ -533,7 +534,19 @@ def load_journal_nodes_from_tree_data(log_dir: Path) -> list[dict]:
                         parent_map[child_idx] = parent_idx
 
             for idx, node_id in enumerate(node_ids):
-                if node_id in seen_node_ids or node_id == "none_root":
+                if node_id == "none_root":
+                    continue
+                is_best = bool(is_best_node[idx]) if idx < len(is_best_node) else False
+                # If already seen, still update is_best and add stage info
+                if node_id in seen_node_ids:
+                    if is_best:
+                        for jn in journal_nodes:
+                            if jn["id"] == node_id:
+                                jn["is_best"] = True
+                                if "best_stages" not in jn:
+                                    jn["best_stages"] = []
+                                jn["best_stages"].append(stage_dir.name)
+                                break
                     continue
                 seen_node_ids.add(node_id)
 
@@ -544,12 +557,16 @@ def load_journal_nodes_from_tree_data(log_dir: Path) -> list[dict]:
                     if parent_node_id != "none_root":
                         parent_id = parent_node_id
 
+                best_stages = [stage_dir.name] if is_best else []
                 journal_nodes.append({
                     "id": node_id,
                     "parent_id": parent_id,
                     "node_uid": node_id,
                     "created_at": None,  # Unknown from tree_data.json
                     "source": "journal",
+                    "is_best": is_best,
+                    "best_stages": best_stages,
+                    "stage": stage_dir.name,
                 })
         except Exception as e:
             print(f"[yellow]Warning: Could not load tree_data.json from {stage_dir}: {e}[/yellow]")
@@ -691,6 +708,7 @@ def generate_memory_database_html(
     output_path: Path,
     experiment_name: str = "Memory Database",
     memory_calls: list[dict] | None = None,
+    best_node_ids: dict[str, list[str]] | None = None,
 ):
     """Generate the HTML visualization for memory database.
 
@@ -702,7 +720,10 @@ def generate_memory_database_html(
         output_path: Path to write the HTML file
         experiment_name: Name to display in the visualization
         memory_calls: Optional list of memory call log events (from memory_calls.jsonl)
+        best_node_ids: Optional mapping of node_uid -> list of stage names where it is best
     """
+    if best_node_ids is None:
+        best_node_ids = {}
     branches = memory_data["branches"]
     layout, edges = build_memory_tree_layout(branches)
 
@@ -732,6 +753,8 @@ def generate_memory_database_html(
                 "parent_id": branch["parent_id"],
                 "phases": [],
                 "is_virtual": True,
+                "is_best": False,
+                "best_stages": [],
                 # Empty data for virtual node
                 "own_core_kv": [],
                 "own_events": [],
@@ -836,6 +859,8 @@ def generate_memory_database_html(
             "parent_id": branch["parent_id"],
             "phases": phases,
             "is_virtual": False,
+            "is_best": bool(best_node_ids.get(node_uid or branch_id)),
+            "best_stages": best_node_ids.get(node_uid or branch_id, []),
             # Own data (this node only)
             "own_core_kv": own_core_kv,
             "own_events": own_events,
@@ -950,9 +975,23 @@ def create_memory_database_viz(cfg: Any, current_stage_viz_path: Path):
 
         # Load journal nodes from tree_data.json files and merge with SQLite data
         journal_nodes = load_journal_nodes_from_tree_data(log_dir)
+        best_node_ids: dict[str, list[str]] = {}
         if journal_nodes:
             memory_data = merge_journal_nodes_into_memory_data(memory_data, journal_nodes)
             print(f"[blue]Merged {len(journal_nodes)} journal nodes into memory data[/blue]")
+
+            # Build best_node_ids mapping: node_uid -> list of stages where it is best
+            for jnode in journal_nodes:
+                if jnode.get("is_best"):
+                    node_id = jnode["id"]
+                    stages = jnode.get("best_stages", [])
+                    if not stages:
+                        stages = [jnode.get("stage", "")]
+                    if node_id not in best_node_ids:
+                        best_node_ids[node_id] = []
+                    for s in stages:
+                        if s and s not in best_node_ids[node_id]:
+                            best_node_ids[node_id].append(s)
 
         # Load memory call log (includes memory reads/injections)
         # Check both workspace_dir and log_dir for memory_calls.jsonl
@@ -967,7 +1006,7 @@ def create_memory_database_viz(cfg: Any, current_stage_viz_path: Path):
 
         output_path = log_dir / "memory_database.html"
         experiment_name = log_dir.name
-        generate_memory_database_html(memory_data, output_path, experiment_name, memory_calls)
+        generate_memory_database_html(memory_data, output_path, experiment_name, memory_calls, best_node_ids)
         print(f"[green]Created memory database visualization at {output_path}[/green]")
     except Exception as e:
         print(f"[red]Error generating memory database visualization: {e}[/red]")

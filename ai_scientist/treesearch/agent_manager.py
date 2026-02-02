@@ -840,6 +840,18 @@ class AgentManager:
             cfg=self.cfg, memory_context=memory_context
         )
         if best_node:
+            # Save best_node.id to best_node_id.txt for visualization consistency
+            # This ensures the saved best node matches what's inherited to the next stage
+            stage_dir = self.cfg.log_dir / stage_name
+            if stage_dir.exists():
+                best_node_id_file = stage_dir / "best_node_id.txt"
+                try:
+                    with open(best_node_id_file, "w") as f:
+                        f.write(str(best_node.id))
+                    print(f"[green]Saved best node ID {best_node.id} to {best_node_id_file}[/green]")
+                except Exception as e:
+                    print(f"[yellow]Warning: Could not save best_node_id.txt: {e}[/yellow]")
+
             # Create a clean copy of the node for the next stage
             copied_node = copy.deepcopy(best_node)
             # Store the original node ID for cross-stage lineage tracking

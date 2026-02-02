@@ -4,6 +4,7 @@ import os
 from .utils import FunctionSpec, OutputType, opt_messages_to_list, backoff_create
 from funcy import notnone, once, select_values
 import anthropic
+from ai_scientist.utils.token_tracker import track_anthropic_response
 
 
 ANTHROPIC_TIMEOUT_EXCEPTIONS = (
@@ -55,6 +56,11 @@ def query(
     )
     req_time = time.time() - t0
     print(filtered_kwargs)
+
+    # Track token usage
+    track_anthropic_response(
+        message, model_kwargs.get("model"), system_message, user_message
+    )
 
     if "thinking" in filtered_kwargs:
         assert (

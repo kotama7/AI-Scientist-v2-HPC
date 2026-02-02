@@ -14,7 +14,11 @@ from ai_scientist.llm.utils import (
     extract_openai_response_text,
     dump_empty_llm_response,
 )
-from ai_scientist.utils.token_tracker import track_token_usage
+from ai_scientist.utils.token_tracker import (
+    track_token_usage,
+    track_openai_response,
+    track_anthropic_response,
+)
 
 
 @track_token_usage
@@ -137,6 +141,7 @@ def get_response_from_llm(
             messages=new_msg_history,
         )
         raw_response = response
+        track_anthropic_response(response, model, system_message, msg)
         content = response.content[0].text
         new_msg_history = new_msg_history + [
             {
@@ -163,6 +168,7 @@ def get_response_from_llm(
             stop=None,
         )
         raw_response = response
+        track_openai_response(response, system_message, msg)
         content = extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif "gpt" in model:
@@ -203,6 +209,7 @@ def get_response_from_llm(
             stop=None,
         )
         raw_response = response
+        track_openai_response(response, system_message, msg)
         content = extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif model == "deepcoder-14b":
@@ -220,6 +227,7 @@ def get_response_from_llm(
                 stop=None,
             )
             raw_response = response
+            track_openai_response(response, system_message, msg)
             content = extract_openai_response_text(response)
         except Exception as e:
             # Fallback to direct API call if OpenAI client doesn't work with HuggingFace
@@ -265,6 +273,7 @@ def get_response_from_llm(
             stop=None,
         )
         raw_response = response
+        track_openai_response(response, system_message, msg)
         content = extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     elif 'gemini' in model:
@@ -280,6 +289,7 @@ def get_response_from_llm(
             n=1,
         )
         raw_response = response
+        track_openai_response(response, system_message, msg)
         content = extract_openai_response_text(response)
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
     else:
@@ -356,6 +366,7 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
         )
+        track_openai_response(response, system_message, msg)
         content = [extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
@@ -391,6 +402,7 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
         )
+        track_openai_response(response, system_message, msg)
         content = [extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
@@ -408,6 +420,7 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
         )
+        track_openai_response(response, system_message, msg)
         content = [extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content
@@ -425,6 +438,7 @@ def get_batch_responses_from_llm(
             n=n_responses,
             stop=None,
         )
+        track_openai_response(response, system_message, msg)
         content = [extract_openai_message_text(r.message) for r in response.choices]
         new_msg_history = [
             new_msg_history + [{"role": "assistant", "content": c}] for c in content

@@ -110,7 +110,11 @@
             infoEl.textContent = 'Virtual Root Node';
         } else {
             const nodeId = nodeData.node_uid || nodeData.branch_id;
-            infoEl.textContent = `Node: ${nodeId ? nodeId.substring(0, 16) + '...' : index}`;
+            const bestBadge = nodeData.is_best
+                ? ' \u2605 BEST'
+                : '';
+            infoEl.innerHTML = `Node: ${nodeId ? nodeId.substring(0, 16) + '...' : index}` +
+                (bestBadge ? `<span style="color:#ffd700;font-weight:bold;margin-left:8px">${bestBadge}</span>` : '');
         }
 
         // Render content based on current view

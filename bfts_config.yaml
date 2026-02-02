@@ -27,7 +27,7 @@ exec:
   # プロンプトのログ記録を有効化
   log_prompts: true
   # 各コード実行のタイムアウト時間（秒）
-  timeout: 3600
+  timeout: 10800  # 3時間
 
 
 # メモリ・記憶管理の設定
@@ -35,7 +35,7 @@ memory:
   # メモリ機能の有効化（true: 有効, false: 無効）
   enabled: true
   # コアメモリの最大文字数
-  core_max_chars: 10000
+  core_max_chars: 2000
   # 想起する最大イベント数
   recall_max_events: 5
   # 検索時に取得する上位k件
@@ -128,10 +128,10 @@ agent:
   num_workers: 4
   # 各ステージの最大反復回数
   stages:
-    stage1_max_iters: 20
-    stage2_max_iters: 20
-    stage3_max_iters: 20
-    stage4_max_iters: 20
+    stage1_max_iters: 40
+    stage2_max_iters: 40
+    stage3_max_iters: 40
+    stage4_max_iters: 40
   # 改善反復の実行回数（ステージ別max_itersが未指定の場合に使用）
   steps: 5
   # マルチシード評価の設定

@@ -499,7 +499,7 @@ class MemoryManager:
         self.retrieval_k = int(_cfg_get(self.config, "retrieval_k", 8))
         self.use_fts_setting = str(_cfg_get(self.config, "use_fts", "auto")).lower()
         self.max_compression_iterations = int(
-            _cfg_get(self.config, "max_compression_iterations", 3)
+            _cfg_get(self.config, "max_compression_iterations", 5)
         )
         self.redact_secrets = bool(_cfg_get(self.config, "redact_secrets", True))
         self.memory_log_enabled = bool(_cfg_get(self.config, "memory_log_enabled", True))
@@ -1195,13 +1195,13 @@ class MemoryManager:
 
     def _set_core_value(self, branch_id: str, key: str, value: str) -> None:
         text = _redact(str(value), self.redact_secrets)
-        self._conn.execute(
+        self._write_execute(
             "INSERT OR REPLACE INTO core_kv (branch_id, key, value, updated_at) VALUES (?, ?, ?, ?)",
             (branch_id, key, text, _now_ts()),
         )
 
     def _set_core_meta(self, branch_id: str, key: str, *, importance: int, ttl: str | None) -> None:
-        self._conn.execute(
+        self._write_execute(
             "INSERT OR REPLACE INTO core_meta (branch_id, key, importance, ttl, updated_at) VALUES (?, ?, ?, ?, ?)",
             (branch_id, key, int(importance), ttl, _now_ts()),
         )
@@ -1217,11 +1217,11 @@ class MemoryManager:
         node_id: str | None = None,
         log_event: bool = True,
     ) -> None:
-        self._conn.execute(
+        self._write_execute(
             "DELETE FROM core_kv WHERE branch_id=? AND key=?",
             (branch_id, key),
         )
-        self._conn.execute(
+        self._write_execute(
             "DELETE FROM core_meta WHERE branch_id=? AND key=?",
             (branch_id, key),
         )
@@ -1278,7 +1278,7 @@ class MemoryManager:
             )
             current_size = _core_size(entries)
             if current_size <= self.core_max_chars:
-                self._conn.commit()
+                self._write_commit()
                 return
 
         # Still too large; summarize remaining core into a digest.
@@ -1308,7 +1308,7 @@ class MemoryManager:
                 digest_value = f"{digest_body}\n(ref: {record_id})"
             self._set_core_value(branch_id, "CoreDigest", digest_value)
             self._set_core_meta(branch_id, "CoreDigest", importance=5, ttl=None)
-        self._conn.commit()
+        self._write_commit()
 
     # ==========================================================================
     # Memory Pressure Management (MemGPT-style)
@@ -1810,11 +1810,12 @@ class MemoryManager:
         # Delete consolidated events
         if event_ids_to_delete:
             id_placeholders = ",".join(["?"] * len(event_ids_to_delete))
-            self._conn.execute(
+            self._write_execute(
                 f"DELETE FROM events WHERE id IN ({id_placeholders})",
-                event_ids_to_delete,
+                tuple(event_ids_to_delete),
+                commit=True,
+                sync=True,
             )
-            self._conn.commit()
 
         self._log_memory_event(
             "consolidate_recall_events",
@@ -2153,7 +2154,7 @@ class MemoryManager:
             self._enforce_core_budget(branch_id)
             actions_taken.append("enforced_core_budget")
 
-        self._conn.commit()
+        self._write_commit()
 
         # Check new pressure level
         new_pressure = self.check_memory_pressure(branch_id, phase=task_hint)
@@ -2214,7 +2215,7 @@ class MemoryManager:
                 },
             )
         self._enforce_core_budget(branch_id)
-        self._execute_with_retry(self._conn.commit)
+        self._write_commit()
 
     def get_core(
         self,
@@ -2299,7 +2300,7 @@ class MemoryManager:
             reason="explicit",
             op_name="mem_core_del",
         )
-        self._conn.commit()
+        self._write_commit()
 
     def write_event(
         self,

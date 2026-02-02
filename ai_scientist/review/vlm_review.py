@@ -11,6 +11,7 @@ from ai_scientist.vlm import (
     extract_json_between_markers,
 )
 from ai_scientist.utils.model_params import build_token_params
+from ai_scientist.utils.token_tracker import track_openai_response
 from ai_scientist.review.pdf_utils import load_paper
 from ai_scientist.prompt_loader import load_prompt
 
@@ -363,6 +364,11 @@ def detect_duplicate_figures(client, client_model, pdf_path):
             messages=messages,
             **build_token_params(client_model, 1000),
         )
+
+        # Track token usage
+        system_msg = messages[0]["content"] if messages else None
+        user_msg = messages[1]["content"] if len(messages) > 1 else None
+        track_openai_response(response, system_msg, user_msg)
 
         analysis = response.choices[0].message.content
         return analysis

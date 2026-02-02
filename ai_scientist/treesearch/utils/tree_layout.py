@@ -12,20 +12,19 @@ def get_edges(journal: Journal, include_none_root: bool = False):
     """Generate edges from parent-child relationships.
 
     If include_none_root is True, adds a virtual "None" root node at index len(journal)
-    and connects all root nodes (nodes with parent=None and no inherited_from_node_id) to it.
-    Nodes with inherited_from_node_id are excluded from the None root connection
-    as they represent cross-stage inheritance from a previous stage's best node.
+    and connects all parentless nodes to it, including nodes inherited from a previous
+    stage's best node. This ensures no nodes are isolated in the tree visualization.
     """
     for node in journal:
         for c in node.children:
             yield (node.step, c.step)
 
     if include_none_root:
-        # Add edges from None root (at index len(journal)) to all root nodes
-        # Exclude nodes that are inherited from a previous stage
+        # Add edges from None root (at index len(journal)) to all parentless nodes,
+        # including inherited nodes so they are not isolated in the tree
         none_root_idx = len(journal)
         for node in journal:
-            if node.parent is None and not getattr(node, "inherited_from_node_id", None):
+            if node.parent is None:
                 yield (none_root_idx, node.step)
 
 

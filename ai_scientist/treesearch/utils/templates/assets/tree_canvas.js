@@ -28,6 +28,8 @@ function createTreeSketch(memoryData, callbacks = {}) {
             node: '#4dabf7',
             nodeHover: '#74c0fc',
             nodeSelected: '#e94560',
+            nodeBest: '#ffd700',
+            nodeBestGlow: 'rgba(255, 215, 0, 0.3)',
             nodeVirtual: '#555',
             text: '#eee',
             textMuted: '#888',
@@ -96,12 +98,16 @@ function createTreeSketch(memoryData, callbacks = {}) {
                 const isSelected = i === selectedNodeIndex;
                 const isHovered = i === hoveredNodeIndex;
                 const isVirtual = node.is_virtual;
+                const isBest = node.is_best;
 
                 // Determine node color and size
                 let nodeColor, radius;
                 if (isSelected) {
                     nodeColor = COLORS.nodeSelected;
                     radius = SELECTED_RADIUS;
+                } else if (isBest) {
+                    nodeColor = COLORS.nodeBest;
+                    radius = NODE_RADIUS + 3;
                 } else if (isHovered) {
                     nodeColor = COLORS.nodeHover;
                     radius = NODE_RADIUS + 2;
@@ -113,10 +119,26 @@ function createTreeSketch(memoryData, callbacks = {}) {
                     radius = NODE_RADIUS;
                 }
 
+                // Draw glow for best nodes
+                if (isBest && !isSelected) {
+                    p.noStroke();
+                    p.fill(COLORS.nodeBestGlow);
+                    p.ellipse(x, y, (radius + 8) * 2 / zoom);
+                }
+
                 // Draw node
                 p.noStroke();
                 p.fill(nodeColor);
                 p.ellipse(x, y, radius * 2 / zoom);
+
+                // Draw star marker for best nodes
+                if (isBest) {
+                    p.fill(COLORS.background);
+                    p.noStroke();
+                    p.textSize(10 / zoom);
+                    p.textAlign(p.CENTER, p.CENTER);
+                    p.text('\u2605', x, y - 1 / zoom); // ★
+                }
 
                 // Draw selection ring
                 if (isSelected) {
@@ -124,25 +146,44 @@ function createTreeSketch(memoryData, callbacks = {}) {
                     p.stroke(COLORS.nodeSelected);
                     p.strokeWeight(2 / zoom);
                     p.ellipse(x, y, (radius + 4) * 2 / zoom);
+                } else if (isBest) {
+                    p.noFill();
+                    p.stroke(COLORS.nodeBest);
+                    p.strokeWeight(2 / zoom);
+                    p.ellipse(x, y, (radius + 4) * 2 / zoom);
                 }
 
-                // Draw label for selected/hovered node
-                if (isSelected || isHovered) {
-                    drawNodeLabel(node, x, y);
+                // Draw label for selected/hovered/best node
+                if (isSelected || isHovered || isBest) {
+                    drawNodeLabel(node, x, y, isBest);
                 }
             }
         }
 
-        function drawNodeLabel(node, x, y) {
+        function drawNodeLabel(node, x, y, isBest) {
             const label = node.node_uid ?
                 node.node_uid.substring(0, 8) + '...' :
                 `Node ${node.index}`;
+
+            const labelY = y - NODE_RADIUS / zoom - 5 / zoom;
+
+            if (isBest) {
+                // Draw "BEST" badge above the node label
+                const badgeText = node.best_stages && node.best_stages.length > 0
+                    ? '\u2605 BEST'
+                    : '\u2605 BEST';
+                p.fill(COLORS.nodeBest);
+                p.noStroke();
+                p.textSize(9 / zoom);
+                p.textAlign(p.CENTER, p.BOTTOM);
+                p.text(badgeText, x, labelY - 12 / zoom);
+            }
 
             p.fill(COLORS.text);
             p.noStroke();
             p.textSize(11 / zoom);
             p.textAlign(p.CENTER, p.BOTTOM);
-            p.text(label, x, y - NODE_RADIUS / zoom - 5 / zoom);
+            p.text(label, x, labelY);
         }
 
         function drawOverlay() {

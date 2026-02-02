@@ -7,7 +7,7 @@ import openai
 
 from ai_scientist.vlm.constants import AVAILABLE_VLMS, MAX_NUM_TOKENS
 from ai_scientist.vlm.utils import encode_image_to_base64
-from ai_scientist.utils.token_tracker import track_token_usage
+from ai_scientist.utils.token_tracker import track_token_usage, track_openai_response
 from ai_scientist.utils.model_params import build_token_params
 
 
@@ -282,6 +282,7 @@ def get_batch_responses_from_vlm(
                 n=n_responses,
                 seed=0,
             )
+            track_openai_response(response, system_message, msg)
         else:
             # Get multiple responses
             response = client.chat.completions.create(
@@ -295,6 +296,7 @@ def get_batch_responses_from_vlm(
                 n=n_responses,
                 seed=0,
             )
+            track_openai_response(response, system_message, msg)
 
         # Extract content from all responses
         contents = [r.message.content for r in response.choices]

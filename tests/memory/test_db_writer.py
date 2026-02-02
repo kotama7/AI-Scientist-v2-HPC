@@ -35,7 +35,7 @@ class TestWriteRequest:
         assert len(request.request_id) == 32  # UUID hex
         assert request.sql is None
         assert request.params is None
-        assert request.response_queue is None
+        assert request.response_conn is None
         assert request.timeout == 60.0
 
     def test_create_request_with_sql(self):
@@ -287,6 +287,80 @@ class TestDatabaseWriterProcess:
             assert "syntax error" in response.error.lower()
         finally:
             writer.shutdown()
+
+
+class TestDatabaseWriterShutdownEvent:
+    """Tests for shutdown via event (fixes 'Writer process still alive' error)."""
+
+    @pytest.fixture
+    def temp_db(self):
+        """Create a temporary database file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.sqlite"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
+            conn.commit()
+            conn.close()
+            yield db_path
+
+    def test_shutdown_via_event_when_queue_is_broken(self, temp_db):
+        """Test that writer shuts down via event even if the queue is unusable.
+
+        This reproduces the bug where the writer process ignored terminate()
+        because it was blocked on a Manager queue get() call. The fix adds
+        a shutdown_requested event that the writer checks each iteration.
+        """
+        writer = DatabaseWriterProcess(temp_db)
+        writer.start()
+        assert writer.is_alive()
+
+        # Write some data first
+        client = DatabaseWriterClient(writer.queue)
+        client.execute_and_commit(
+            "INSERT INTO test (name) VALUES (?)", ("before_shutdown",), sync=True
+        )
+
+        # Directly set the shutdown_requested event (simulating broken queue)
+        writer._shutdown_requested.set()
+
+        # The writer loop should notice the event within batch_timeout (~50ms)
+        # and exit cleanly, setting _shutdown_complete
+        assert writer._shutdown_complete.wait(timeout=10), (
+            "Writer did not shut down via event within 10 seconds"
+        )
+
+        writer._process.join(timeout=5)
+        assert not writer.is_alive()
+
+        # Verify data was committed before shutdown
+        conn = sqlite3.connect(str(temp_db))
+        row = conn.execute("SELECT name FROM test").fetchone()
+        conn.close()
+        assert row[0] == "before_shutdown"
+
+    def test_shutdown_completes_within_timeout(self, temp_db):
+        """Test that normal shutdown completes quickly without needing kill()."""
+        writer = DatabaseWriterProcess(temp_db)
+        writer.start()
+
+        client = DatabaseWriterClient(writer.queue)
+        for i in range(10):
+            client.execute(
+                "INSERT INTO test (name) VALUES (?)", (f"val_{i}",)
+            )
+
+        start = time.monotonic()
+        writer.shutdown(timeout=10.0)
+        elapsed = time.monotonic() - start
+
+        assert not writer.is_alive()
+        # Should complete well under the timeout (event + queue signal)
+        assert elapsed < 10.0, f"Shutdown took {elapsed:.1f}s, expected < 10s"
+
+        conn = sqlite3.connect(str(temp_db))
+        count = conn.execute("SELECT COUNT(*) FROM test").fetchone()[0]
+        conn.close()
+        assert count == 10
 
 
 class TestDatabaseWriterClient:

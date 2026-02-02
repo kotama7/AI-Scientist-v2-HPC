@@ -62,6 +62,33 @@ class TokenTracker:
                 "cached": 0.55 / 1000000,  # $0.55 per 1M tokens
                 "completion": 4.4 / 1000000,  # $4.40 per 1M tokens
             },
+            # Anthropic Claude models
+            "claude-3-5-sonnet-20241022": {
+                "prompt": 3.0 / 1000000,  # $3.00 per 1M tokens
+                "cached": 0.3 / 1000000,  # $0.30 per 1M tokens
+                "completion": 15.0 / 1000000,  # $15.00 per 1M tokens
+            },
+            "claude-3-5-haiku-20241022": {
+                "prompt": 1.0 / 1000000,  # $1.00 per 1M tokens
+                "cached": 0.1 / 1000000,  # $0.10 per 1M tokens
+                "completion": 5.0 / 1000000,  # $5.00 per 1M tokens
+            },
+            "claude-3-opus-20240229": {
+                "prompt": 15.0 / 1000000,  # $15.00 per 1M tokens
+                "cached": 1.5 / 1000000,  # $1.50 per 1M tokens
+                "completion": 75.0 / 1000000,  # $75.00 per 1M tokens
+            },
+            # Ollama (local, no cost)
+            "ollama": {
+                "prompt": 0.0,
+                "cached": 0.0,
+                "completion": 0.0,
+            },
+            # DeepSeek
+            "deepseek-coder": {
+                "prompt": 0.14 / 1000000,  # $0.14 per 1M tokens
+                "completion": 0.28 / 1000000,  # $0.28 per 1M tokens
+            },
         }
 
     def _resolve_price_model(self, model: str) -> Optional[str]:
@@ -239,3 +266,98 @@ def track_token_usage(func):
         return result
 
     return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+
+
+def track_openai_response(response, system_message=None, prompt=None):
+    """Track tokens from OpenAI API response.
+
+    Args:
+        response: OpenAI API response object
+        system_message: System message used in the call
+        prompt: User prompt or message history
+    """
+    if not hasattr(response, "usage") or response.usage is None:
+        logging.warning(
+            f"Response from {getattr(response, 'model', 'unknown')} has no usage info"
+        )
+        return
+
+    model = response.model
+    usage = response.usage
+
+    # Extract tokens with safe defaults
+    prompt_tokens = usage.prompt_tokens or 0
+    completion_tokens = usage.completion_tokens or 0
+    reasoning_tokens = (
+        getattr(usage.completion_tokens_details, "reasoning_tokens", 0)
+        if hasattr(usage, "completion_tokens_details")
+        and usage.completion_tokens_details
+        else 0
+    )
+    cached_tokens = (
+        getattr(usage.prompt_tokens_details, "cached_tokens", 0)
+        if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details
+        else 0
+    )
+
+    token_tracker.add_tokens(
+        model, prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens
+    )
+
+    # Add interaction
+    if system_message or prompt:
+        content = (
+            response.choices[0].message.content if response.choices else ""
+        )
+        timestamp = getattr(response, "created", datetime.now())
+        token_tracker.add_interaction(
+            model,
+            system_message or "",
+            str(prompt) if prompt else "",
+            content or "",
+            timestamp,
+        )
+
+
+def track_anthropic_response(message, model_name, system_message=None, prompt=None):
+    """Track tokens from Anthropic API response.
+
+    Args:
+        message: Anthropic API message object
+        model_name: Model name string
+        system_message: System message used in the call
+        prompt: User prompt or message history
+    """
+    if not hasattr(message, "usage") or message.usage is None:
+        logging.warning(f"Message from {model_name} has no usage info")
+        return
+
+    usage = message.usage
+
+    # Anthropic uses different field names
+    prompt_tokens = usage.input_tokens or 0
+    completion_tokens = usage.output_tokens or 0
+    reasoning_tokens = 0  # Anthropic doesn't provide this
+    cached_tokens = getattr(usage, "cache_read_input_tokens", 0) + getattr(
+        usage, "cache_creation_input_tokens", 0
+    )
+
+    token_tracker.add_tokens(
+        model_name, prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens
+    )
+
+    # Add interaction
+    if system_message or prompt:
+        content = (
+            message.content[0].text
+            if message.content and len(message.content) > 0
+            else ""
+        )
+        timestamp = datetime.now()
+        token_tracker.add_interaction(
+            model_name,
+            system_message or "",
+            str(prompt) if prompt else "",
+            content,
+            timestamp,
+        )
