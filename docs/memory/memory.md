@@ -19,7 +19,7 @@ For a detailed flow diagram of memory operations during node execution, see
 The default database path is `experiments/<run>/memory/memory.sqlite` and can be
 overridden with `--memory_db`.
 
-## Behavior when MemGPT is disabled (memGPT無効時の挙動)
+## Behavior when MemGPT is disabled (MemGPT Off)
 
 When `memory.enabled=false` (or `--enable_memgpt` is not passed), the system
 operates **without any context management**. This has significant implications:
@@ -86,8 +86,9 @@ memory:
 
 ## Memory layers
 
-- Core: always-injected essentials (idea summary + Phase 0 internal summary,
-  plus keys you set).
+- Core: always-injected keys set by the LLM. `idea_md_summary` and
+  `phase0_summary` are optional and only appear if the LLM writes them via
+  `<memory_update>`.
 - Recall: recent events for this branch (small window).
 - Archival: long-term store searched at injection time (FTS5 if available;
   keyword fallback otherwise).
@@ -99,10 +100,8 @@ memory:
 
 ## Persistence hooks
 
-- Phase 0 internal info is captured into archival memory (tag
-  `PHASE0_INTERNAL`) and summarized into Core.
-- `idea.md` is archived at run start (tags `IDEA_MD`, `ROOT_IDEA`) and on updates
-  per node; a short summary is always injected.
+- Phase 0 internal info, idea summaries, and other long-term notes are
+  **LLM-managed** via `<memory_update>` (not auto-saved).
 - Run end generates `experiments/<run>/memory/final_memory_for_paper.md|json`.
 
 ## Phase 1-4 Memory Operations
@@ -241,9 +240,9 @@ LLM Response with read operation
          v
 apply_llm_memory_updates()
          │
-         ├─ Execute writes (core, archival, recall)
+         ├─ Execute writes (mem_core_set, mem_archival_write, mem_recall_append)
          │
-         └─ Execute reads (core_get, archival_search, recall_search)
+         └─ Execute reads (mem_core_get, mem_archival_search, mem_recall_search)
                   │
                   v
          Return memory_results
@@ -345,22 +344,11 @@ These events enable:
 
 ## Resources in long-term memory
 
-When memory is enabled, resource files are snapshotted into MemGPT long-term
-memory:
-
-- A pinned `RESOURCE_INDEX` core entry stores the resource digest, resource file
-  sha, normalized config (essential fields), and an item table with retrieval
-  tags.
-- Items record `fetch_status` (`pending`/`available`/`failed`), resolved paths,
-  staging info, and bounded summaries (`tree_summary` / `content_excerpt`) per
-  `include_*` + `max_*`.
-- GitHub/HF items are recorded as pending until their `dest` exists; after
-  Phase 1 fetch, the snapshot and digest are updated.
-- Prompts always include `RESOURCE_INDEX` and the top-K most relevant resource
-  item memories (tags like `resource:<class>:<name>` and
-  `resource_path:<path>`).
-- Final paper memory includes a "Resources used" section with ids/digests/staged
-  paths for referenced resources.
+Resource snapshotting is optional. If you explicitly build a resource snapshot
+and persist it (e.g., via `resource_memory.build_resource_snapshot()` plus
+`mem_core_set` / `resource_index_json`), the memory system can inject a
+`RESOURCE_INDEX` section and resource item records. Without that snapshot,
+resource index entries are absent.
 
 ## LLM-based compression
 
@@ -372,7 +360,7 @@ key information while fitting within size limits.
 - The prompt template lives at `prompt/config/memory/compression.txt`.
 - Compression is cached per text hash to avoid redundant LLM calls.
 - Falls back to simple truncation on errors or when LLM is unavailable.
-- Use `--memory_max_compression_iterations` (default 3) to control iterative
+- Use `--memory_max_compression_iterations` (default 5) to control iterative
   compression attempts when content exceeds budget.
 
 ### Compression prompt template
@@ -399,11 +387,9 @@ The template accepts the following placeholders:
 
 ### Memory-context-aware compression
 
-When a `branch_id` is provided during compression, the system automatically fetches
-relevant memory context to help the LLM preserve information important to the research:
-
-- **idea_md_summary**: Research goals and objectives from the idea document.
-- **phase0_summary**: Experiment configuration and setup details.
+When a `branch_id` is provided during compression, the system can fetch
+`idea_md_summary` and `phase0_summary` (if present in core memory) to help the
+LLM preserve information important to the research.
 
 This context is injected into the compression prompt as the `{memory_context_section}`
 placeholder, helping the LLM make better decisions about what information to preserve.
@@ -445,9 +431,10 @@ The overall budget is controlled by `memory.memory_budget_chars` (default 24000)
 ## Inspecting memory artifacts
 
 - `experiments/<run>/memory/memory.sqlite` stores the persistent memory tables.
-- `experiments/<run>/memory/resource_snapshot.json` captures resolved resources.
+- `experiments/<run>/memory/resource_snapshot.json` captures resolved resources
+  only when a snapshot is explicitly created.
 - `experiments/<run>/memory/final_memory_for_paper.*` summarizes end-state memory.
-- `experiments/<run>/logs/<run>/memory_database.html` interactive visualization.
+- `experiments/<run>/logs/memory_database.html` interactive visualization.
 
 If you need a clean slate, delete the run directory or set a new
 `--memory_db` path for the next run.

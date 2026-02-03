@@ -1,7 +1,9 @@
 # Outputs
 
 Each run creates a directory under `experiments/` that captures inputs, logs,
-artifacts, and optional memory snapshots.
+artifacts, and optional memory snapshots. The run directory is also the
+workspace (`cfg.workspace_dir`), while `cfg.log_dir` points to a `logs/`
+subdirectory inside the run.
 
 ## Core run artifacts
 
@@ -9,30 +11,61 @@ artifacts, and optional memory snapshots.
 - `experiments/<timestamp>_<idea>_attempt_<id>/idea.json`
 - `experiments/<timestamp>_<idea>_attempt_<id>/bfts_config.yaml`
 
-## Logs and workspace
+## Log directory (cfg.log_dir)
 
-- `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/`
-  (stage journals, configs, tree plots, `manager.pkl`)
-- `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/unified_tree_viz.html`
-  (multi-stage tree viewer; loads per-stage `tree_data.json`)
-- `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/stage_*/tree_data.json`
-  (tree data with `stage_dir_map` and `log_dir_path` metadata for the viewer)
-- `experiments/<timestamp>_<idea>_attempt_<id>/logs/<index>-<exp_name>/phase_logs/node_<id>/prompt_logs/`
-  (system prompt logs per node)
-- `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/`
-  (workspace with `input/` and `working/`)
+Top-level files in `experiments/<run>/logs/`:
 
-## Node logs and stage best (workspace inheritance)
+- `unified_tree_viz.html` (multi-stage tree viewer)
+- `memory_database.html` (memory viewer; generated only if memory is enabled and
+  `memory.sqlite` exists)
+- `manager.pkl` (serialized AgentManager / journals)
+- `draft_summary.json`, `baseline_summary.json`, `research_summary.json`,
+  `ablation_summary.json` (when `generate_report=true`)
 
-Node workspaces are persisted for cross-stage file inheritance:
+Per-stage logs live under stage directories:
 
-- `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/node_logs/node_<id>/`
-  (temporary: node workspace copied after processing, deleted after stage completion)
-- `experiments/<timestamp>_<idea>_attempt_<id>/<index>-<exp_name>/stage_best/<stage_name>/`
-  (permanent: best node's workspace preserved for next stage inheritance)
+- `experiments/<run>/logs/stage_<stage_name>/`
+  - `journal.json`
+  - `config.yaml`
+  - `tree_plot.html`
+  - `tree_data.json`
+  - `best_solution_<node_id>.<ext>` + `best_node_id.txt`
+  - `notes/` (stage summaries, transitions)
 
-Structure within each node log or stage best directory:
-```
+Per-node phase logs:
+
+- `experiments/<run>/logs/phase_logs/node_<id>/`
+  - `download.log`, `coding.log`, `compile.log`, `run.log`
+  - `prompt_logs/` (copied prompt/response artifacts when available)
+
+Prompt logs (when `exec.log_prompts=true`):
+
+- `experiments/<run>/logs/prompt_logs/<worker_label>/<session_id>/`
+  - `*_prompt.json` / `*_prompt.md`
+  - `*_response.json` / `*_response.txt`
+  - `memory_operations.jsonl`, `memory_injections.jsonl` (memory-enabled runs)
+
+Memory logging (when `memory.memory_log_enabled=true`):
+
+- `experiments/<run>/logs/memory/`
+  - memory operation and injection logs (`*.jsonl`)
+
+## Workspace directory (cfg.workspace_dir)
+
+The run directory itself is the workspace:
+
+- `experiments/<run>/data/` (copied or linked input data)
+- `experiments/<run>/worker_<id>/` (active worker workspace)
+- `experiments/<run>/node_logs/node_<id>/` (temporary node snapshots; cleaned
+  after stage completion)
+- `experiments/<run>/stage_best/<stage_name>/` (best node workspace for
+  inheritance)
+- `experiments/<run>/resources/<class>/<name>/` (staged templates/docs when
+  using resource files)
+
+Structure within a node workspace (active or saved):
+
+```text
 node_logs/node_<id>/
 ├── src/           # Source code
 ├── bin/           # Compiled binaries
@@ -41,82 +74,84 @@ node_logs/node_<id>/
     └── {experiment_name}_data.npy  # Experiment results (dynamic filename)
 ```
 
-## Experiment Output Filename Convention
+## Experiment results (plots/data snapshots)
 
-The experiment output file uses a dynamic filename based on the experiment name:
-- **Pattern**: `{experiment_name}_data.npy`
-- **Example**: `stability_oriented_autotuning_v2_data.npy` for an experiment named `stability_oriented_autotuning_v2`
+Per-node results are stored outside the run directory in a shared log root:
 
-The filename is derived by:
-1. Removing the timestamp prefix (e.g., `2026-01-28_17-46-11_`)
-2. Removing the attempt suffix (e.g., `_attempt_0`)
-3. Sanitizing special characters to underscores
-4. Converting to lowercase
+- `experiments/logs/<run>/experiment_results/experiment_<node_id>_proc_<pid>/`
+  - `experiment_code.*`, `plotting_code.*`, `.npy` outputs, generated plots
+- `experiments/logs/<run>/experiment_results/seed_aggregation_<node_id>/`
+  - aggregated plots for multi-seed evaluation
 
-This makes it easier to identify which experiment produced each output file when reviewing results.
-
-These directories enable safe workspace inheritance without race conditions
-between parallel workers. See [../architecture/execution-flow.md](../architecture/execution-flow.md#workspace-inheritance) for details.
+These paths are referenced by the HTML visualizers using relative URLs.
 
 ## Plotting and writeups
 
-- `experiments/<timestamp>_<idea>_attempt_<id>/figures/` (plot aggregation output)
-- `experiments/<timestamp>_<idea>_attempt_<id>/auto_plot_aggregator.py`
-- `experiments/<timestamp>_<idea>_attempt_<id>/<experiment_dir_basename>.pdf`
-  and reflection PDFs (if writeup enabled)
-- `experiments/<timestamp>_<idea>_attempt_<id>/review_text.txt` and
-  `review_img_cap_ref.json` (if review enabled; the launcher only runs review if
-  writeup ran)
+- `experiments/<run>/figures/` (plot aggregation output)
+- `experiments/<run>/auto_plot_aggregator.py`
+- `experiments/<run>/<run>.pdf` and reflection PDFs (if writeup enabled)
+- `experiments/<run>/review_text.txt` and `review_img_cap_ref.json` (if review enabled)
 
 ## Token tracking
 
-- `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker.json`
-- `experiments/<timestamp>_<idea>_attempt_<id>/token_tracker_interactions.json`
+- `experiments/<run>/token_tracker.json`
+- `experiments/<run>/token_tracker_interactions.json`
 
 ## Memory (when enabled)
 
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/memory.sqlite`
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/resource_snapshot.json`
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory_for_paper.md`
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_memory_for_paper.json`
-- `experiments/<timestamp>_<idea>_attempt_<id>/memory/final_writeup_memory.json`
+- `experiments/<run>/memory/memory.sqlite`
+- `experiments/<run>/memory/resource_snapshot.json` (only if a snapshot was created)
+- `experiments/<run>/memory/final_memory_for_paper.md`
+- `experiments/<run>/memory/final_memory_for_paper.json`
+- `experiments/<run>/memory/final_writeup_memory.json`
 
-## Temporary experiment results
+## Split-mode runtime assets (runs/)
 
-During execution, `experiment_results/` is copied out of
-`logs/<index>-<exp_name>/` for plot aggregation and then removed by the launcher
-unless you skip plotting. Prompt logs are also copied into
-`experiment_results/.../llm_outputs/prompt_logs/`.
+When `exec.phase_mode=split`, per-worker runtime assets live under:
+
+- `experiments/<run>/runs/workers/worker-*/container/` (SIF/sandbox files)
+- `experiments/<run>/runs/workers/worker-*/plans/` (phase0 plan/history)
+- `experiments/<run>/runs/workers/worker-*/prompt_logs/` (phase0 + memory ops)
+- `experiments/<run>/runs/workers/worker-*/phase1_steps.jsonl`
+- `experiments/<run>/runs/workers/worker-*/phase1_llm_outputs.jsonl`
+
+You can override this root by setting `AI_SCIENTIST_RUN_ROOT`.
 
 ## Where to look first
 
-- Failures during install/compile/run: check `logs/<index>-<exp_name>/` and
-  `phase_logs/node_<id>/`.
-- Plotting issues: inspect `auto_plot_aggregator.py` and the `figures/` output.
-- Memory or resource injection: inspect `memory/resource_snapshot.json`.
+- Failures during install/compile/run: check `logs/phase_logs/node_<id>/`.
+- Plotting issues: inspect `auto_plot_aggregator.py` and `figures/`.
+- Memory or resource injection: inspect `memory/` and `logs/memory/`.
 
 ## Example tree (trimmed)
 
 ```text
-experiments/2024-09-12_himeno_attempt_0/
+experiments/2026-01-30_himeno_attempt_0/
   idea.md
   idea.json
   bfts_config.yaml
-  logs/0-run/
+  logs/
     unified_tree_viz.html
+    memory_database.html
+    manager.pkl
+    stage_1_initial_implementation_1_preliminary/
+      journal.json
+      tree_plot.html
+      tree_data.json
+      best_node_id.txt
+      notes/
     phase_logs/
-  0-run/
-    worker_0/              # Temporary worker workspace
-    worker_1/
-    node_logs/             # Temporary node workspaces (cleaned after stage)
       node_abc123/
-        src/
-        bin/
-        working/
-    stage_best/            # Permanent best node workspaces
-      1_creative_research_1_first_attempt/
-      2_hyperparam_tuning/
+        download.log
+        prompt_logs/
+  node_logs/
+    node_abc123/
+      src/
+      working/
+  stage_best/
+    1_initial_implementation_1_preliminary/
   figures/
   memory/
-  2024-09-12_himeno_attempt_0.pdf
+  runs/
+  2026-01-30_himeno_attempt_0.pdf
 ```

@@ -1,4 +1,4 @@
-# MemGPT Implementation (MemGPT機能の実装)
+# MemGPT Implementation (Implementation Details)
 
 This document provides technical details about the MemGPT-style memory
 implementation in `ai_scientist/memory/`.
@@ -283,7 +283,7 @@ def compress_content(self, text: str, max_chars: int, context: str) -> str:
                 text, max_chars, context,
                 client=self.llm_client,
                 model=self.llm_model,
-                max_iterations=self.config.get("max_compression_iterations", 3)
+                max_iterations=self.config.get("max_compression_iterations", 5)
             )
             self._compression_cache[cache_key] = compressed
             return compressed
@@ -382,23 +382,23 @@ def apply_llm_memory_updates(
 
     Args:
         branch_id: The branch ID to apply updates to.
-        updates: A dict containing memory updates with optional keys:
-            - "core": dict of key-value pairs to set in core memory
-            - "core_get": list of keys to retrieve from core memory
-            - "core_delete": list of keys to delete from core memory
-            - "archival": list of dicts with "text" and "tags"
-            - "archival_update": list of dicts with "id" and optional "text"/"tags"
-            - "archival_search": dict with "query", optional "k" and "tags"
-            - "recall": dict with "kind" and "content" to append
-            - "recall_search": dict with "query" and optional "k"
-            - "recall_evict": dict with "oldest", "kind", or "ids"
-            - "recall_summarize": bool to trigger consolidation
+        updates: A dict containing memory updates with optional keys (preferred
+            MemGPT-style keys; legacy `core`/`archival` keys are normalized):
+            - "mem_core_set": dict of key-value pairs to set in core memory
+            - "mem_core_get": list of keys to retrieve from core memory
+            - "mem_core_del": list of keys to delete from core memory
+            - "mem_archival_write": list of dicts with "text" and "tags"
+            - "mem_archival_update": list of dicts with "id" and optional "text"/"tags"
+            - "mem_archival_search": dict with "query", optional "k" and "tags"
+            - "mem_recall_append": dict with event data to append
+            - "mem_recall_search": dict with "query" and optional "k"
+            - "mem_recall_evict": dict with eviction parameters
             - "consolidate": bool to trigger memory consolidation
         node_id: Optional node ID for tracking.
         phase: Optional phase name for logging.
 
     Returns:
-        dict containing results of read operations (core_get, archival_search, etc.)
+        dict containing results of read operations (mem_core_get, mem_archival_search, etc.)
     """
 ```
 

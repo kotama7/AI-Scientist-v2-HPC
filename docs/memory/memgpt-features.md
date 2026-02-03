@@ -1,4 +1,4 @@
-# MemGPT Features (MemGPT機能の有無)
+# MemGPT Features (Enabled vs Disabled)
 
 This document describes the MemGPT-style memory features available in the
 HPC-AutoResearch system.
@@ -11,7 +11,7 @@ HPC-AutoResearch system.
 | Branch Isolation | Implemented | Child nodes inherit but don't pollute siblings |
 | LLM Compression | Implemented | Intelligent compression via LLM |
 | FTS5 Search | Implemented | Full-text search for archival memory |
-| Resource Tracking | Implemented | Resource snapshots in long-term memory |
+| Resource Tracking | Implemented (manual) | Resource snapshots in long-term memory (only if built) |
 | Persistence | Implemented | SQLite-based persistent storage |
 | Final Memory Export | Implemented | End-of-run memory summary for papers |
 
@@ -22,7 +22,7 @@ HPC-AutoResearch system.
 **Purpose**: Key-value store for essential context that persists across prompts.
 
 **Characteristics**:
-- Bounded by `memory.core_max_chars` (default 10000)
+- Bounded by `memory.core_max_chars` (default 2000)
 - Contains entries with importance levels (1-5)
 - Automatic eviction when budget exceeded (lowest importance first)
 - Entries can have TTL (time-to-live)
@@ -30,29 +30,29 @@ HPC-AutoResearch system.
 **Database Keys** (stored in `core_kv` table):
 | Key | Content | Save Method | Prompt Injection |
 |-----|---------|-------------|------------------|
-| `RESOURCE_INDEX` | Resource digest and paths | Auto-saved | Separate "Resource Index" section |
+| `RESOURCE_INDEX` | Resource digest and paths | Optional (if snapshot/index built) | Separate "Resource Index" section |
 | (LLM-defined keys) | e.g., `optimal_threads`, `best_flags` | LLM-managed | "Core Memory" section |
 
-**Prompt Injection Structure** (system message内):
+**Prompt Injection Structure** (in the system message):
 ```
 ## Memory
 
-Resource Index:                    ← RESOURCE_INDEX (auto-saved, 別セクション)
+Resource Index:                    ← RESOURCE_INDEX (if present, separate section)
 {digest: "sha256...", items: [...]}
 
-Core Memory:                       ← LLMが保存したキーのみ
-- optimal_threads: 8               ← LLMが保存した任意のキー
-- best_compiler: -O3               ← LLMが保存した任意のキー
+Core Memory:                       ← Only keys saved by the LLM
+- optimal_threads: 8               ← Arbitrary keys saved by the LLM
+- best_compiler: -O3               ← Arbitrary keys saved by the LLM
 
 Recall Memory:
 ...
 ```
 
 **Note**:
-- `RESOURCE_INDEX` は自動保存されるが、「Core Memory」セクションではなく
-  別の「Resource Index」セクションとして注入される
-- Core Memory のキーはすべて LLM が `<memory_update>` で保存する（予約キーなし）
-- LLM が保存しなかった場合、Core Memory セクションは空になる
+- `RESOURCE_INDEX` is injected only if a snapshot/index was created. It appears
+  as a separate "Resource Index" section, not inside "Core Memory".
+- All Core Memory keys are saved by the LLM via `<memory_update>` (no reserved keys).
+- If the LLM does not save anything, the Core Memory section is empty.
 
 ### Recall Memory
 
@@ -246,18 +246,19 @@ track_resource_usage(resource_id, usage_type)
 SQLite database at `experiments/<run>/memory/memory.sqlite`:
 
 **Tables**:
-- `core_memory`: Core entries (key, value, importance, ttl, branch_id)
-- `recall_memory`: Recall events (timestamp, type, content, branch_id)
-- `archival_memory`: Archival records (id, content, tags_json, created_at)
-- `branches`: Branch hierarchy (id, parent_id, node_name)
-- `fts_archival`: FTS5 virtual table for full-text search
+- `core_kv`: Core entries (key, value, branch_id, updated_at)
+- `core_meta`: Core metadata (importance, ttl)
+- `recall_events`: Recall events (ts, kind, text, tags, branch_id)
+- `archival`: Archival records (id, text, tags, created_at)
+- `branches`: Branch hierarchy (branch_id, parent_branch_id, node_uid, created_at)
+- `archival_fts`: FTS5 virtual table for full-text search (if enabled)
 
 ### Output Files
 
 End-of-run memory exports:
 - `experiments/<run>/memory/final_memory_for_paper.md`: Human-readable summary
 - `experiments/<run>/memory/final_memory_for_paper.json`: Structured JSON
-- `experiments/<run>/memory/resource_snapshot.json`: Resource tracking data
+- `experiments/<run>/memory/resource_snapshot.json`: Resource tracking data (only if a snapshot was created)
 
 ## Configuration Reference
 
@@ -268,7 +269,7 @@ memory:
   # Core settings
   enabled: true                     # Memory is ENABLED by default
   db_path: null                     # Auto: experiments/<run>/memory/memory.sqlite
-  core_max_chars: 10000
+  core_max_chars: 2000
   recall_max_events: 5
   retrieval_k: 4
   use_fts: auto                     # auto/true/false
@@ -331,15 +332,15 @@ memory:
 --memory_db /path/to/memory.sqlite
 
 # Tune injection limits
---memory_core_max_chars 10000
+--memory_core_max_chars 2000
 --memory_recall_max_events 5
 --memory_retrieval_k 4
 
 # Compression settings
---memory_max_compression_iterations 3
+--memory_max_compression_iterations 5
 ```
 
-## Disabled Mode (MemGPT無効時の挙動)
+## Disabled Mode (MemGPT Off Behavior)
 
 When MemGPT is disabled (`memory.enabled=false` or `--enable_memgpt` not passed),
 the following features are **completely unavailable**:
@@ -403,7 +404,7 @@ approaching your LLM's context limit, enable MemGPT to prevent failures:
 ```bash
 python launch_scientist_bfts.py \
   --enable_memgpt \
-  --memory_core_max_chars 10000 \
+  --memory_core_max_chars 2000 \
   --memory_retrieval_k 4 \
   ...
 ```

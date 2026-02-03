@@ -27,6 +27,7 @@ from .utils.config import load_task_desc, prep_agent_workspace, load_cfg
 from .utils.run_io import save_run
 from .agent_manager import AgentManager
 from ai_scientist.memory import MemoryManager
+from ai_scientist.memory.paper_memory_utils import generate_paper_memory_from_manager
 from pathlib import Path
 from .agent_manager import Stage
 from .log_summarization import overall_summarize
@@ -319,81 +320,13 @@ def perform_experiments_bfts(config_path: str):
         manager.run(exec_callback=create_exec_callback(status), step_callback=step_callback)
     finally:
         if memory_manager and getattr(memory_cfg, "final_memory_enabled", True):
-            best_node = None
-            for journal in manager.journals.values():
-                for node in journal.nodes:
-                    if node.is_buggy:
-                        continue
-                    if node.metric is None:
-                        continue
-                    if best_node is None or node.metric > best_node.metric:
-                        best_node = node
-
-            # Collect top N nodes for comprehensive paper generation
-            top_nodes = []
-            for journal in manager.journals.values():
-                for node in journal.nodes:
-                    if node.is_buggy:
-                        continue
-                    if node.metric is None:
-                        continue
-                    top_nodes.append(node)
-            # Sort by metric (descending) and take top 5
-            top_nodes.sort(key=lambda n: n.metric, reverse=True)
-            top_nodes = top_nodes[:5]
-
-            # Extract comprehensive node data for paper generation
-            best_node_data = None
-            if best_node:
-                best_node_data = {
-                    "id": best_node.id,
-                    "branch_id": best_node.branch_id,
-                    "plan": best_node.plan or "",
-                    "overall_plan": best_node.overall_plan or "",
-                    "code": best_node.code or "",
-                    "phase_artifacts": best_node.phase_artifacts or {},
-                    "analysis": best_node.analysis or "",
-                    "metric": {
-                        "value": best_node.metric.value if best_node.metric else None,
-                        "name": getattr(best_node.metric, "name", "") if best_node.metric else "",
-                    },
-                    "exp_results_dir": best_node.exp_results_dir or "",
-                    "plot_analyses": best_node.plot_analyses or [],
-                    "vlm_feedback_summary": best_node.vlm_feedback_summary or [],
-                    "datasets_successfully_tested": best_node.datasets_successfully_tested or [],
-                    "plot_paths": best_node.plot_paths or [],
-                    "exec_time_feedback": best_node.exec_time_feedback or "",
-                    "workspace_path": best_node.workspace_path or "",
-                }
-
-            # Extract data from top N nodes for comparative analysis
-            top_nodes_data = []
-            for node in top_nodes:
-                top_nodes_data.append({
-                    "id": node.id,
-                    "branch_id": node.branch_id,
-                    "plan": node.plan or "",
-                    "metric": {
-                        "value": node.metric.value if node.metric else None,
-                        "name": getattr(node.metric, "name", "") if node.metric else "",
-                    },
-                    "analysis": node.analysis or "",
-                    "vlm_feedback_summary": node.vlm_feedback_summary or [],
-                })
-
-            artifacts_index = {
-                "log_dir": str(cfg.log_dir),
-                "workspace_dir": str(cfg.workspace_dir),
-                "best_node_id": getattr(best_node, "id", None),
-                "best_node_data": best_node_data,
-                "top_nodes_data": top_nodes_data,
-            }
             try:
-                memory_manager.generate_final_memory_for_paper(
-                    run_dir=Path(cfg.workspace_dir),
+                generate_paper_memory_from_manager(
+                    memory_manager=memory_manager,
+                    manager=manager,
+                    workspace_dir=Path(cfg.workspace_dir),
+                    log_dir=Path(cfg.log_dir),
                     root_branch_id=root_branch_id or "",
-                    best_branch_id=getattr(best_node, "branch_id", None),
-                    artifacts_index=artifacts_index,
                 )
             except Exception as exc:
                 logger.warning("Failed to generate final memory: %s", exc)

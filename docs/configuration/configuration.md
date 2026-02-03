@@ -21,17 +21,17 @@ exec:
   workspace_mount: /workspace       # Container mount point
   phase1_max_steps: 100             # Max Phase 1 installer iterations
   log_prompts: true                 # Log prompts as JSON/Markdown
-  timeout: 3600                     # Execution timeout in seconds
+  timeout: 10800                    # Execution timeout in seconds (repo default = 3 hours)
 
 agent:
   type: parallel                    # Agent type (parallel recommended)
   num_workers: 4                    # Parallel workers
   role_description: "HPC Researcher"  # Persona for prompts
   stages:
-    stage1_max_iters: 20            # Per-stage iteration limits
-    stage2_max_iters: 20
-    stage3_max_iters: 20
-    stage4_max_iters: 20
+    stage1_max_iters: 40            # Per-stage iteration limits
+    stage2_max_iters: 40
+    stage3_max_iters: 40
+    stage4_max_iters: 40
   steps: 5                          # Fallback iteration count
   multi_seed_eval:
     num_seeds: 3                    # Seeds for multi-seed evaluation
@@ -61,7 +61,7 @@ experiment:
 
 memory:
   enabled: true                     # Memory is ENABLED by default
-  core_max_chars: 10000
+  core_max_chars: 2000
   recall_max_events: 5
   retrieval_k: 4
   use_fts: auto
@@ -142,9 +142,9 @@ The copy inside the experiment directory is the source of truth for the run.
 - `writable_tmpfs`, `container_overlay`, `writable_mode`: Phase 1 write access.
 - `container_extra_args`: extra Singularity args for instance start.
 - `per_worker_sif`, `keep_sandbox`, `use_fakeroot`: per-worker SIF behavior.
-- `phase1_max_steps`: max iterative installer steps (default 100).
+- `phase1_max_steps`: max iterative installer steps (repo default 100; code fallback is 12 if unset).
 - `log_prompts`: write prompt logs (JSON + Markdown) for split/single runs.
-- `timeout`: execution timeout in seconds (default 3600).
+- `timeout`: execution timeout in seconds (repo default 10800).
 - `resources`: optional path to a JSON/YAML resource file.
 
 ### `agent`
@@ -160,7 +160,7 @@ The copy inside the experiment directory is the source of truth for the run.
   - `stage3_max_iters`: Stage 3 iterations.
   - `stage4_max_iters`: Stage 4 (final refinement) iterations.
 - `multi_seed_eval`: multi-seed evaluation settings:
-  - `num_seeds`: number of seeds for evaluation (default 3 when num_workers >= 3).
+  - `num_seeds`: number of seeds for evaluation (repo default 3).
 - `search`: tree search parameters:
   - `max_debug_depth`: maximum debug exploration depth.
   - `debug_prob`: probability of debug branch exploration.
@@ -186,24 +186,20 @@ Core settings:
 
 - `enabled`: toggle memory (default **true**).
 - `db_path`: SQLite path (default under `experiments/<run>/memory/`).
-- `core_max_chars`, `recall_max_events`, `retrieval_k`: injection limits.
+- `core_max_chars`, `recall_max_events`, `retrieval_k`: injection limits (repo defaults: 2000 / 5 / 4).
 - `use_fts`: full-text search mode (`auto`, `true`, or `false`).
 
-Persistence toggles:
+Persistence and exports:
 
-- `persist_phase0_internal`: persist Phase 0 internal state.
-- `always_inject_phase0_summary`: always inject Phase 0 summary into prompts.
-- `persist_idea_md`: persist idea markdown.
-- `always_inject_idea_summary`: always inject idea summary into prompts.
 - `final_memory_enabled`: write `final_memory_for_paper.*` at run end.
 - `final_memory_filename_md`, `final_memory_filename_json`: output file names.
 - `redact_secrets`: mask sensitive information in memory outputs.
 
 LLM compression (for intelligent memory truncation):
 
-- `use_llm_compression`: enable LLM-based compression (default true).
-- `compression_model`: model for compression (default `gpt-5.2`).
-- `memory_budget_chars`: overall memory budget in characters (default 24000).
+- `use_llm_compression`: enable LLM-based compression (repo default true).
+- `compression_model`: model for compression (repo default `gpt-5.2`).
+- `memory_budget_chars`: overall memory budget in characters (repo default 24000).
 - `paper_section_mode`: section generation mode (`memory_summary` or `idea_then_memory`).
 - `paper_section_count`: number of sections to generate for `idea_then_memory` mode (default 12).
 - `max_compression_iterations`: max iterative compression attempts (default 5).
@@ -220,24 +216,24 @@ LLM compression (for intelligent memory truncation):
 
 Memory logging (for debugging):
 
-- `memory_log_enabled`: write memory event logs (default true).
-- `memory_log_dir`: directory for memory logs (default under `experiments/<run>/memory/`).
-- `memory_log_max_chars`: max chars per log entry (default 1000).
+- `memory_log_enabled`: write memory event logs (repo default true).
+- `memory_log_dir`: directory for memory logs (default under `experiments/<run>/logs/memory/`).
+- `memory_log_max_chars`: max chars per log entry (repo default 1000).
 
 Writeup memory limits (for `final_writeup_memory.json` generation):
 
 - `writeup_recall_limit`: maximum number of recall memory entries (default 10).
 - `writeup_archival_limit`: maximum number of archival memory entries (default 10).
-- `writeup_core_value_max_chars`: max characters per core memory value (default 5000).
-- `writeup_recall_text_max_chars`: max characters per recall memory text (default 5000).
-- `writeup_archival_text_max_chars`: max characters per archival memory text (default 5000).
+- `writeup_core_value_max_chars`: max characters per core memory value (repo default 5000).
+- `writeup_recall_text_max_chars`: max characters per recall memory text (repo default 5000).
+- `writeup_archival_text_max_chars`: max characters per archival memory text (repo default 5000).
 
 Memory Pressure Management (MemGPT-style):
 
 - `auto_consolidate`: enable automatic memory consolidation (default true).
 - `consolidation_trigger`: pressure level to trigger consolidation (`medium`, `high`, or `critical`).
 - `recall_consolidation_threshold`: multiplier for recall overflow threshold (default 1.5).
-- `max_memory_read_rounds`: maximum rounds for memory read operations (default 5).
+- `max_memory_read_rounds`: maximum rounds for memory read operations (repo default 5).
 - `pressure_thresholds`: pressure level thresholds:
   - `medium`: 70% usage (default 0.7).
   - `high`: 85% usage (default 0.85).
@@ -286,7 +282,7 @@ Memory settings:
 - `--memory_db`: override `memory.db_path`.
 - `--memory_core_max_chars`, `--memory_recall_max_events`,
   `--memory_retrieval_k`: tune memory injection limits.
-- `--memory_max_compression_iterations`: max iterative compression attempts (default 3).
+- `--memory_max_compression_iterations`: max iterative compression attempts (repo default 5).
 
 Writeup and review settings:
 

@@ -48,7 +48,7 @@ environment so you can iterate on control-plane code without rebuilding images.
 Use a CUDA-enabled build on GPU clusters and adjust for your CUDA version:
 
 ```bash
-conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c 
 ```
 
 ## Optional: YAML resource files
@@ -57,6 +57,14 @@ Install `pyyaml` only if you plan to use YAML resource files:
 
 ```bash
 pip install pyyaml
+```
+
+## PDF
+
+```bash
+# Install PDF and LaTeX tools
+conda install anaconda::poppler
+conda install conda-forge::chktex
 ```
 
 ## Prepare the Singularity image

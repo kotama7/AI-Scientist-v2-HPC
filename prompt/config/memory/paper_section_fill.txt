@@ -8,5 +8,7 @@ Memory Slice (JSON):
 
 Guidelines:
 - Use only the memory slice; do not invent details.
-- If relevant info is missing, say "Not found in memory." succinctly.
+- Extract relevant information from ALL parts of the memory slice: core_memory, recall_memory, and archival_memory.
+- For hardware/environment sections: carefully extract CPU model, sockets, cores, NUMA topology, OS, compiler, and tools from archival entries (especially those tagged PHASE0_INTERNAL) and core_memory keys (hardware_cpu, hardware_os, hardware_compiler, hardware_tools).
+- If relevant info is missing after checking all memory sources, say "Not found in memory." succinctly.
 - Return plain markdown text (no JSON).

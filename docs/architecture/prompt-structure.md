@@ -1,4 +1,4 @@
-# Prompt Structure (プロンプトファイル構造)
+# Prompt Structure (Prompt File Layout)
 
 This document describes the organization and contents of prompt templates in the
 `prompt/` directory.

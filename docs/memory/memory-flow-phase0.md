@@ -40,11 +40,11 @@ Key points:
 │                                      │                                      │
 │                                      ▼                                      │
 │  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │ 2. RESOURCE INDEXING                                               │    │
-│  │    File: resources.yaml                                            │    │
-│  │    Function: _snapshot_resources_to_memory()                       │    │
+│  │ 2. OPTIONAL RESOURCE SNAPSHOT                                      │    │
+│  │    File: resources.yaml/json (if provided)                         │    │
+│  │    Function: resource_memory.build_resource_snapshot() (manual)    │    │
 │  │                                                                    │    │
-│  │    Memory writes:                                                  │    │
+│  │    Memory writes (only if you persist the snapshot):               │    │
 │  │    ┌──────────────────────────────────────────────────────────┐   │    │
 │  │    │ CORE:                                                    │   │    │
 │  │    │   RESOURCE_INDEX: {                                      │   │    │
@@ -112,10 +112,10 @@ Key points:
 ```json
 <memory_update>
 {
-  "core": {
+  "mem_core_set": {
     "idea_md_summary": "Brief summary of the research goals..."
   },
-  "archival": [
+  "mem_archival_write": [
     {
       "text": "Key information from idea.md...",
       "tags": ["IDEA_MD", "ROOT_IDEA"]
@@ -125,36 +125,13 @@ Key points:
 </memory_update>
 ```
 
-### 2. Resource Indexing (`_snapshot_resources_to_memory`)
+### 2. Optional Resource Snapshot (manual)
 
-**Location**: `memgpt_store.py`
+**Location**: `ai_scientist/memory/resource_memory.py`
 
-**Trigger**: Called during initialization when resources.yaml exists
-
-**Input**: Parsed resources.yaml configuration
-
-**Memory Operations**:
-```python
-# Write RESOURCE_INDEX to core (pinned, high importance)
-memory_manager.set_core(
-    branch_id=root_branch_id,
-    key="RESOURCE_INDEX",
-    value=json.dumps(resource_index),
-    importance=5,  # Pinned
-    op_name="resource_snapshot"
-)
-
-# Write each resource item to archival
-for item in resource_items:
-    memory_manager.mem_archival_write(
-        text=item.summary,
-        tags=[
-            f"resource:{item.class_name}:{item.name}",
-            f"resource_path:{item.path}"
-        ],
-        meta={...}
-    )
-```
+**Trigger**: Not automatic. Call `build_resource_snapshot()` yourself and persist
+the snapshot to memory if you want a `RESOURCE_INDEX` section or archival
+resource items to appear in prompts.
 
 ### 3. Whole Planning (`_execute_phase0_planning`)
 
@@ -188,7 +165,7 @@ prompt = {
 
 # Memory Operations are specified inside the phase0 planning prompt when enabled:
 # - <memory_update> is REQUIRED before the JSON plan
-# - Read operations (core_get / archival_search / recall_search) are supported
+# - Read operations (mem_core_get / mem_archival_search / mem_recall_search) are supported
 # - LLM can see existing memory data and use read operations to access it
 ```
 
@@ -211,10 +188,10 @@ prompt = {
 ```json
 <memory_update>
 {
-  "core": {
+  "mem_core_set": {
     "phase0_summary": "Environment: Linux + CUDA 12.1, Strategy: OpenMP parallelization..."
   },
-  "archival": [
+  "mem_archival_write": [
     {
       "text": "Detailed environment analysis and constraints...",
       "tags": ["PHASE0_INTERNAL"]
@@ -231,14 +208,14 @@ After Phase 0 completes, the memory may contain (depending on LLM behavior):
 ### Core Memory (Always Visible)
 | Key | Content | Source |
 |-----|---------|--------|
-| `RESOURCE_INDEX` | Resource digest and paths | Auto-saved |
+| `RESOURCE_INDEX` | Resource digest and paths | Optional (only if snapshot/index is built) |
 | `idea_md_summary` | Compressed research goals | LLM-managed (optional) |
 | `phase0_summary` | Compressed Phase 0 plan | LLM-managed (optional) |
 
 ### Archival Memory (Searchable)
 | Tags | Content | Source |
 |------|---------|--------|
-| `resource:*` | Resource file summaries | Auto-saved |
+| `resource:*` | Resource file summaries | Optional (only if snapshot/index is built) |
 | `IDEA_MD`, `ROOT_IDEA` | Key idea information | LLM-managed (optional) |
 | `PHASE0_INTERNAL` | Phase 0 internal info | LLM-managed (optional) |
 
@@ -251,16 +228,20 @@ Phase 0 also writes files to disk:
 
 ```
 experiments/<run>/
-├── plans/
-│   ├── phase0_plan.json      # Full Phase 0 plan
-│   ├── phase0_history_full.json  # Full history
-│   └── phase0_llm_output.txt # Raw LLM output
-├── prompts/
-│   ├── phase0_prompt.json    # Prompt sent to LLM
-│   └── phase0_prompt.md      # Human-readable prompt
-└── memory/
-    ├── memory.sqlite         # Memory database
-    └── memory_calls.jsonl    # Operation log
+├── runs/
+│   └── workers/worker-*/
+│       ├── plans/
+│       │   ├── phase0_plan.json         # Full Phase 0 plan
+│       │   ├── phase0_history_full.json # Full history
+│       │   └── phase0_llm_output.txt    # Raw LLM output
+│       └── prompt_logs/
+│           ├── phase0_prompt.json       # Prompt sent to LLM (if log_prompts)
+│           └── phase0_prompt.md         # Human-readable prompt
+├── memory/
+│   └── memory.sqlite                    # Memory database
+└── logs/
+    └── memory/
+        └── memory_calls.jsonl           # Operation log (plus memory_*.jsonl)
 ```
 
 ## See Also

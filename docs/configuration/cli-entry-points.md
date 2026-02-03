@@ -50,7 +50,7 @@ Memory flags:
 - `--memory_db` custom SQLite database path.
 - `--memory_core_max_chars`, `--memory_recall_max_events`, `--memory_retrieval_k`
   to tune memory injection.
-- `--memory_max_compression_iterations` max LLM compression attempts (default 3).
+- `--memory_max_compression_iterations` max LLM compression attempts (repo default 5).
 
 Writeup flags:
 
@@ -69,6 +69,13 @@ Model selection flags:
 - `--num_cite_rounds`: citation rounds.
 - `--model_review`: model for review.
 
+Review flags:
+
+- `--review_bias`: review bias mode (`neg`, `pos`, `neutral`). Default: `neutral`.
+  - `neg`: Strict mode - reject if unsure
+  - `pos`: Lenient mode - accept if unsure
+  - `neutral`: Balanced mode - no bias on uncertainty
+
 Example:
 
 ```bash
@@ -78,7 +85,8 @@ python launch_scientist_bfts.py \
   --singularity_image template/base.sif \
   --num_workers 4 \
   --enable_memgpt \
-  --writeup-type normal
+  --writeup-type normal \
+  --review_bias neutral
 ```
 
 ## `generate_paper.py`
@@ -90,13 +98,22 @@ Key inputs:
 
 - `--experiment-dir` pointing to an existing run.
 - `--model-agg-plots` and `--model-writeup` for LLM selection.
+- `--review-bias` to control review strictness (`neg`, `pos`, `neutral`). Default: `neutral`.
+
+Review flags:
+
+- `--review-bias`: review bias mode (`neg`, `pos`, `neutral`). Default: `neutral`.
+  - `neg`: Strict mode - reject if unsure
+  - `pos`: Lenient mode - accept if unsure
+  - `neutral`: Balanced mode - no bias on uncertainty
 
 Example:
 
 ```bash
 python generate_paper.py \
   --experiment-dir experiments/<run> \
-  --writeup-type normal
+  --writeup-type normal \
+  --review-bias neutral
 ```
 
 ## `ai_scientist/perform_ideation_temp_free.py`
@@ -128,7 +145,7 @@ Example:
 
 ```bash
 python ai_scientist/perform_plotting.py \
-  --experiment_dir experiments/<run>
+  --folder experiments/<run>
 ```
 
 ## `ai_scientist/perform_writeup.py`
@@ -150,4 +167,4 @@ Core BFTS run given a config file. This is normally called by
 
 - `bfts_config.yaml` for defaults used by the launcher.
 - `prompt/` for system messages and response formats.
-- `docs/quickstart.md` for runnable examples.
+- `docs/getting-started/quickstart.md` for runnable examples.

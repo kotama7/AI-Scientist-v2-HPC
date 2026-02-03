@@ -1,0 +1,119 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+%post
+    # Set noninteractive to avoid prompts during installation
+    export DEBIAN_FRONTEND=noninteractive
+    export TZ=Asia/Tokyo
+
+    # Update and install essential system packages
+    apt-get update && apt-get install -y --no-install-recommends \
+        sudo \
+        wget \
+        curl \
+        git \
+        vim \
+        build-essential \
+        ca-certificates \
+        software-properties-common \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install Python 3.11 and pip
+    apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3.11-venv \
+        python3-pip \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Set python3.11 as default
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+    update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+    # Upgrade pip
+    python3 -m pip install --upgrade pip setuptools wheel
+
+    # Install LaTeX for paper generation
+    apt-get update && apt-get install -y --no-install-recommends \
+        texlive-full \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        texlive-fonts-extra \
+        latexmk \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install Python packages for AI-Scientist
+    pip3 install --no-cache-dir \
+        anthropic \
+        backoff \
+        openai \
+        matplotlib \
+        pypdf \
+        pymupdf4llm \
+        numpy \
+        transformers \
+        datasets \
+        tiktoken \
+        tqdm \
+        rich \
+        humanize \
+        dataclasses-json \
+        funcy \
+        black \
+        genson \
+        shutup \
+        python-igraph \
+        coolname \
+        jsonschema \
+        omegaconf \
+        botocore \
+        boto3
+
+    # Install common scientific computing packages
+    pip3 install --no-cache-dir \
+        scipy \
+        pandas \
+        scikit-learn \
+        seaborn \
+        jupyter \
+        ipython
+
+    # Install PyTorch (CPU version for base image, can be overridden)
+    pip3 install --no-cache-dir \
+        torch \
+        torchvision \
+        torchaudio
+
+    # Clean up
+    apt-get clean
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+%environment
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export PYTHONUNBUFFERED=1
+    export PATH=/usr/local/bin:$PATH
+
+%runscript
+    exec "$@"
+
+%labels
+    Author takanori.kotama
+    Purpose HPC split-phase worker with sudo/apt-get
+    Version 1.0
+    Description AI-Scientist base worker image with Python, LaTeX, and ML libraries
+
+%help
+    This is the base AI-Scientist worker container for HPC environments.
+
+    It includes:
+    - Ubuntu 22.04
+    - Python 3.11
+    - LaTeX (full texlive)
+    - AI-Scientist Python dependencies
+    - PyTorch and common ML libraries
+    - sudo/apt-get support for additional package installation
+
+    Usage:
+        singularity exec this.sif python3 your_script.py
+        singularity shell --writable-tmpfs this.sif

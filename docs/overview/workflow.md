@@ -1,73 +1,74 @@
-# ワークフロー概要 (Workflow Overview)
+# Workflow Overview
 
-このドキュメントでは、HPC-AutoResearchの全体ワークフローを説明します。
-アイデア生成から論文レビューまでの完全なフローを理解することができます。
+This document describes the end-to-end HPC-AutoResearch workflow from ideation
+through paper review.
 
-## 全体フロー図
+## High-Level Flow Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        HPC-AutoResearch ワークフロー                          │
+│                        HPC-AutoResearch Workflow                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │  ┌──────────────────┐                                                        │
-│  │ 1. アイデア準備   │  perform_ideation_temp_free.py (オプション)            │
-│  │    (Ideation)    │  ワークショップ記述 → アイデアJSON                      │
+│  │ 1. Ideation      │  perform_ideation_temp_free.py (optional)             │
+│  │    (Ideation)    │  Workshop description → idea JSON                      │
 │  └────────┬─────────┘                                                        │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────┐                                                        │
-│  │ 2. 実験ランチャー │  launch_scientist_bfts.py                             │
-│  │    (Launch)      │  アイデアJSON読込 → 実験ディレクトリ作成               │
+│  │ 2. Launcher      │  launch_scientist_bfts.py                              │
+│  │    (Launch)      │  Load ideas → create experiment directory               │
 │  └────────┬─────────┘                                                        │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │ 3. BFTS実験 (Tree Search)                                            │   │
+│  │ 3. BFTS Experiments (Tree Search)                                     │   │
 │  │                                                                       │   │
-│  │  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐              │   │
-│  │  │ Stage 1 │──▶│ Stage 2 │──▶│ Stage 3 │──▶│ Stage 4 │              │   │
-│  │  │ Draft   │   │ Hyparam │   │ Improve │   │Ablation │              │   │
-│  │  └─────────┘   └─────────┘   └─────────┘   └─────────┘              │   │
+│  │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐ │
+│  │  │ Stage 1      │──▶│ Stage 2      │──▶│ Stage 3      │──▶│ Stage 4      │ │
+│  │  │ Initial Impl │   │ Baseline     │   │ Creative     │   │ Ablation     │ │
+│  │  │              │   │ Tuning       │   │ Research     │   │ Studies      │ │
+│  │  └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘ │
 │  │       │                                                               │   │
-│  │       ▼ 各ノードで実行                                                │   │
+│  │       ▼ Per-node execution                                             │   │
 │  │  ┌─────────────────────────────────────────────────────────────┐    │   │
-│  │  │ Phase 0: プランニング                                        │    │   │
-│  │  │ Phase 1: ダウンロード/インストール (Singularity内)            │    │   │
-│  │  │ Phase 2: コーディング                                        │    │   │
-│  │  │ Phase 3: コンパイル                                          │    │   │
-│  │  │ Phase 4: 実行                                                │    │   │
-│  │  │ → メトリクス抽出 → プロット生成 → VLM分析 → サマリー         │    │   │
+│  │  │ Phase 0: Planning                                          │    │   │
+│  │  │ Phase 1: Download/Install (inside Singularity)             │    │   │
+│  │  │ Phase 2: Coding                                            │    │   │
+│  │  │ Phase 3: Compile                                           │    │   │
+│  │  │ Phase 4: Run                                               │    │   │
+│  │  │ → Metrics → Plotting → VLM analysis → Summary              │    │   │
 │  │  └─────────────────────────────────────────────────────────────┘    │   │
 │  │                                                                       │   │
 │  └────────┬─────────────────────────────────────────────────────────────┘   │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────┐                                                        │
-│  │ 4. プロット集約   │  perform_plotting.py                                  │
-│  │ (Plot Aggregation)│  ベストノードからプロット選択                         │
+│  │ 4. Plot Aggreg.  │  perform_plotting.py                                  │
+│  │ (Plot Aggreg.)   │  Select plots from best node                           │
 │  └────────┬─────────┘                                                        │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────┐                                                        │
-│  │ 5. 論文生成      │  perform_writeup.py                                   │
-│  │    (Writeup)     │  LaTeX生成 + 引用収集                                  │
+│  │ 5. Writeup       │  perform_writeup.py                                   │
+│  │    (Writeup)     │  LaTeX generation + citations                          │
 │  └────────┬─────────┘                                                        │
 │           │                                                                  │
 │           ▼                                                                  │
 │  ┌──────────────────┐                                                        │
-│  │ 6. レビュー      │  perform_llm_review.py + perform_vlm_review.py        │
-│  │    (Review)      │  NeurIPS形式評価 + 図版レビュー                        │
+│  │ 6. Review        │  perform_llm_review.py + perform_vlm_review.py        │
+│  │    (Review)      │  NeurIPS review + figure review                        │
 │  └──────────────────┘                                                        │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 詳細フロー
+## Detailed Flow
 
-### ステップ1: アイデア準備（オプション）
+### Step 1: Ideation (optional)
 
-既存のアイデアJSONを使用する場合はスキップ可能です。
+Skip if you already have an idea JSON.
 
 ```bash
 python ai_scientist/perform_ideation_temp_free.py \
@@ -77,12 +78,12 @@ python ai_scientist/perform_ideation_temp_free.py \
   --num-reflections 5
 ```
 
-**入力**: ワークショップ記述マークダウン（`*.md`）
-**出力**: アイデアJSON（同じディレクトリに`*.json`として生成）
+**Input**: workshop description markdown (`*.md`)  
+**Output**: idea JSON (`*.json`) in the same directory
 
-### ステップ2: 実験ランチャー
+### Step 2: Launch experiments
 
-メインのエントリーポイントです。
+The main entry point.
 
 ```bash
 python launch_scientist_bfts.py \
@@ -93,113 +94,113 @@ python launch_scientist_bfts.py \
   --enable_memgpt
 ```
 
-**処理内容**:
-1. アイデアJSONからアイデアを読み込み
-2. 実験ディレクトリ `experiments/<timestamp>_<idea>_attempt_<id>/` を作成
-3. `idea.md`, `idea.json`, `bfts_config.yaml` を書き込み
-4. BFTS実験を開始
+**What it does**:
+1. Loads ideas from the JSON file
+2. Creates `experiments/<timestamp>_<idea>_attempt_<id>/`
+3. Writes `idea.md`, `idea.json`, `bfts_config.yaml`
+4. Starts the BFTS experiment loop
 
-### ステップ3: BFTS実験
+### Step 3: BFTS experiments
 
-木探索による実験の自動実行です。
+Tree search executes experiments automatically.
 
-**ステージ構成**:
-- **Stage 1 (`initial_implementation`)**: 初期実装の生成と動作検証
-- **Stage 2 (`baseline_tuning`)**: ベースラインチューニング、追加データセットでの評価
-- **Stage 3 (`creative_research`)**: 創造的改善、実験計画の実行
-- **Stage 4 (`ablation_studies`)**: アブレーション研究、リスク要因の検証
+**Stages**:
+- **Stage 1 (`initial_implementation`)**: Initial implementation and validation
+- **Stage 2 (`baseline_tuning`)**: Baseline tuning and extra datasets
+- **Stage 3 (`creative_research`)**: Creative improvements and planned experiments
+- **Stage 4 (`ablation_studies`)**: Ablation studies and risk-factor validation
 
-**各ノードで実行されるPhase**:
+**Per-node phase flow**:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ ノード実行フロー                                                  │
+│ Node Execution Flow                                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  Phase 0: プランニング                                           │
-│  ├── 環境情報収集 (OS, CPU, GPU, コンパイラ, ライブラリ)         │
-│  ├── 過去の実行履歴を参照                                        │
-│  └── Phase 1-4の実行計画をJSON出力                               │
+│  Phase 0: Planning                                               │
+│  ├── Environment collection (OS, CPU, GPU, compilers, libs)       │
+│  ├── Prior execution history                                      │
+│  └── Phase 1-4 plan (JSON)                                        │
 │           │                                                      │
 │           ▼                                                      │
-│  Phase 1: ダウンロード/インストール (Singularityコンテナ内)       │
+│  Phase 1: Download/Install (inside Singularity)                  │
 │  ├── apt-get, pip install                                        │
-│  ├── ソースからビルド                                            │
-│  └── 反復的なインストーラー (最大100ステップ)                    │
+│  ├── Build from source                                           │
+│  └── Iterative installer (max 100 steps)                         │
 │           │                                                      │
 │           ▼                                                      │
-│  Phase 2: コーディング                                           │
-│  ├── LLMがソースコードを生成                                     │
-│  └── ワークスペースにファイル書き込み                            │
+│  Phase 2: Coding                                                  │
+│  ├── LLM generates source code                                    │
+│  └── Write files to workspace                                     │
 │           │                                                      │
 │           ▼                                                      │
-│  Phase 3: コンパイル                                             │
-│  ├── gcc/g++/nvcc等でビルド                                      │
-│  └── エラー時はデバッグノードを生成                              │
+│  Phase 3: Compile                                                 │
+│  ├── Build with gcc/g++/nvcc, etc.                                │
+│  └── On error, spawn debug nodes                                  │
 │           │                                                      │
 │           ▼                                                      │
-│  Phase 4: 実行                                                   │
-│  ├── プログラム実行                                              │
-│  └── 出力ファイル (.npy) 収集                                    │
+│  Phase 4: Run                                                     │
+│  ├── Execute program                                              │
+│  └── Collect outputs (.npy)                                       │
 │           │                                                      │
 │           ▼                                                      │
-│  ポスト処理                                                      │
-│  ├── メトリクス抽出 (スピードアップ、精度など)                   │
-│  ├── プロットコード生成・実行                                    │
-│  ├── VLM分析 (プロット品質評価)                                  │
-│  └── ノードサマリー生成                                          │
+│  Post-processing                                                  │
+│  ├── Metrics extraction (speedup, accuracy, etc.)                 │
+│  ├── Plot code generation + execution                             │
+│  ├── VLM analysis (plot quality)                                  │
+│  └── Node summary generation                                      │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### ステップ4: プロット集約
+### Step 4: Plot aggregation
 
-複数ノードから生成されたプロットを選択・集約します。
+Select and aggregate plots across nodes.
 
 ```bash
-# ランチャー経由で自動実行、または個別実行:
+# Run automatically via launcher, or run manually:
 python ai_scientist/perform_plotting.py \
-  --experiment_dir experiments/<run>
+  --folder experiments/<run>
 ```
 
-**出力**: `experiments/<run>/figures/` および `auto_plot_aggregator.py`
+**Output**: `experiments/<run>/figures/` and `auto_plot_aggregator.py`
 
-### ステップ5: 論文生成
+### Step 5: Writeup generation
 
-実験結果からLaTeX論文を生成します。
+Generate the LaTeX paper from experiment results.
 
 ```bash
-# ランチャー経由で自動実行、または:
+# Run automatically via launcher, or:
 python generate_paper.py \
   --experiment-dir experiments/<run> \
   --writeup-type normal
 ```
 
-**出力**: `experiments/<run>/<run>.pdf`
+**Output**: `experiments/<run>/<run>.pdf`
 
-### ステップ6: レビュー
+### Step 6: Review
 
-生成された論文をNeurIPS形式でレビューします。
+Run a NeurIPS-style review on the generated paper.
 
-**出力**:
-- `review_text.txt`: テキストレビュー
-- `review_img_cap_ref.json`: 図版・キャプションレビュー
+**Outputs**:
+- `review_text.txt`: text review
+- `review_img_cap_ref.json`: figure/caption review
 
-## スキップオプション
+## Skip options
 
-各ステージはスキップ可能です：
+Each stage can be skipped:
 
 ```bash
 python launch_scientist_bfts.py \
-  --skip_plot \       # プロット集約をスキップ
-  --skip_writeup \    # 論文生成をスキップ
-  --skip_review \     # レビューをスキップ
+  --skip_plot \       # skip plot aggregation
+  --skip_writeup \    # skip writeup generation
+  --skip_review \     # skip review
   ...
 ```
 
-## ミニマル検証ラン
+## Minimal verification run
 
-最小構成での動作確認：
+A minimal run configuration:
 
 ```bash
 python launch_scientist_bfts.py \
@@ -210,9 +211,9 @@ python launch_scientist_bfts.py \
   --skip_plot --skip_writeup --skip_review
 ```
 
-## 既存実験からの再実行
+## Regenerate from an existing experiment
 
-既存の実験ディレクトリからプロット/論文を再生成：
+Rebuild plots and writeup from an existing experiment directory:
 
 ```bash
 python generate_paper.py \
@@ -222,40 +223,38 @@ python generate_paper.py \
   --model-writeup o1-preview-2024-09-12
 ```
 
-## メモリ有効時のフロー
+## Memory-enabled flow
 
-`--enable_memgpt` を指定すると、各フェーズでメモリ管理が有効になります：
+When `--enable_memgpt` is set, memory management is active in each phase:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ メモリ有効時の追加処理                                           │
+│ Additional processing with memory enabled                       │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  1. 各Phase完了時                                                │
-│     └── イベントをリコールメモリに自動記録                       │
-│     └── エラー/成功詳細をアーカイブメモリに自動保存              │
+│  1. On each phase completion                                     │
+│     └── Event recorded in Recall memory                          │
+│     └── Error/success details stored in Archival memory           │
 │                                                                  │
-│  2. LLMプロンプト生成時                                          │
-│     └── コア/リコール/アーカイブからコンテキスト注入             │
-│     └── LLMは <memory_update> ブロックでメモリを操作可能         │
+│  2. During prompt assembly                                       │
+│     └── Context injected from Core/Recall/Archival                │
+│     └── LLM can write memory with <memory_update> blocks          │
 │                                                                  │
-│  3. LLMによるメモリ管理                                          │
-│     └── idea_md_summary: LLMが必要に応じてコアに保存             │
-│     └── phase0_summary: LLMが必要に応じてコアに保存              │
-│     └── その他の重要情報: LLMが判断して保存                      │
+│  3. LLM-managed memory                                           │
+│     └── idea_md_summary: saved to Core when needed                │
+│     └── phase0_summary: saved to Core when needed                 │
+│     └── Other important facts saved as LLM decides                │
 │                                                                  │
-│  4. 実験終了時                                                   │
-│     └── final_memory_for_paper.md/json 生成                      │
+│  4. End of run                                                   │
+│     └── final_memory_for_paper.md/json generated                  │
 │                                                                  │
-│  注: idea_md_summary, phase0_summary は自動注入されません。       │
-│      LLMが自律的に <memory_update> を使用して管理します。         │
+│  Note: idea_md_summary and phase0_summary are not auto-injected.  │
+│        The LLM must save them via <memory_update>.               │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 関連ドキュメント
+## Related Documents
 
-- [quickstart.md](getting-started/quickstart.md) - クイックスタートガイド
-- [execution-modes.md](configuration/execution-modes.md) - Split/Single モードの詳細
-- [outputs.md](configuration/outputs.md) - 出力ファイルの詳細
-- [memory/memory.md](memory/memory.md) - メモリシステムの詳細
+- [quickstart.md](getting-started/quickstart.md) - Quickstart guide
+- [execution-modes.md](configuration/execution-modes.md) - Split/Single mode details

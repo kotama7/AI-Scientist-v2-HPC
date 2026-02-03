@@ -180,7 +180,8 @@ which keeps prompt size controlled.
 ## Debugging resources
 
 - Confirm the launcher is run from the repo root so `AI_SCIENTIST_ROOT` is set.
-- Inspect `experiments/<run>/memory/resource_snapshot.json` when memory is on.
+- Inspect `experiments/<run>/memory/resource_snapshot.json` only if a snapshot
+  was explicitly created (it is not auto-generated).
 - Check for staged content under `experiments/<run>/resources/` in split mode.
 
 ## Fetch behavior

@@ -5,9 +5,9 @@ point to files that are not present in this fork. Pass explicit paths as shown.
 
 ## 0. Prerequisites
 
-- Install host dependencies (see `docs/installation.md`).
+- Install host dependencies (see `docs/getting-started/installation.md`).
 - Ensure `singularity` is available if you plan to use split mode.
-- Export the API keys you need (see `docs/credentials.md`).
+- Export the API keys you need (see `docs/getting-started/credentials.md`).
 
 ## 1. Prepare a base SIF image
 
@@ -55,7 +55,7 @@ Useful flags:
 - `--attempt_id <n>`: disambiguate parallel runs of the same idea.
 - `--writable_mode {auto,tmpfs,overlay,none}`: control Phase 1 writable behavior.
 - `--resources <file>`: pass a resources JSON/YAML file (see
-  `docs/resource-files.md` and `data_resources.json` for an example).
+  `docs/architecture/resource-files.md` and `data_resources.json` for an example).
 - `--enable_memgpt`: enable hierarchical memory.
 - `--memory_db <path>`: override SQLite path (defaults to
   `experiments/<run>/memory/memory.sqlite`).
@@ -100,11 +100,11 @@ After a successful run, check:
 - `experiments/<run>/figures/` for aggregated plots (if enabled).
 - `experiments/<run>/<run>.pdf` for the generated paper (if enabled).
 
-See `docs/outputs.md` for the full directory layout.
+See `docs/configuration/outputs.md` for the full directory layout.
 
 ## What "success" looks like
 
 - Logs show successful Phase 1 install (split mode) and Phase 2-4 execution.
-- `experiments/<run>/logs/.../unified_tree_viz.html` renders the search tree.
+- `experiments/<run>/logs/unified_tree_viz.html` renders the search tree.
 - `experiments/<run>/figures/` includes plots (if enabled).
 - `experiments/<run>/<run>.pdf` exists when writeup is enabled.

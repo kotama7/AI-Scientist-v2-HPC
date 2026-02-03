@@ -1,155 +1,180 @@
-# 用語集 (Glossary)
+# Glossary
 
-このドキュメントでは、HPC-AutoResearchで使用される主要な用語を説明します。
+This document defines key terms used in HPC-AutoResearch.
 
-## 全体構成関連
+## Structure and Core Concepts
 
 ### BFTS (Best-First Tree Search)
-エージェントが探索木を構築しながら最適解を探す木探索アルゴリズム。各ノードは1つのコード実装を表し、成功・失敗に応じて次のノードが生成されます。
+A tree-search algorithm in which the agent builds an exploration tree and
+selects the best nodes for further expansion. Each node represents one code
+implementation, and new nodes are generated based on success or failure.
 
 ### Tree Search
-実験コードの探索を木構造として行う手法。ルートノードから始まり、ドラフト→デバッグ→改善のサイクルで枝を伸ばしていきます。
+A method that treats experiment code exploration as a tree. Starting from a root
+node, the system expands branches through draft → debug → improve cycles.
 
-### Node (ノード)
-探索木における1つの実験コード実装。ノードはPhase 0-4を経て実行され、成功すると子ノードを生成します。
+### Node
+A single experiment code implementation in the tree. A node runs through
+Phase 0-4 and can spawn children after execution.
 
-### Stage (ステージ)
-探索の進行段階を表します：
-- **Stage 1** (`initial_implementation`): 初期実装の生成と動作検証
-- **Stage 2** (`baseline_tuning`): ベースラインチューニング、追加データセットでの評価
-- **Stage 3** (`creative_research`): 創造的改善、実験計画の実行
-- **Stage 4** (`ablation_studies`): アブレーション研究、リスク要因の検証
+### Stage
+A progression milestone in tree search:
+- **Stage 1** (`initial_implementation`): Generate an initial implementation and verify it works
+- **Stage 2** (`baseline_tuning`): Baseline tuning and evaluation on extra datasets
+- **Stage 3** (`creative_research`): Creative improvements and experiment plans
+- **Stage 4** (`ablation_studies`): Ablation studies and risk-factor validation
 
-### Worker (ワーカー)
-並列実行されるエージェントプロセス。`num_workers`で並列数を指定し、各ワーカーはGPUまたはCPUにマップされます。
+### Worker
+A parallel agent process. The number of workers is set by `num_workers`, and each
+worker is mapped to a GPU or CPU.
 
-## Phase（フェーズ）関連
+## Phase Concepts
 
 ### Phase 0 (Planning)
-プランニングフェーズ。環境情報を収集し、Phase 1-4の実行計画を生成します。
+The planning phase. It collects environment information and generates the
+Phase 1-4 execution plan.
 
 ### Phase 1 (Download/Install)
-依存関係のダウンロードとインストールを行うフェーズ。Singularityコンテナ内で`apt-get`、`pip install`、ソースビルドなどを実行します。反復的インストーラーの最大ステップ数は`phase1_max_steps`で設定（デフォルト: 100）。
+Downloads and installs dependencies inside a Singularity container using
+`apt-get`, `pip install`, and source builds. The iterative installer max steps
+are configured by `phase1_max_steps` (default: 100).
 
 ### Phase 2 (Coding)
-コード生成フェーズ。LLMがワークスペースにファイルを生成します。
+Generates code files in the workspace.
 
 ### Phase 3 (Compile)
-コンパイルフェーズ。`gcc`、`make`などでビルドを実行します。
+Builds code using tools like `gcc` and `make`.
 
 ### Phase 4 (Run)
-実行フェーズ。ビルドしたプログラムを実行し、出力（`.npy`など）を収集します。
+Executes the built program and collects outputs (e.g., `.npy`).
 
 ### Split Mode
-Phase 0-4を明示的に分離して実行するモード（デフォルト）。Singularityコンテナ内で実行されます。
+The default mode that explicitly separates Phase 0-4 and executes in a
+Singularity container.
 
 ### Single Mode
-従来のレガシー実行モード。ホスト環境で直接実行し、Phase分離を行いません。
+Legacy execution mode that runs directly on the host and does not split phases.
 
-## メモリ関連
+## Memory Concepts
 
 ### MemGPT
-階層的メモリ管理システム。`memory.enabled=true`で有効化されます（デフォルトで有効）。
+A hierarchical memory management system. Enabled via `memory.enabled=true`
+(default: enabled).
 
-### Core Memory (コアメモリ)
-常にプロンプトに注入される重要な情報。LLMが自律的にキー値を設定・管理します。`core_max_chars`で容量制限（デフォルト: 10000文字、コードのフォールバック: 2000文字）。
+### Core Memory
+Always-injected important context. The LLM manages key/value entries. Capacity
+is limited by `core_max_chars` (default: 2000 chars, code fallback: 2000 chars).
 
-### Recall Memory (リコールメモリ)
-直近のイベントタイムライン。ノードの作成、コンパイル成功/失敗などのイベントが記録されます。`recall_max_events`で件数制限（デフォルト: 5件、コードのフォールバック: 20件）。
+### Recall Memory
+A recent event timeline (node creation, compile success/failure, etc.). The
+count is limited by `recall_max_events` (default: 5 events, code fallback: 20
+entries).
 
-### Archival Memory (アーカイブメモリ)
-長期保存用メモリ。FTS5による全文検索が可能。詳細なエラー情報や成功パターンを保存します。`retrieval_k`で検索時の上位k件を指定（デフォルト: 4件、コードのフォールバック: 8件）。
+### Archival Memory
+Long-term memory with FTS5 full-text search. Stores detailed error and success
+patterns. Retrieval uses top-k entries (`retrieval_k`, default: 4, code fallback: 8).
 
-### Branch (ブランチ)
-メモリの分岐。子ノードは親のメモリを継承し、書き込みは自身のブランチに隔離されます。
+### Branch
+A memory branch. Child nodes inherit parent memory, and writes are isolated to
+the child branch.
 
-### Memory Pressure (メモリ圧力)
-メモリ使用量に基づく圧力レベル：
-- **low**: 70%未満
+### Memory Pressure
+Pressure levels based on memory usage:
+- **low**: below 70%
 - **medium**: 70-85%
 - **high**: 85-95%
-- **critical**: 95%以上
+- **critical**: above 95%
 
 ### LLM Compression
-LLMを使用してテキストを圧縮する機能。単純な切り捨てではなく、重要な情報を保持します。
+LLM-based text compression that preserves important information rather than
+naive truncation.
 
-## リソース関連
+## Resource Concepts
 
 ### Resource File
-データセット、GitHubリポジトリ、HuggingFaceモデルを定義するJSONまたはYAMLファイル。`--resources`フラグで指定します。
+A JSON or YAML file defining datasets, GitHub repositories, and HuggingFace
+models. Supplied via the `--resources` flag.
 
 ### Local Resource
-ホストシステムに存在し、コンテナにマウントされるリソース。
+A resource on the host system that is mounted into the container.
 
 ### Mount Path
-コンテナ内でリソースがマウントされるパス（例: `/workspace/input/data`）。
+The path inside the container where a resource is mounted (e.g.,
+`/workspace/input/data`).
 
 ### Staging
-リソースをワークスペースにコピーまたはシンボリックリンクすること。
+Copying or symlinking resources into the workspace.
 
-## 出力関連
+## Output Concepts
 
 ### Experiment Output Filename
-実験結果の出力ファイル名。`{experiment_name}_data.npy`形式で、実験名に基づいて動的に生成されます。例: `stability_oriented_autotuning_v2_data.npy`。これにより、どの実験が出力を生成したかが明確になります。
+The output filename for experiment results, formatted as `{experiment_name}_data.npy`
+(e.g., `stability_oriented_autotuning_v2_data.npy`). This makes it clear which
+experiment produced the output.
 
 ### Experiment Directory
-`experiments/<timestamp>_<idea>_attempt_<id>/`形式のディレクトリ。実験の全成果物を含みます。
+A directory of the form `experiments/<timestamp>_<idea>_attempt_<id>/` that
+contains all experiment artifacts.
 
 ### Tree Visualization
-`unified_tree_viz.html`で提供される探索木のHTML可視化。
+The HTML visualization of the search tree in `unified_tree_viz.html`.
 
 ### Token Tracker
-LLM API呼び出しのトークン使用量を記録するシステム。`token_tracker.json`に出力。
+Tracks LLM API token usage and writes to `token_tracker.json`.
 
 ### Final Memory
-実行終了時に生成されるメモリサマリー。`final_memory_for_paper.md`と`final_memory_for_paper.json`。
+The end-of-run memory summary: `final_memory_for_paper.md` and
+`final_memory_for_paper.json`.
 
-## 論文生成関連
+## Paper Generation Concepts
 
 ### Plot Aggregation
-複数ノードから生成されたプロットを選択・集約するプロセス。
+Selects and aggregates plots generated by multiple nodes.
 
 ### VLM (Vision-Language Model)
-画像を解析できるマルチモーダルLLM。プロット品質評価に使用。
+A multimodal LLM used to analyze images and evaluate plot quality.
 
 ### Writeup
-実験結果からLaTeX論文を生成するプロセス。
+The process that generates a LaTeX paper from experiment results.
 
 ### Review
-生成された論文をNeurIPS形式でレビューするプロセス。
+A NeurIPS-style automated review of the generated paper.
 
-## 設定関連
+## Configuration Concepts
 
 ### bfts_config.yaml
-メインの設定ファイル。実験ごとに`experiments/<run>/`にコピーされます。
+Main configuration file. It is copied into each run directory under
+`experiments/<run>/`.
 
 ### Persona
-`agent.role_description`で設定されるエージェントの役割（例: "HPC Researcher"）。プロンプト内の`{persona}`トークンが置換されます。未設定時のデフォルトは"AI researcher"。
+The agent role configured via `agent.role_description` (e.g., "HPC Researcher").
+The `{persona}` token in prompts is replaced with this role; default is
+"AI researcher" if not set.
 
 ### Singularity Image (SIF)
-Singularityコンテナイメージ。`exec.singularity_image`で指定。
+The Singularity container image, configured by `exec.singularity_image`.
 
 ### Overlay
-Singularityコンテナに書き込み可能なレイヤーを追加するためのイメージ。
+A writable layer for Singularity containers.
 
-## CLI関連
+## CLI Concepts
 
 ### launch_scientist_bfts.py
-メインのランチャースクリプト。アイデア読み込み→実験→プロット→論文→レビューを統括。
+Main launcher script. Orchestrates idea loading → experiments → plots → writeup → review.
 
 ### generate_paper.py
-既存の実験ディレクトリからプロット/論文/レビューを生成するスクリプト。
+Regenerates plots/writeup/review from an existing experiment directory.
 
 ### perform_ideation_temp_free.py
-ワークショップ記述からアイデアJSONを生成するスクリプト。
+Generates idea JSON from workshop descriptions.
 
-## 関連プロジェクト
+## Related Projects
 
 ### AI-Scientist-v2
-Sakana AIによる元プロジェクト。本フォークはHPC向けに拡張。
+The original project by Sakana AI. This fork extends it for HPC.
 
 ### AIDE
-木探索コンポーネントのベースとなったプロジェクト。
+The project that inspired the tree search component.
 
 ### MemGPT
-階層的メモリの概念の元となったプロジェクト。
+The project that introduced hierarchical memory concepts.

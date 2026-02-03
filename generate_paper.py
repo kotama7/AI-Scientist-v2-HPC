@@ -9,7 +9,13 @@ from pathlib import Path
 from ai_scientist.llm import create_client
 from ai_scientist.perform_plotting import aggregate_plots
 from ai_scientist.perform_writeup import perform_writeup, gather_citations
-from ai_scientist.perform_llm_review import perform_review, load_paper
+from ai_scientist.perform_llm_review import (
+    perform_review,
+    load_paper,
+    reviewer_system_prompt_base,
+    reviewer_system_prompt_neg,
+    reviewer_system_prompt_pos,
+)
 from ai_scientist.perform_vlm_review import perform_imgs_cap_ref_review
 from ai_scientist.utils.token_tracker import token_tracker
 
@@ -113,6 +119,13 @@ def parse_arguments() -> argparse.Namespace:
         help="If set, skip the review process.",
     )
     parser.add_argument(
+        "--review-bias",
+        type=str,
+        choices=["neg", "pos", "neutral"],
+        default="neutral",
+        help="Review bias mode: 'neg' (strict - reject if unsure), 'pos' (lenient - accept if unsure), 'neutral' (balanced - no bias on uncertainty).",
+    )
+    parser.add_argument(
         "--clean-experiment-results",
         action="store_true",
         help="If set, remove experiment_results after plot aggregation.",
@@ -213,7 +226,24 @@ def main() -> None:
             print("Paper found at: ", pdf_path)
             paper_content = load_paper(str(pdf_path))
             client, client_model = create_client(args.model_review)
-            review_text = perform_review(paper_content, client_model, client)
+
+            # Select reviewer system prompt based on bias mode
+            if args.review_bias == "neg":
+                reviewer_prompt = reviewer_system_prompt_neg
+                print("Using negative bias (strict) review mode.")
+            elif args.review_bias == "pos":
+                reviewer_prompt = reviewer_system_prompt_pos
+                print("Using positive bias (lenient) review mode.")
+            else:  # neutral
+                reviewer_prompt = reviewer_system_prompt_base
+                print("Using neutral (balanced) review mode.")
+
+            review_text = perform_review(
+                paper_content,
+                client_model,
+                client,
+                reviewer_system_prompt=reviewer_prompt,
+            )
             review_img_cap_ref = perform_imgs_cap_ref_review(
                 client, client_model, str(pdf_path)
             )

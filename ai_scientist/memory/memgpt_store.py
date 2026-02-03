@@ -3974,6 +3974,144 @@ class MemoryManager:
         ]
         return failure_notes
 
+    def _extract_hardware_info_from_archival(self, branch_id: str) -> dict[str, str | None]:
+        """Extract hardware and environment info from PHASE0_INTERNAL archival entries.
+
+        Returns dictionary with keys: cpu_model, cpu_sockets, cpu_cores, numa_nodes,
+        os, compiler, compiler_version, tools.
+        """
+        import re
+
+        hardware_info: dict[str, str | None] = {
+            "cpu_model": None,
+            "cpu_sockets": None,
+            "cpu_cores": None,
+            "numa_nodes": None,
+            "os": None,
+            "compiler": None,
+            "compiler_version": None,
+            "tools": None,
+        }
+
+        try:
+            # Get PHASE0_INTERNAL entries
+            rows = self.retrieve_archival(
+                branch_id=branch_id,
+                query="",
+                k=20,
+                include_ancestors=True,
+                log_event=False,
+            )
+
+            for row in rows:
+                tags = row.get("tags", [])
+                if "PHASE0_INTERNAL" not in tags:
+                    continue
+
+                text = row.get("text", "")
+
+                # Extract CPU model (AMD EPYC or Intel patterns)
+                if not hardware_info["cpu_model"]:
+                    cpu_match = re.search(r'CPU\s+(AMD EPYC \d+)', text)
+                    if not cpu_match:
+                        cpu_match = re.search(r'(AMD EPYC \d+)\s+dual-socket', text)
+                    if not cpu_match:
+                        cpu_match = re.search(r'CPU\s+(Intel[\s\w]+\d+)', text)
+                    if cpu_match:
+                        hardware_info["cpu_model"] = cpu_match.group(1).strip()
+
+                # Extract sockets
+                if not hardware_info["cpu_sockets"]:
+                    socket_match = re.search(r'(dual|single|two|one)[\s-]socket', text, re.IGNORECASE)
+                    if socket_match:
+                        socket_str = socket_match.group(1).lower()
+                        if socket_str in ["dual", "two"]:
+                            hardware_info["cpu_sockets"] = "2"
+                        elif socket_str in ["single", "one"]:
+                            hardware_info["cpu_sockets"] = "1"
+
+                # Extract cores
+                if not hardware_info["cpu_cores"]:
+                    core_match = re.search(r'(\d+)\s+cores', text, re.IGNORECASE)
+                    if core_match:
+                        hardware_info["cpu_cores"] = core_match.group(1)
+
+                # Extract NUMA nodes
+                if not hardware_info["numa_nodes"]:
+                    numa_match = re.search(r'(\d+)\s+NUMA\s+nodes?', text, re.IGNORECASE)
+                    if numa_match:
+                        hardware_info["numa_nodes"] = numa_match.group(1)
+
+                # Extract OS
+                if not hardware_info["os"]:
+                    os_match = re.search(r'(?:Environment:|OS:)?\s*(Ubuntu\s+[\d.]+)', text, re.IGNORECASE)
+                    if os_match:
+                        hardware_info["os"] = os_match.group(1)
+
+                # Extract compiler
+                if not hardware_info["compiler_version"]:
+                    compiler_match = re.search(r'(?:gcc|gfortran)[\s/]*(?:gcc|g\+\+|gfortran)?[\s/]*([\d.]+)', text, re.IGNORECASE)
+                    if compiler_match:
+                        hardware_info["compiler"] = "gcc"
+                        hardware_info["compiler_version"] = compiler_match.group(1)
+
+                # Extract tools
+                if not hardware_info["tools"]:
+                    tools_match = re.search(r'(?:tools|Tools)[:\s]+([^;.]+)', text, re.IGNORECASE)
+                    if tools_match:
+                        hardware_info["tools"] = tools_match.group(1).strip()
+
+            return hardware_info
+        except Exception as exc:
+            logger.warning("Failed to extract hardware info from archival: %s", exc)
+            return hardware_info
+
+    def _inject_hardware_info_to_core(self, branch_id: str) -> None:
+        """Extract hardware info from archival and inject into Core Memory.
+
+        This ensures hardware/environment information is always available
+        for paper generation, even if LLM didn't record it during Phase 0.
+        """
+        # Check if hardware info is already in Core Memory
+        existing_cpu = self.get_core(branch_id, "hardware_cpu")
+        existing_os = self.get_core(branch_id, "hardware_os")
+        existing_compiler = self.get_core(branch_id, "hardware_compiler")
+        existing_tools = self.get_core(branch_id, "hardware_tools")
+
+        # If all info already exists, skip extraction
+        if existing_cpu and existing_os and existing_compiler and existing_tools:
+            logger.info("Hardware info already present in Core Memory, skipping extraction")
+            return
+
+        # Extract from archival
+        logger.info("Extracting hardware info from archival memory...")
+        hardware_info = self._extract_hardware_info_from_archival(branch_id)
+
+        # Inject into Core Memory
+        if not existing_cpu and hardware_info.get("cpu_model"):
+            cpu_info = f"{hardware_info['cpu_model']}"
+            if hardware_info.get("cpu_sockets"):
+                cpu_info += f", {hardware_info['cpu_sockets']} socket(s)"
+            if hardware_info.get("cpu_cores"):
+                cpu_info += f", {hardware_info['cpu_cores']} cores"
+            if hardware_info.get("numa_nodes"):
+                cpu_info += f", {hardware_info['numa_nodes']} NUMA node(s)"
+            self.set_core(branch_id, "hardware_cpu", cpu_info)
+            logger.info("Injected hardware_cpu: %s", cpu_info)
+
+        if not existing_os and hardware_info.get("os"):
+            self.set_core(branch_id, "hardware_os", hardware_info["os"])
+            logger.info("Injected hardware_os: %s", hardware_info["os"])
+
+        if not existing_compiler and hardware_info.get("compiler") and hardware_info.get("compiler_version"):
+            compiler_info = f"{hardware_info['compiler']} {hardware_info['compiler_version']}"
+            self.set_core(branch_id, "hardware_compiler", compiler_info)
+            logger.info("Injected hardware_compiler: %s", compiler_info)
+
+        if not existing_tools and hardware_info.get("tools"):
+            self.set_core(branch_id, "hardware_tools", hardware_info["tools"])
+            logger.info("Injected hardware_tools: %s", hardware_info["tools"])
+
     def _load_resource_snapshot_and_index(
         self, memory_dir: Path, root_branch_id: str, best_branch: str
     ) -> tuple[dict, dict, dict]:
@@ -4130,15 +4268,19 @@ class MemoryManager:
 
         # Core Memory - all key-value pairs
         core_memory: dict[str, Any] = {}
+        logger.info(f"Building memory context: branch_chain = {branch_chain}")
         for bid in branch_chain:
             core_rows = self._conn.execute(
                 "SELECT key, value FROM core_kv WHERE branch_id=?",
                 (bid,),
             ).fetchall()
+            logger.info(f"Branch {bid}: found {len(core_rows)} core_kv entries")
             for row in core_rows:
                 key = row["key"]
                 if key not in core_memory:
                     core_memory[key] = row["value"] or ""
+
+        logger.info(f"Total core_memory keys collected: {len(core_memory)}, keys: {list(core_memory.keys())}")
 
         # Recall Memory - all events
         recall_memory: list[dict[str, Any]] = []
@@ -4366,6 +4508,16 @@ Requirements:
     def _fill_section_from_memory(self, section: dict[str, Any], memory_context: dict[str, Any]) -> str:
         """Fill a single section using memory search and LLM synthesis."""
         memory_slice = self._filter_memory_for_section(section, memory_context)
+
+        # Debug: Check if hardware keys are in memory_slice
+        core_mem = memory_slice.get("core_memory", {})
+        section_key = section.get("key", "")
+        has_hardware = any(k.startswith("hardware_") for k in core_mem.keys())
+        if has_hardware:
+            logger.info(f"Section '{section_key}': hardware keys found in core_memory: {[k for k in core_mem.keys() if k.startswith('hardware_')]}")
+        else:
+            logger.warning(f"Section '{section_key}': NO hardware keys in core_memory (keys: {list(core_mem.keys())[:5]}...)")
+
         try:
             from ai_scientist.llm import get_response_from_llm
 
@@ -4402,8 +4554,25 @@ Guidelines:
                 temperature=0.3,
             )
             content = response.strip() if response else "Not found in memory."
-            if str(section.get("key", "")) == "experimental_setup":
+
+            # Append hardware facts only if:
+            # 1. Content mentions "Not found in memory" for hardware-related information, OR
+            # 2. Section is experimental_setup, benchmarks_and_workloads, or results
+            content_lower = content.lower()
+            mentions_hardware = any(
+                keyword in content_lower for keyword in [
+                    "hardware", "cpu", "environment", "os", "operating system",
+                    "compiler", "topology", "numa", "socket", "core", "tools"
+                ]
+            )
+            not_found_hardware = "not found in memory" in content_lower and mentions_hardware
+            is_hardware_section = str(section.get("key", "")) in (
+                "experimental_setup", "benchmarks_and_workloads", "results"
+            )
+
+            if not_found_hardware or is_hardware_section:
                 content = self._append_experimental_setup_facts(content, memory_slice)
+
             return content
         except Exception as exc:
             logger.warning("Failed to fill section %s: %s", section.get("key"), exc)
@@ -4412,12 +4581,65 @@ Guidelines:
     def _append_experimental_setup_facts(self, content: str, memory_slice: dict[str, Any]) -> str:
         """Append deterministic environment facts if present in memory."""
         core = memory_slice.get("core_memory", {}) or {}
+        archival = memory_slice.get("archival_memory", []) or []
         facts: list[str] = []
+
+        # Extract hardware information from core memory or PHASE0_INTERNAL archival entries
+        hardware_cpu = core.get("hardware_cpu") or self._get_core_any_branch("hardware_cpu")
+        hardware_os = core.get("hardware_os") or self._get_core_any_branch("hardware_os")
+        hardware_compiler = core.get("hardware_compiler") or self._get_core_any_branch("hardware_compiler")
+        hardware_tools = core.get("hardware_tools") or self._get_core_any_branch("hardware_tools")
+
+        # If not in core memory, extract from PHASE0_INTERNAL archival entries
+        if not hardware_cpu or not hardware_os:
+            for entry in archival:
+                tags = entry.get("tags", [])
+                if "PHASE0_INTERNAL" in tags:
+                    text = entry.get("text", "")
+                    # Extract hardware info using regex patterns
+                    if not hardware_cpu:
+                        import re
+                        cpu_match = re.search(r'(AMD EPYC \d+|Intel[\s\w]+\d+)', text)
+                        socket_match = re.search(r'(dual|single|two|one)[\s-]socket', text, re.IGNORECASE)
+                        core_match = re.search(r'(\d+)\s+cores', text, re.IGNORECASE)
+                        numa_match = re.search(r'(\d+)\s+NUMA', text, re.IGNORECASE)
+                        if cpu_match:
+                            cpu_str = cpu_match.group(1)
+                            if socket_match:
+                                socket_str = socket_match.group(1).lower()
+                                socket_num = "2" if socket_str in ["dual", "two"] else "1"
+                                cpu_str += f", {socket_num} socket(s)"
+                            if core_match:
+                                cpu_str += f", {core_match.group(1)} cores"
+                            if numa_match:
+                                cpu_str += f", {numa_match.group(1)} NUMA node(s)"
+                            hardware_cpu = cpu_str
+                    if not hardware_os:
+                        os_match = re.search(r'(Ubuntu\s+[\d.]+)', text, re.IGNORECASE)
+                        if os_match:
+                            hardware_os = os_match.group(1)
+                    if not hardware_compiler:
+                        compiler_match = re.search(r'(gcc|gfortran)[\s/]+([\d.]+)', text, re.IGNORECASE)
+                        if compiler_match:
+                            hardware_compiler = f"{compiler_match.group(1)} {compiler_match.group(2)}"
+                    if not hardware_tools:
+                        tools_match = re.search(r'tools[:\s]+([^;.]+)', text, re.IGNORECASE)
+                        if tools_match:
+                            hardware_tools = tools_match.group(1).strip()
+
+        if hardware_cpu:
+            facts.append(f"- **CPU**: {hardware_cpu}")
+        if hardware_os:
+            facts.append(f"- **Operating System**: {hardware_os}")
+        if hardware_compiler:
+            facts.append(f"- **Compiler**: {hardware_compiler}")
+        if hardware_tools:
+            facts.append(f"- **Tools**: {hardware_tools}")
 
         compiler = core.get("selected_compiler")
         if not compiler:
             compiler = self._get_core_any_branch("selected_compiler")
-        if compiler:
+        if compiler and not hardware_compiler:
             facts.append(f"- Compiler (core): {compiler}")
 
         omp_smoke = core.get("omp_smoke_build")
@@ -4437,7 +4659,7 @@ Guidelines:
             if flags:
                 facts.append(f"- Compiler flags (omp_smoke_build): `{flags}`")
             compiler_used = parsed.get("compiler")
-            if compiler_used and not compiler:
+            if compiler_used and not compiler and not hardware_compiler:
                 facts.append(f"- Compiler (omp_smoke_build): {compiler_used}")
 
         env_verified = core.get("ablation_studies_1_first_attempt_environment_verified")
@@ -4449,7 +4671,7 @@ Guidelines:
         if not facts:
             return content
 
-        return f"{content}\n\n### Extracted environment facts\n" + "\n".join(facts)
+        return f"{content}\n\n### Hardware and Environment Details\n" + "\n".join(facts)
 
     def _get_core_any_branch(self, key: str) -> Any:
         """Fetch a core_kv value across all branches (latest by updated_at)."""
@@ -4638,12 +4860,25 @@ Return a JSON array: ["keyword1", "keyword2", ...]"""
         recall_memory = memory_context.get("recall_memory", []) or []
         archival_memory = memory_context.get("archival_memory", []) or []
 
+        # Always include hardware keys FIRST so LLM can extract environment information
         filtered_core: dict[str, Any] = {}
+        for core_key in (
+            "hardware_cpu",
+            "hardware_os",
+            "hardware_compiler",
+            "hardware_tools",
+        ):
+            if core_key in core_memory:
+                filtered_core[core_key] = _truncate(str(core_memory.get(core_key, "")), 2000)
+
+        # Then add other core keys based on keyword matching
         for key, value in core_memory.items():
+            if key in filtered_core:  # Skip already added hardware keys
+                continue
             value_str = str(value)
             if not keywords_lower or matches(key) or matches(value_str):
                 filtered_core[key] = _truncate(value_str, 2000)
-            if len(filtered_core) >= 20:
+            if len(filtered_core) >= 24:  # Allow room for hardware keys + matched keys
                 break
 
         filtered_recall = []
@@ -4659,30 +4894,38 @@ Return a JSON array: ["keyword1", "keyword2", ...]"""
             if len(filtered_recall) >= 30:
                 break
 
-        filtered_archival = []
+        # Prioritize important tags (PHASE0_INTERNAL, IDEA_MD, ROOT_IDEA) first
+        priority_tags = {"PHASE0_INTERNAL", "IDEA_MD", "ROOT_IDEA"}
+        priority_entries = []
+        other_entries = []
+
         for entry in archival_memory:
             text = str(entry.get("text", ""))
             tags = entry.get("tags", [])
+            tags_set = set(tags) if isinstance(tags, list) else set()
             tags_text = " ".join(tags) if isinstance(tags, list) else str(tags)
-            if not keywords_lower or matches(text) or matches(tags_text):
-                filtered_archival.append({
+
+            # Check if entry matches keywords or is priority
+            is_priority = bool(tags_set.intersection(priority_tags))
+            is_match = not keywords_lower or matches(text) or matches(tags_text)
+
+            if is_match or is_priority:
+                entry_obj = {
                     "id": entry.get("id", ""),
                     "tags": tags,
                     "text": _truncate(text, 1500),
-                })
-            if len(filtered_archival) >= 20:
-                break
+                }
+                if is_priority:
+                    priority_entries.append(entry_obj)
+                else:
+                    other_entries.append(entry_obj)
 
-        section_key = str(section.get("key", "") or "")
-        if section_key == "experimental_setup":
-            for core_key in (
-                "selected_compiler",
-                "omp_smoke_build",
-                "phase1_complete_reason",
-                "ablation_studies_1_first_attempt_environment_verified",
-            ):
-                if core_key in core_memory and core_key not in filtered_core:
-                    filtered_core[core_key] = _truncate(str(core_memory.get(core_key, "")), 2000)
+        # Combine: priority entries first, then keyword-matched entries
+        max_archival = 20
+        filtered_archival = priority_entries[:max_archival]
+        remaining_slots = max_archival - len(filtered_archival)
+        if remaining_slots > 0:
+            filtered_archival.extend(other_entries[:remaining_slots])
 
         return {
             "idea_summary": memory_context.get("idea_summary", ""),
@@ -4946,17 +5189,41 @@ Return a JSON array: ["keyword1", "keyword2", ...]"""
             parts.append("\n".join(recall_lines))
 
         # Archival Memory (long-term searchable memory)
+        # Prioritize important tags (PHASE0_INTERNAL, IDEA_MD) to ensure they're visible to LLM
         archival_memory = memory_context.get("archival_memory", [])
         if archival_memory:
             archival_lines = ["## Archival Memory (Long-term Storage)"]
-            for entry in archival_memory[:30]:  # Limit for LLM context
+
+            # Define priority tags that should always be included
+            priority_tags = {"PHASE0_INTERNAL", "IDEA_MD", "ROOT_IDEA"}
+
+            # Separate priority entries from others
+            priority_entries = []
+            other_entries = []
+            for entry in archival_memory:
+                tags = set(entry.get("tags", []))
+                if tags.intersection(priority_tags):
+                    priority_entries.append(entry)
+                else:
+                    other_entries.append(entry)
+
+            # Take all priority entries + fill remaining slots with newest entries
+            max_archival_entries = 30
+            selected_entries = priority_entries[:max_archival_entries]
+            remaining_slots = max_archival_entries - len(selected_entries)
+            if remaining_slots > 0:
+                selected_entries.extend(other_entries[:remaining_slots])
+
+            for entry in selected_entries:
                 entry_id = entry.get("id", "")
                 tags = entry.get("tags", [])
                 text = entry.get("text", "")[:1500]  # Truncate long entries
                 tags_str = ", ".join(tags) if tags else "no tags"
                 archival_lines.append(f"### Entry {entry_id} [{tags_str}]\n{text}")
-            if len(archival_memory) > 30:
-                archival_lines.append(f"... and {len(archival_memory) - 30} more archival entries")
+
+            total_remaining = len(archival_memory) - len(selected_entries)
+            if total_remaining > 0:
+                archival_lines.append(f"... and {total_remaining} more archival entries")
             parts.append("\n\n".join(archival_lines))
 
         # Resources used
@@ -5055,6 +5322,10 @@ Return a JSON array: ["keyword1", "keyword2", ...]"""
         memory_dir = run_dir / "memory"
         memory_dir.mkdir(parents=True, exist_ok=True)
         best_branch = best_branch_id or root_branch_id
+
+        # Extract and inject hardware info to Core Memory to ensure it's available
+        # This prevents "Not found in memory" issues for environment information
+        self._inject_hardware_info_to_core(root_branch_id)
 
         # Collect resource data for the sections
         resource_snapshot, resource_index, item_index = self._load_resource_snapshot_and_index(
@@ -5371,8 +5642,12 @@ Return a JSON array: ["keyword1", "keyword2", ...]"""
             vlm_feedback = best_node_data.get("vlm_feedback_summary", [])
             if vlm_feedback:
                 md_sections.append("### VLM Feedback Summary")
-                for i, feedback in enumerate(vlm_feedback, 1):
-                    md_sections.append(f"{i}. {feedback}")
+                # Handle both string and list formats
+                if isinstance(vlm_feedback, str):
+                    md_sections.append(vlm_feedback)
+                elif isinstance(vlm_feedback, list):
+                    for i, feedback in enumerate(vlm_feedback, 1):
+                        md_sections.append(f"{i}. {feedback}")
                 md_sections.append("")
 
             # Datasets tested
@@ -5425,7 +5700,12 @@ Return a JSON array: ["keyword1", "keyword2", ...]"""
                     md_sections.append(f"- **Analysis**: {node['analysis']}")
                 vlm_summary = node.get("vlm_feedback_summary", [])
                 if vlm_summary:
-                    md_sections.append(f"- **VLM Feedback**: {'; '.join(vlm_summary[:3])}")
+                    # Handle both string and list formats
+                    if isinstance(vlm_summary, str):
+                        summary_text = vlm_summary[:200] + "..." if len(vlm_summary) > 200 else vlm_summary
+                        md_sections.append(f"- **VLM Feedback**: {summary_text}")
+                    elif isinstance(vlm_summary, list):
+                        md_sections.append(f"- **VLM Feedback**: {'; '.join(str(s) for s in vlm_summary[:3])}")
                 md_sections.append("")
         else:
             md_sections.append("No top nodes data available.")

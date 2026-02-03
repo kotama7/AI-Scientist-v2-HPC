@@ -1,23 +1,23 @@
 # Few-shot Example Customization
 
-このドキュメントでは、論文レビューのfew-shot例をカスタマイズする方法を説明します。
+This document explains how to customize few-shot examples for paper reviews.
 
-## 概要
+## Overview
 
-Few-shot例は、LLMに論文レビューの品質とスタイルを示すための参考例です。デフォルトではAI/機械学習論文の例が使用されていますが、HPC、物理学、生物学など他分野の論文に変更できます。
+Few-shot examples show the LLM the expected review quality and style. The default examples target AI/ML papers, but you can replace them with HPC, physics, biology, or other domain-specific examples.
 
-## Few-shot例の構造
+## Few-shot Example Structure
 
-各例には3つのファイルが必要です：
+Each example consists of three files:
 
 ```
 ai_scientist/fewshot_examples/
-├── example_name.pdf      # 論文PDF
-├── example_name.txt      # PDFから抽出したテキスト（オプション）
-└── example_name.json     # レビュー結果
+├── example_name.pdf      # Paper PDF
+├── example_name.txt      # Text extracted from the PDF (optional)
+└── example_name.json     # Review output
 ```
 
-### JSONフォーマット
+### JSON Format
 
 ```json
 {
@@ -25,19 +25,19 @@ ai_scientist/fewshot_examples/
 }
 ```
 
-## 方法1: 自動生成スクリプトを使用（推奨）
+## Method 1: Use the Auto-generation Script (Recommended)
 
-### 基本的な使い方
+### Basic Usage
 
 ```bash
-# 単一のPDFから生成
+# Generate from a single PDF
 python generate_fewshot_examples.py \
     --pdf papers/your_hpc_paper.pdf \
     --output-dir ai_scientist/fewshot_examples \
     --model gpt-4o-2024-11-20
 ```
 
-### HPC論文用にカスタマイズ
+### Customize for HPC Papers
 
 ```bash
 python generate_fewshot_examples.py \
@@ -48,10 +48,10 @@ python generate_fewshot_examples.py \
     --num-reflections 5
 ```
 
-### 複数のPDFから一括生成
+### Batch Generation from Multiple PDFs
 
 ```bash
-# HPC論文のディレクトリから生成
+# Generate from a directory of HPC papers
 for pdf in papers/hpc/*.pdf; do
     python generate_fewshot_examples.py \
         --pdf "$pdf" \
@@ -60,19 +60,19 @@ for pdf in papers/hpc/*.pdf; do
 done
 ```
 
-### テキスト抽出のみ（レビュー無し）
+### Text Extraction Only (No Review)
 
 ```bash
-# レビュー生成をスキップしてテキストのみ抽出
+# Skip review generation and only extract text
 python generate_fewshot_examples.py \
     --pdf papers/example.pdf \
     --output-dir ai_scientist/fewshot_examples \
     --dry-run
 ```
 
-## 方法2: 手動で作成
+## Method 2: Create Manually
 
-### ステップ1: PDFテキスト抽出
+### Step 1: Extract PDF Text
 
 ```python
 from ai_scientist.review import load_paper
@@ -84,7 +84,7 @@ with open("ai_scientist/fewshot_examples/your_paper.txt", "w") as f:
     f.write(text)
 ```
 
-### ステップ2: レビュー生成
+### Step 2: Generate a Review
 
 ```python
 from ai_scientist.llm import create_client
@@ -97,26 +97,26 @@ review = perform_review(
     model=model,
     client=client,
     num_reflections=3,
-    num_fs_examples=0  # 既存の例を使わない
+    num_fs_examples=0  # Do not use existing examples
 )
 
-# JSONとして保存
+# Save as JSON
 review_wrapper = {"review": json.dumps(review, indent=4)}
 with open("ai_scientist/fewshot_examples/your_paper.json", "w") as f:
     json.dump(review_wrapper, f, indent=4)
 ```
 
-### ステップ3: PDFをコピー
+### Step 3: Copy the PDF
 
 ```bash
 cp papers/your_paper.pdf ai_scientist/fewshot_examples/
 ```
 
-## 方法3: Few-shot例のリストを変更
+## Method 3: Update the Few-shot Example List
 
-生成したfew-shot例を使用するには、コード内のリストを変更します。
+To use your generated few-shot examples, update the list in code.
 
-### 既存のリストを確認
+### Check the Existing List
 
 [ai_scientist/review/llm_review.py:40-50](ai_scientist/review/llm_review.py#L40-L50)
 
@@ -134,10 +134,10 @@ fewshot_reviews = [
 ]
 ```
 
-### HPC例に置き換え
+### Replace with HPC Examples
 
 ```python
-# HPC論文の例に変更
+# Switch to HPC paper examples
 fewshot_papers = [
     os.path.join(parent_dir, "fewshot_examples/himeno_benchmark.pdf"),
     os.path.join(parent_dir, "fewshot_examples/mpi_performance.pdf"),
@@ -151,12 +151,12 @@ fewshot_reviews = [
 ]
 ```
 
-### 実行時に動的に指定（拡張版）
+### Specify Dynamically at Runtime (Extended)
 
-より柔軟な実装：
+A more flexible approach:
 
 ```python
-# ai_scientist/review/llm_review.py を編集
+# Edit ai_scientist/review/llm_review.py
 import os
 
 def get_fewshot_paths(domain="ai"):
@@ -196,96 +196,46 @@ def get_fewshot_paths(domain="ai"):
 
     return fewshot_papers, fewshot_reviews
 
-# デフォルトはAI
+# Default is AI
 fewshot_papers, fewshot_reviews = get_fewshot_paths(
     domain=os.environ.get("REVIEW_DOMAIN", "ai")
 )
 ```
 
-使用時：
+Usage:
+
 ```bash
-# HPCドメインでレビュー
+# Review with the HPC domain
 REVIEW_DOMAIN=hpc python generate_paper.py --experiment-dir experiments/xxx
 ```
 
-## HPC論文のfew-shot例作成のベストプラクティス
+## Best Practices for HPC Few-shot Examples
 
-### 1. 適切な論文を選ぶ
+### 1. Choose Appropriate Papers
 
-良い例：
-- ✅ 査読付き国際会議・ジャーナル（SC、ISC、TPDS等）
-- ✅ 明確な性能評価とスケーラビリティ分析
-- ✅ 再現性の高いベンチマーク
-- ✅ 多様なトピック（MPI、GPU、ハイブリッド並列等）
+Good examples:
+- Reviewable conference/journal papers (SC, ISC, TPDS, etc.)
+- Clear performance evaluation and scalability analysis
+- Reproducible benchmark conditions
+- Diverse topics (MPI, GPU, hybrid parallelism, etc.)
 
-避けるべき：
-- ❌ プレプリントや未査読論文（レビュー品質が不明）
-- ❌ 特殊すぎる環境・ハードウェアに依存
-- ❌ 理論のみで実験がない論文
+Avoid:
+- Preprints or non-peer-reviewed papers (review quality is uncertain)
+- Papers tied to extremely specific environments or hardware
+- Theory-only papers without experiments
 
-### 2. レビューの質を確認
+### 2. Check Review Quality
 
-自動生成後、以下を確認：
-- **Strengths/Weaknesses**: HPC固有の観点（スケーラビリティ、性能解析）が含まれているか
-- **Significance**: ベンチマーク結果の妥当性が評価されているか
-- **Soundness**: 実験条件の再現性が考慮されているか
+After auto-generation, verify:
+- **Strengths/Weaknesses**: includes HPC-specific aspects (scalability, performance analysis)
+- **Significance**: evaluates the validity of benchmark results
+- **Soundness**: considers reproducibility of experimental conditions
 
-不足があれば、JSONを手動編集して品質を向上させます。
+If anything is missing, manually edit the JSON to improve quality.
 
-### 3. 多様性を確保
+### 3. Ensure Diversity
 
-3つの例で異なる側面をカバー：
-1. **並列アルゴリズム**: MPI、OpenMP、ハイブリッド
-2. **アクセラレータ**: GPU、FPGA最適化
-3. **ベンチマーク・性能解析**: 実世界アプリケーション
-
-## トラブルシューティング
-
-### PDF読み込みエラー
-
-```
-Error: Failed to extract text from PDF
-```
-
-**解決策**:
-- PDFが破損していないか確認
-- OCRが必要な画像PDFの場合、テキスト埋め込み版を使用
-- 手動でテキストをコピーして`.txt`ファイルを作成
-
-### レビュー品質が低い
-
-```
-生成されたレビューが浅い、または不正確
-```
-
-**解決策**:
-- `--num-reflections` を5以上に増やす
-- `--custom-prompt` でより具体的な指示を追加
-- より高性能なモデル（`o1-preview-2024-09-12`等）を使用
-- 生成後にJSONを手動編集
-
-### Few-shot例が認識されない
-
-```
-FileNotFoundError: fewshot_examples/xxx.pdf
-```
-
-**解決策**:
-- ファイル名が `llm_review.py` のリストと一致しているか確認
-- 拡張子が正しいか確認（`.pdf`, `.json`）
-- パスが相対パスとして正しいか確認
-
-## 関連ファイル
-
-- [generate_fewshot_examples.py](../../generate_fewshot_examples.py) - 自動生成スクリプト
-- [ai_scientist/review/llm_review.py](../../ai_scientist/review/llm_review.py) - Few-shotリスト定義
-- [ai_scientist/fewshot_examples/](../../ai_scientist/fewshot_examples/) - 既存の例
-
-## 参考：HPC論文の推奨ソース
-
-高品質なHPC論文の入手先：
-- **SC (Supercomputing)**: https://sc23.supercomputing.org/proceedings/
-- **ISC High Performance**: https://www.isc-hpc.com/
-- **TPDS (IEEE Trans. on Parallel and Distributed Systems)**: https://ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=71
-- **PPoPP (Principles and Practice of Parallel Programming)**: https://ppopp23.sigplan.org/
-- **arXiv cs.DC**: https://arxiv.org/list/cs.DC/recent (査読前だが最新研究)
+Cover different angles with three examples:
+1. **Parallel algorithms**: MPI, OpenMP, hybrid
+2. **Accelerators**: GPU, FPGA optimization
+3. **Benchmarking and performance analysis**: real-world applications

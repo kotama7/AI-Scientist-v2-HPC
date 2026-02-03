@@ -111,9 +111,9 @@ Each worker process executes `_process_node_wrapper` which handles:
 │     │     child_node = worker_agent._draft()                 │              │
 │     │ elif parent_node.is_buggy:                             │              │
 │     │     child_node = worker_agent._debug(parent_node)      │              │
-│     │ elif stage == "hyperparam_tuning":                     │              │
+│     │ elif stage_name.startswith("2_"):                      │              │
 │     │     child_node = worker_agent._generate_hyperparam_... │              │
-│     │ elif stage == "ablation":                              │              │
+│     │ elif stage_name.startswith("4_"):                      │              │
 │     │     child_node = worker_agent._generate_ablation_node  │              │
 │     │ else:                                                  │              │
 │     │     child_node = worker_agent._improve(parent_node)    │              │
@@ -151,9 +151,9 @@ def _select_parallel_nodes(self) -> List[Optional[Node]]:
                 continue
 
         # 3. Stage-specific handling
-        if stage == "4_ablation":
+        if stage_name.startswith("4_"):
             nodes_to_process.append(best_stage3_node)
-        elif stage == "2_hyperparam":
+        elif stage_name.startswith("2_"):
             nodes_to_process.append(best_stage1_node)
         else:
             # Best-first search for improvement
@@ -174,7 +174,7 @@ def _select_parallel_nodes(self) -> List[Optional[Node]]:
 │                                                                              │
 │  Configuration:                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐ │
-│  │ workspace: /path/to/experiments/<run>/<exp>/worker_0                   │ │
+│  │ workspace: /path/to/experiments/<run>/worker_0                         │ │
 │  │ image: /path/to/template/base.sif                                      │ │
 │  │ workspace_mount: /workspace                                             │ │
 │  │ gpu_id: 0 (or None)                                                     │ │
@@ -491,8 +491,9 @@ exec:
   singularity_image: template/base.sif # Path to SIF image
   workspace_mount: /workspace          # Mount point in container
   use_gpu: true
-  timeout: 3600                        # Execution timeout (seconds)
+  timeout: 10800                       # Execution timeout (seconds)
 
 # Worker count
-num_workers: 4  # Number of parallel workers
+agent:
+  num_workers: 4  # Number of parallel workers
 ```

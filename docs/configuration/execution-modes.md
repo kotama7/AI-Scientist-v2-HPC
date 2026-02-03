@@ -34,7 +34,8 @@ phase must produce `working/{experiment_name}_data.npy` inside the container
 overridden by the plan.
 
 Per-worker SIFs are built when `per_worker_sif=true` under
-`experiments/<...>/workers/worker-*/container/`.
+`experiments/<run>/runs/workers/worker-*/container/` (or `AI_SCIENTIST_RUN_ROOT`
+if overridden).
 
 Relevant flags in `launch_scientist_bfts.py`:
 
@@ -77,7 +78,7 @@ Set `exec.use_gpu=false` or `--use_gpu false` to force CPU-only containers.
 
 - Phase 0: planning artifacts and the phase plan, stored in the run logs.
 - Phase 1: install logs and environment notes inside the worker container.
-- Phase 2-4: code, compile, and execution logs under
-  `experiments/<run>/logs/`.
+- Phase 2-4: code, compile, and execution logs under `experiments/<run>/logs/`
+  (with `stage_<stage_name>/` and `phase_logs/node_<id>/`).
 
-See `docs/outputs.md` for the full log layout.
+See `docs/configuration/outputs.md` for the full log layout.

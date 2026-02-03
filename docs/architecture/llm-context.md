@@ -63,9 +63,10 @@ This allows domain-specific prompt customization without editing template files.
 - Phase 0 planning (split): Introduction + Task + History (phase summaries,
   compile/run logs and errors, prior LLM outputs) + Environment snapshot
   (OS/CPU/GPU, compilers/libs, network, container) + optional Resources.
-  Memory operations are defined in the Phase 0 prompt when memory is enabled
-  (`prompt/config/phases/phase0_planning_with_memory.txt`); memory context is
-  not auto-injected.
+  When memory is enabled, `_execute_phase0_planning()` injects a Memory section
+  via `render_for_prompt()` (task_hint `phase0`) and the prompt file
+  `prompt/config/phases/phase0_planning_with_memory.txt` defines the
+  `<memory_update>` schema.
 - Phase 1 iterative install (split): Introduction + Task + Phase plan
   (download/compile/run) + Constraints + Progress history + optional Phase 0
   guidance + Environment injection + Resources.
@@ -77,7 +78,7 @@ summarizes what is injected per phase:
 
 | Phase | Role | Injected Context |
 |-------|------|------------------|
-| **Phase 0** | Planning | Introduction (`config/phases/phase0_planning.txt` or `config/phases/phase0_planning_with_memory.txt` when memory enabled) + Task + History (phase summaries, compile/run logs, errors, prior LLM outputs) + Environment (OS, CPU, GPU, compilers, libs, network, container info) + Resources + Memory ops (via prompt file; no auto memory context) |
+| **Phase 0** | Planning | Introduction (`config/phases/phase0_planning.txt` or `config/phases/phase0_planning_with_memory.txt` when memory enabled) + Task + History (phase summaries, compile/run logs, errors, prior LLM outputs) + Environment (OS, CPU, GPU, compilers, libs, network, container info) + Resources + Memory context (rendered for prompt) + Memory ops (via prompt file) |
 | **Phase 1** | Download/Install | Introduction (`config/phases/phase1_installer.txt`) + Task + Phase plan (download/compile/run commands from Phase 0) + Constraints + Progress (step index, max steps, command history with exit codes/stdout/stderr) + Phase 0 plan snippet (phase1 guidance: targets, preferred_commands, done_conditions) + Environment injection + Resources + Memory |
 | **Phase 2** | Coding | Stage-specific sections + Phase 0 plan snippet (goal_summary, implementation_strategy, dependencies, phase2-4 guidance) + System/Domain prompts + Environment injection + Resources + Memory + Instructions (guidelines, response format, implementation guidance) |
 | **Phase 3** | Compile | Same as Phase 2 (combined in single LLM call with Phase 2/4; `coding/compile/run` artifacts produced together per `agent/parallel/response_format/execution_split.txt`) |
@@ -98,7 +99,9 @@ summarizes what is injected per phase:
   - `available_libs` (pkg-config detected libraries)
   - `network_access` (available/blocked)
   - `container_runtime`, `singularity_image`, `workspace_mount`
-- **Memory**: When enabled, memory operations are specified in the prompt file; no automatic memory context injection
+- **Memory**: When enabled, `_execute_phase0_planning()` injects memory context
+  via `render_for_prompt()` (task_hint `phase0`) and the prompt file defines
+  `<memory_update>` operations.
 - **Resources**: Resource file context (local data, GitHub repos, HuggingFace models)
 
 ### Phase 1: Iterative installer context details
@@ -205,13 +208,13 @@ The prompt content for these calls includes:
 ## Resource injection
 
 Resource files can mount data and inject context into prompts. See
-`docs/resource-files.md` for the schema and injection rules.
+`docs/architecture/resource-files.md` for the schema and injection rules.
 
 ## Inspecting prompt logs
 
 When `exec.log_prompts` is true (default), per-node prompt logs are written to:
 
-- `experiments/<run>/logs/<index>-<exp_name>/phase_logs/node_<id>/prompt_logs/`
+- `experiments/<run>/logs/phase_logs/node_<id>/prompt_logs/`
 
 Each directory includes JSON and Markdown renderings of the prompts used for
 that node and stage, which is the fastest way to verify what context was

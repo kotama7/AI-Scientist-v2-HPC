@@ -17,7 +17,7 @@ For detailed phase-by-phase documentation, see:
 │                                                                                  │
 │  ┌─────────────────────────────────────────────────────────────────────────┐    │
 │  │                    PRE-FORK SETUP (on root branch)                       │    │
-│  │  • Resource indexing (resources.yaml → archival + RESOURCE_INDEX core)  │    │
+│  │  • Optional resource snapshot/index (only if built explicitly)           │    │
 │  │  • Phase 0 prompt preparation (NOT executed yet)                        │    │
 │  └────────────────────────────────┬────────────────────────────────────────┘    │
 │                                   │                                              │
@@ -30,8 +30,7 @@ For detailed phase-by-phase documentation, see:
 │  │    │ 2. PHASE 0: Setup (executed per-node on child branch)            │ │    │
 │  │    │    • Idea loading (idea.md → prompt injection)                   │ │    │
 │  │    │    • LLM planning (generates phase0_plan.json)                   │ │    │
-│  │    │    • Memory writes: idea_md_summary, phase0_summary → Core       │ │    │
-│  │    │                     PHASE0_INTERNAL, IDEA_MD → Archival          │ │    │
+│  │    │    • Memory writes only if LLM emits <memory_update>             │ │    │
 │  │    │ 3. PHASE 1-4 execution (split-phase mode)                        │ │    │
 │  │    │ 4. Metrics extraction                                            │ │    │
 │  │    │ 5. Plotting code generation                                      │ │    │
@@ -64,8 +63,7 @@ For detailed phase-by-phase documentation, see:
 
 | Phase | Task Hint | Function | Memory Budget | Notes |
 |-------|-----------|----------|---------------|-------|
-| **Phase 0** | `resource_index` | - | - | Writes to root branch (pre-fork) |
-| **Phase 0** | `phase0_planning` | `render_for_prompt()` | `memory_budget_chars` | Per-node after fork, memory injected |
+| **Phase 0** | `phase0` | `render_for_prompt()` | `memory_budget_chars` | Per-node after fork, memory injected |
 | **Phase 1** | `phase1_iterative` | `_inject_memory()` | `memory_budget_chars` | Iterative download/install |
 | **Phase 2** | `draft` | `_inject_memory()` | `memory_budget_chars` | Draft implementation |
 | **Phase 2** | `debug` | `_inject_memory()` | `memory_budget_chars` | Debug buggy code |
@@ -95,10 +93,10 @@ When `_inject_memory()` is called, it adds a "Memory" section to the prompt cont
 │                                                                  │
 │  ## Core Memory (always visible)                                │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │ idea_md_summary: "Research on optimizing matrix mult..."  │  │
-│  │ phase0_summary: "Using OpenMP with 8 threads..."          │  │
-│  │ RESOURCE_INDEX: {resource digest and paths}               │  │
-│  │ [LLM-set keys]: optimal_threads: "8", best_flags: "-O3"   │  │
+│  │ (optional) idea_md_summary: "Research on optimizing..."   │  │
+│  │ (optional) phase0_summary: "Using OpenMP with 8 threads"   │  │
+│  │ (optional) RESOURCE_INDEX: {resource digest and paths}     │  │
+│  │ [LLM-set keys]: optimal_threads: "8", best_flags: "-O3"    │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                                                                  │
 │  ## Recall Memory (recent events)                               │
@@ -171,7 +169,7 @@ if memory_cfg and getattr(memory_cfg, "enabled", False):
 │  ┌────────────────────────────────────────────────────────────────────────────┐ │
 │  │ History now includes: step 1 command, exit_code, stdout/stderr summary     │ │
 │  │ LLM sees previous results and decides next action                          │ │
-│  │ May use "archival_search" to recall error recovery from earlier runs       │ │
+│  │ May use "mem_archival_search" to recall error recovery from earlier runs   │ │
 │  └────────────────────────────────────────────────────────────────────────────┘ │
 │                              │                                                   │
 │                              ▼                                                   │
@@ -181,7 +179,7 @@ if memory_cfg and getattr(memory_cfg, "enabled", False):
 │  Final Iteration (done=true)                                                     │
 │  ┌────────────────────────────────────────────────────────────────────────────┐ │
 │  │ LLM returns: {"command": "", "done": true, "notes": "All deps installed"}  │ │
-│  │ Memory update: {"core": {"phase1_status": "completed"}, ...}               │ │
+│  │ Memory update: {"mem_core_set": {"phase1_status": "completed"}, ...}       │ │
 │  │ → Exit Phase 1 loop                                                        │ │
 │  └────────────────────────────────────────────────────────────────────────────┘ │
 │                                                                                  │
@@ -192,15 +190,15 @@ if memory_cfg and getattr(memory_cfg, "enabled", False):
 
 | Operation | Purpose | Example |
 |-----------|---------|---------|
-| **Write to Core** | Track installation state | `"core": {"numpy_version": "1.24.0"}` |
-| **Write to Archival** | Log details for future reference | `"archival": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` |
-| **Read from Core** | Check previous installation state | `"core_get": ["python_deps_path"]` |
-| **Search Archival** | Find error recovery strategies | `"archival_search": {"query": "PHASE1_ERROR", "k": 3}` |
+| **Write to Core** | Track installation state | `"mem_core_set": {"numpy_version": "1.24.0"}` |
+| **Write to Archival** | Log details for future reference | `"mem_archival_write": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` |
+| **Read from Core** | Check previous installation state | `"mem_core_get": ["python_deps_path"]` |
+| **Search Archival** | Find error recovery strategies | `"mem_archival_search": {"query": "PHASE1_ERROR", "k": 3}` |
 
 **Read Operation Re-Query (within each iteration):**
 
 ```
-LLM Response: <memory_update>{"archival_search": {"query": "...", "k": 3}}</memory_update>
+LLM Response: <memory_update>{"mem_archival_search": {"query": "...", "k": 3}}</memory_update>
                           {"command": "pip install numpy", "done": false}
         │
         ▼
@@ -258,8 +256,8 @@ When memory is enabled and LLM uses read operations:
 │  │ LLM Response:                                              │  │
 │  │   <memory_update>                                          │  │
 │  │   {                                                        │  │
-│  │     "archival_search": {"query": "optimal config"}  ← READ │  │
-│  │     "core": {"new_key": "value"}                    ← WRITE│  │
+│  │     "mem_archival_search": {"query": "optimal config"} ← READ │  │
+│  │     "mem_core_set": {"new_key": "value"}              ← WRITE│  │
 │  │   }                                                        │  │
 │  │   </memory_update>                                         │  │
 │  │   {"phase_artifacts": {...}}                               │  │
@@ -287,7 +285,7 @@ When memory is enabled and LLM uses read operations:
 │  │                                                            │  │
 │  │ LLM Response (final):                                      │  │
 │  │   <memory_update>                                          │  │
-│  │   {"core": {"optimal_threads": "8"}}  ← Uses search result │  │
+│  │   {"mem_core_set": {"optimal_threads": "8"}}  ← Uses search result │  │
 │  │   </memory_update>                                         │  │
 │  │   {"phase_artifacts": {...}}           ← Final output      │  │
 │  └───────────────────────────────────────────────────────────┘  │

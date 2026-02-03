@@ -3,8 +3,8 @@
 ## Collect debug info first
 
 - `experiments/<run>/logs/` for phase logs and errors.
-- `experiments/<run>/logs/.../unified_tree_viz.html` for node history.
-- `experiments/<run>/logs/.../phase_logs/node_<id>/prompt_logs/` for prompt inputs.
+- `experiments/<run>/logs/unified_tree_viz.html` for node history.
+- `experiments/<run>/logs/phase_logs/node_<id>/prompt_logs/` for prompt inputs.
 - `experiments/<run>/memory/` if memory is enabled.
 
 ## "Singularity image is required"

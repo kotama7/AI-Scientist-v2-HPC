@@ -14,7 +14,7 @@ the worker container image.
 | CUDA runtime | Optional | Optional | Required only for GPU workloads |
 | Build tools | Optional | Required | Needed for Phase 1/compile in split mode |
 | LaTeX toolchain | Optional | Optional | Required only when writeups enabled |
-| `pdftotext` | Optional | Optional | Required only when review enabled |
+| `pdftotext` | Optional | Optional | Used for writeup page-limit checks (Impact Statement detection) |
 
 ## Host requirements
 
@@ -25,12 +25,12 @@ the worker container image.
 - Torch installed on the host (imported by the launcher for GPU detection).
 - GPU + CUDA recommended (default config maps workers to GPU IDs).
 - LaTeX toolchain for writeups: `pdflatex`, `bibtex`, `chktex`.
-- `pdftotext` (from poppler) for PDF checks and reviews.
+- `pdftotext` (from poppler) for writeup page-limit checks (Impact Statement detection).
 
 ## When you can skip items
 
 - If you skip writeups (`--skip_writeup`), you can omit the LaTeX toolchain.
-- If you skip PDF review (`--skip_review`), you can omit `pdftotext`.
+- If you skip writeups or disable page limits, you can omit `pdftotext`.
 - If you only run single mode, Singularity is not required.
 
 ## Optional host requirements

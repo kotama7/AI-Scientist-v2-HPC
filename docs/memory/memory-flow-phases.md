@@ -173,8 +173,8 @@ def _draft(self) -> Node:
 Memory-enabled prompts include:
 
 1. **Memory Operations Section**: Instructions for `<memory_update>` blocks
-2. **Write Examples**: How to write to `core` and `archival` memory
-3. **Read Examples**: How to use `core_get` and `archival_search`
+2. **Write Examples**: How to write using `mem_core_set` / `mem_archival_write`
+3. **Read Examples**: How to use `mem_core_get` / `mem_archival_search`
 4. **Task-Specific Guidelines**: What information to record for each task type
 
 ## Detailed Flow by Node Type
@@ -331,7 +331,7 @@ if memory_cfg and getattr(memory_cfg, "enabled", False):
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ LLM Query → Response:                                                │    │
 │  │   <memory_update>                                                    │    │
-│  │   {"core": {"pkg_version": "1.0"}, "archival": [...]}               │    │
+│  │   {"mem_core_set": {"pkg_version": "1.0"}, "mem_archival_write": [...]} │    │
 │  │   </memory_update>                                                   │    │
 │  │   {"command": "pip install numpy", "done": false, "notes": "..."}   │    │
 │  └────────────────────────────────────────────────────────────────────┘    │
@@ -365,10 +365,10 @@ if memory_cfg and getattr(memory_cfg, "enabled", False):
 
 | Operation | Example | Purpose |
 |-----------|---------|---------|
-| Write Core | `"core": {"numpy_version": "1.24.0"}` | Track installed versions |
-| Write Archival | `"archival": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` | Log installation details |
-| Read Core | `"core_get": ["python_deps_path"]` | Check previous state |
-| Search Archival | `"archival_search": {"query": "PHASE1_ERROR", "k": 3}` | Find error recovery strategies |
+| Write Core | `"mem_core_set": {"numpy_version": "1.24.0"}` | Track installed versions |
+| Write Archival | `"mem_archival_write": [{"text": "...", "tags": ["PHASE1_INSTALL"]}]` | Log installation details |
+| Read Core | `"mem_core_get": ["python_deps_path"]` | Check previous state |
+| Search Archival | `"mem_archival_search": {"query": "PHASE1_ERROR", "k": 3}` | Find error recovery strategies |
 
 #### Batch Mode (Legacy)
 
@@ -483,8 +483,8 @@ The memory system is organized in three layers:
 
 **Note**: All operations are also logged to `memory_calls.jsonl` with a `layer` field.
 Memory operations during phase execution are additionally logged to phase_log files:
-- `prompt_logs/<session>/memory_operations.jsonl` - operations with timestamps
-- `prompt_logs/<session>/memory_injections.jsonl` - injection details
+- `logs/prompt_logs/<worker>/<session>/memory_operations.jsonl` - operations with timestamps
+- `logs/prompt_logs/<worker>/<session>/memory_injections.jsonl` - injection details
 
 ---
 
@@ -624,21 +624,22 @@ These operations are triggered automatically by the system:
 
 ### LLM Memory Update Keys
 
-The `updates` dict for `apply_llm_memory_updates` supports:
+The `updates` dict for `apply_llm_memory_updates` accepts the MemGPT-style keys
+below (preferred). For backward compatibility, `core`/`archival`/`core_get` keys
+are also accepted and normalized internally.
 
-| Key | Type | Internal Call | Description |
-|-----|------|---------------|-------------|
-| `core` | `dict[str, str]` | `mem_core_set()` | Key-value pairs to set |
-| `core_get` | `list[str]` | `mem_core_get()` | Keys to retrieve (returns in result) |
-| `core_delete` | `list[str]` | `mem_core_del()` | Keys to delete |
-| `archival` | `list[dict]` | `mem_archival_write()` | Records to write |
-| `archival_update` | `list[dict]` | `mem_archival_update()` | Records to update |
-| `archival_search` | `dict` | `mem_archival_search()` | Search query (returns in result) |
-| `recall` | `dict` | `mem_recall_append()` | Event to append |
-| `recall_search` | `dict` | `mem_recall_search()` | Search query (returns in result) |
-| `recall_evict` | `dict` | internal | Eviction params |
-| `recall_summarize` | `bool` | internal | Trigger consolidation |
-| `consolidate` | `bool` | internal | Trigger full consolidation |
+| LLM Key | Normalized Key | Internal Call | Description |
+|---------|----------------|---------------|-------------|
+| `mem_core_set` | `core` | `mem_core_set()` | Key-value pairs to set |
+| `mem_core_get` | `core_get` | `mem_core_get()` | Keys to retrieve (returns in result) |
+| `mem_core_del` | `core_delete` | `mem_core_del()` | Keys to delete |
+| `mem_archival_write` | `archival` | `mem_archival_write()` | Records to write |
+| `mem_archival_update` | `archival_update` | `mem_archival_update()` | Records to update |
+| `mem_archival_search` | `archival_search` | `mem_archival_search()` | Search query (returns in result) |
+| `mem_recall_append` | `recall` | `mem_recall_append()` | Event to append |
+| `mem_recall_search` | `recall_search` | `mem_recall_search()` | Search query (returns in result) |
+| `mem_recall_evict` | `recall_evict` | internal | Eviction params |
+| `consolidate` | `consolidate` | internal | Trigger full consolidation |
 
 ---
 
@@ -666,9 +667,9 @@ In split-phase mode with memory enabled, LLM must output:
 ```
 <memory_update>
 {
-  "core": {"key": "value"},
-  "archival": [{"text": "insight", "tags": ["TAG"]}],
-  "archival_search": {"query": "...", "k": 5}  // Optional - triggers re-query
+  "mem_core_set": {"key": "value"},
+  "mem_archival_write": [{"text": "insight", "tags": ["TAG"]}],
+  "mem_archival_search": {"query": "...", "k": 5}  // Optional - triggers re-query
 }
 </memory_update>
 {"phase_artifacts": {...}, "constraints": {...}}
@@ -728,26 +729,28 @@ def mem_node_fork(
 
 ```
 experiments/<run>/
-├── logs/<index>-<exp_name>/
-│   └── phase_logs/
-│       └── node_<id>/
-│           ├── download.log    # Phase 1 output
-│           ├── compile.log     # Phase 3 output
-│           ├── run.log         # Phase 4 output
-│           └── artifacts.json  # Full phase_artifacts
-├── logs/<index>-<exp_name>/
-│   └── prompt_logs/
-│       └── <session>/
-│           ├── draft_attempt1_round0.json     # Full prompt with memory injection
-│           ├── draft_attempt1_round0.md       # Rendered prompt
-│           ├── memory_operations.jsonl        # Chronological memory operations
-│           └── memory_injections.jsonl        # Chronological memory injections
+├── logs/
+│   ├── phase_logs/
+│   │   └── node_<id>/
+│   │       ├── download.log    # Phase 1 output
+│   │       ├── coding.log      # Phase 2 output
+│   │       ├── compile.log     # Phase 3 output
+│   │       ├── run.log         # Phase 4 output
+│   │       └── prompt_logs/    # Copied prompt logs (if available)
+│   ├── prompt_logs/
+│   │   └── <worker>/<session>/
+│   │       ├── draft_attempt1_round0.json     # Full prompt with memory injection
+│   │       ├── draft_attempt1_round0.md       # Rendered prompt
+│   │       ├── memory_operations.jsonl        # Chronological memory operations
+│   │       └── memory_injections.jsonl        # Chronological memory injections
+│   └── memory/
+│       ├── memory_calls.jsonl      # All memory operations (main log)
+│       ├── memory_primitive.jsonl  # Layer 1: DB operations (set_core, get_core, etc.)
+│       ├── memory_public_api.jsonl # Layer 2: Public API (mem_* functions)
+│       ├── memory_system.jsonl     # Layer 3: System-level (apply_llm_memory_updates, render_for_prompt)
+│       └── memory_internal.jsonl   # Internal operations (check_memory_pressure, etc.)
 └── memory/
-    ├── memory_calls.jsonl      # All memory operations (main log)
-    ├── memory_primitive.jsonl  # Layer 1: DB operations (set_core, get_core, etc.)
-    ├── memory_public_api.jsonl # Layer 2: Public API (mem_* functions)
-    ├── memory_system.jsonl     # Layer 3: System-level (apply_llm_memory_updates, render_for_prompt)
-    └── memory_internal.jsonl   # Internal operations (check_memory_pressure, etc.)
+    └── memory.sqlite
 ```
 
 ### Log File Contents

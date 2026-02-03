@@ -131,7 +131,7 @@ phase0_prompt = {
         "available_libs": [...],
         "system_performance_tools": [...],
         "network_access": "yes/no/unknown",
-        "timeout_seconds": 3600,
+        "timeout_seconds": 10800,
     },
     "Resources": resources_context,  # Optional
 }

@@ -1,4 +1,4 @@
-# File Roles (各ファイルの役割)
+# File Roles (Responsibilities by File)
 
 This document describes the role and responsibility of each file in the
 HPC-AutoResearch project.
@@ -163,7 +163,7 @@ See [prompt-structure.md](prompt-structure.md) for detailed structure.
 Runtime output directory. Each run creates a subdirectory containing:
 - `bfts_config.yaml` (frozen config)
 - `logs/` (tree visualization, prompt logs, phase logs)
-- `memory/` (SQLite database, resource snapshots, final memory exports)
+- `memory/` (SQLite database, optional resource snapshots, final memory exports)
 - `node_logs/` (temporary: per-node workspace snapshots for cross-stage inheritance, cleaned up after each stage)
 - `stage_best/` (permanent: best node workspace per stage for next-stage inheritance)
 - Generated code, plots, and LaTeX artifacts.

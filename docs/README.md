@@ -6,7 +6,7 @@ This folder contains documentation for AI-Scientist-v2-HPC, organized by topic.
 
 ```
 docs/
-├── overview/            # Core concepts, workflow, glossary (概要・入門)
+├── overview/            # Core concepts, workflow, glossary
 ├── getting-started/     # Installation, setup, and first run
 ├── configuration/       # Configuration files and CLI
 ├── architecture/        # System architecture and internals
@@ -20,13 +20,13 @@ docs/
 
 ## Quick Navigation
 
-### Overview Documents (概要ドキュメント)
+### Overview Documents
 
 Start here if you're completely new to this project:
 
-- [concepts.md](overview/concepts.md) - Core concepts: tree search, phases, memory (コンセプト解説)
-- [workflow.md](overview/workflow.md) - End-to-end workflow diagram (ワークフロー概要)
-- [glossary.md](overview/glossary.md) - Terminology glossary (用語集)
+- [concepts.md](overview/concepts.md) - Core concepts: tree search, phases, memory
+- [workflow.md](overview/workflow.md) - End-to-end workflow diagram
+- [glossary.md](overview/glossary.md) - Terminology glossary
 
 ### Getting Started
 
@@ -41,6 +41,8 @@ New users should follow this path:
 
 - [configuration.md](configuration/configuration.md) - `bfts_config.yaml` reference
 - [cli-entry-points.md](configuration/cli-entry-points.md) - Script entry points
+- [fewshot-customization.md](configuration/fewshot-customization.md) - Generate domain-specific review examples
+- [review-bias.md](configuration/review-bias.md) - Control automated review strictness (neg/pos/neutral)
 - [execution-modes.md](configuration/execution-modes.md) - Split vs single execution
 - [outputs.md](configuration/outputs.md) - Run directories and artifacts
 
@@ -67,18 +69,23 @@ The memory system documentation is organized by flow:
 - [memory-flow-phases.md](memory/memory-flow-phases.md) - Phase 1-4 (execution) flow
 - [memory-flow-post-execution.md](memory/memory-flow-post-execution.md) - Post-execution processing
 - [memory-for-paper.md](memory/memory-for-paper.md) - Final memory for paper generation
+- [hardware-info-injection.md](memory/hardware-info-injection.md) - 🆕 Automatic hardware info extraction
 - [memgpt-features.md](memory/memgpt-features.md) - Available memory features
 - [memgpt-implementation.md](memory/memgpt-implementation.md) - Implementation details
+
+**Recent Updates (2026-02-03)**:
+- [IMPLEMENTATION_SUMMARY_20260203.md](memory/IMPLEMENTATION_SUMMARY_20260203.md) - 🆕 Implementation summary (English)
+- [IMPLEMENTATION_SUMMARY_20260203_ja.md](memory/IMPLEMENTATION_SUMMARY_20260203_ja.md) - 🆕 実装サマリー (日本語)
 
 ### Development
 
 - [testing.md](development/testing.md) - Unit tests and test scope
 - [troubleshooting.md](development/troubleshooting.md) - Common failures and fixes
-- [verification-report.md](development/verification-report.md) - Documentation vs implementation verification report (検証レポート)
+- [verification-report.md](development/verification-report.md) - Documentation vs implementation verification report
 
 ## Suggested Reading Paths
 
-### Complete Beginner (このプロジェクトを初めて見る方)
+### Complete Beginner
 
 For those new to both HPC-AutoResearch and automated research systems:
 

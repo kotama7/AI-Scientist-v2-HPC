@@ -1,4 +1,4 @@
-# LLM Context Details (LLM呼び出し時のコンテクスト詳細)
+# LLM Context Details (LLM Call Context Breakdown)
 
 This document provides detailed technical information about what context is
 passed to LLM calls at each stage of the research automation pipeline.
@@ -85,7 +85,7 @@ environment_context = {
 **Injected when `memory.enabled=true`**:
 ```python
 memory_context = {
-    "resource_index": "...",        # Separate "Resource Index" section (auto-saved)
+    "resource_index": "...",        # Separate "Resource Index" section (if available)
     "core": {
         # All keys are LLM-managed via <memory_update> (no reserved keys)
         "optimal_threads": "8",
@@ -97,16 +97,13 @@ memory_context = {
 }
 ```
 
-**Note**: `RESOURCE_INDEX` is auto-saved but injected as a separate "Resource Index"
-section, not within "Core Memory". All Core Memory keys are LLM-managed.
+**Note**: `RESOURCE_INDEX` is only injected if a resource snapshot or core entry
+exists. It is rendered as a separate "Resource Index" section, not within
+"Core Memory". All Core Memory keys are LLM-managed.
 
-**Character budgets** (from `memory.section_budgets`):
-| Section | Budget | Purpose |
-|---------|--------|---------|
-| `idea_summary` | 9600 | Compressed research idea |
-| `phase0_summary` | 5000 | Phase 0 planning summary |
-| `archival_snippet` | 3000 | Per-archival excerpt |
-| `results` | 4000 | Result summaries |
+**Character budgets** (from `bfts_config.yaml`):
+- `memory.memory_budget_chars`: total memory context budget.
+- `memory.archival_snippet_budget_chars`: per-archival excerpt cap.
 
 ### 4. Task/Idea Description
 
@@ -137,7 +134,7 @@ Known challenges and mitigations
 **Structure**:
 ```python
 resources_context = {
-    "RESOURCE_INDEX": {
+    "RESOURCE_INDEX": {  # present only if resource index was built
         "digest": "sha256:...",
         "items": [
             {
@@ -443,7 +440,7 @@ exec:
 
 Prompt logs are written to:
 ```
-experiments/<run>/logs/<index>-<exp_name>/phase_logs/node_<id>/prompt_logs/
+experiments/<run>/logs/phase_logs/node_<id>/prompt_logs/
 ├── phase0_prompt.json
 ├── phase0_prompt.md
 ├── phase1_step0_prompt.json
