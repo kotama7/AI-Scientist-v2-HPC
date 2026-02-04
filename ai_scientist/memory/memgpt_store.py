@@ -552,12 +552,6 @@ class MemoryManager:
             _cfg_get(self.config, "results_budget_chars", 4000)
         )
 
-        # Writeup memory limits (for final_writeup_memory.json)
-        self.writeup_recall_limit = int(_cfg_get(self.config, "writeup_recall_limit", 10))
-        self.writeup_archival_limit = int(_cfg_get(self.config, "writeup_archival_limit", 10))
-        self.writeup_core_value_max_chars = int(_cfg_get(self.config, "writeup_core_value_max_chars", 500))
-        self.writeup_recall_text_max_chars = int(_cfg_get(self.config, "writeup_recall_text_max_chars", 300))
-        self.writeup_archival_text_max_chars = int(_cfg_get(self.config, "writeup_archival_text_max_chars", 400))
         self.paper_section_mode = str(_cfg_get(self.config, "paper_section_mode", "memory_summary")).strip().lower()
         self.paper_section_count = int(_cfg_get(self.config, "paper_section_count", 12))
 
@@ -5344,206 +5338,6 @@ Return a JSON array: ["keyword1", "keyword2", ...]"""
         if artifacts_index:
             sections["artifacts_index"] = artifacts_index
 
-        # Build final writeup memory payload
-        phase0_path = memory_dir / "phase0_internal_info.json"
-        phase0_payload = {}
-        if phase0_path.exists():
-            try:
-                phase0_payload = json.loads(phase0_path.read_text(encoding="utf-8"))
-            except Exception:
-                phase0_payload = {}
-
-
-        # Build final writeup memory payload (condensed but reproducible)
-        phase0_path = memory_dir / "phase0_internal_info.json"
-        phase0_payload = {}
-        if phase0_path.exists():
-            try:
-                phase0_payload = json.loads(phase0_path.read_text(encoding="utf-8"))
-            except Exception:
-                phase0_payload = {}
-        idea_path = run_dir / "idea.md"
-        if not idea_path.exists():
-            idea_path = Path(_cfg_get(self.config, "desc_file", "")) if _cfg_get(self.config, "desc_file", "") else idea_path
-
-        # Extract data from 3-tier memory for writeup_memory
-        branch_chain = self._branch_chain(best_branch)
-
-        # Get idea text from archival memory
-        idea_text = ""
-        idea_summary = ""
-        for bid in branch_chain:
-            idea_rows = self._conn.execute(
-                "SELECT text FROM archival WHERE branch_id=? AND tags LIKE '%IDEA_MD%' LIMIT 1",
-                (bid,),
-            ).fetchall()
-            if idea_rows:
-                idea_text = idea_rows[0]["text"] or ""
-                idea_summary = idea_text[:500] if idea_text else ""
-                break
-
-        # Get phase0 summary from core memory
-        phase0_summary = ""
-        for bid in branch_chain:
-            core_row = self._conn.execute(
-                "SELECT value FROM core_kv WHERE branch_id=? AND key='phase0_summary' LIMIT 1",
-                (bid,),
-            ).fetchone()
-            if core_row:
-                phase0_summary = core_row["value"] or ""
-                break
-
-        # Get core snapshot from core memory (results)
-        core_snapshot = ""
-        for bid in branch_chain:
-            for key_name in ("results", "experimental_results", "core_snapshot"):
-                core_row = self._conn.execute(
-                    "SELECT value FROM core_kv WHERE branch_id=? AND key=? LIMIT 1",
-                    (bid, key_name),
-                ).fetchone()
-                if core_row and core_row["value"]:
-                    core_snapshot = core_row["value"]
-                    break
-            if core_snapshot:
-                break
-
-        # Get failure notes from recall memory
-        failure_notes: list[str] = []
-        event_rows_for_failures = self._fetch_events(branch_chain, 100)
-        for row in event_rows_for_failures:
-            if str(row["kind"]).lower() == "error_encountered":
-                failure_notes.append(row["text"] or "")
-
-        resources_section = {
-            "resource_file": {
-                "path": resource_snapshot.get("resource_file") or resource_index.get("resource_file", ""),
-                "sha": resource_snapshot.get("resource_file_sha") or resource_index.get("resource_file_sha", ""),
-                "digest": resource_index.get("resource_digest", ""),
-            },
-            "normalized": resource_snapshot.get("normalized") or resource_index.get("normalized", {}),
-            "items": resource_snapshot.get("items") or resource_index.get("items", []),
-            "used": resources_used,
-        }
-        provenance = []
-        for bid in branch_chain:
-            row = self._conn.execute(
-                "SELECT node_uid FROM branches WHERE id=?", (bid,)
-            ).fetchone()
-            if row and row["node_uid"]:
-                provenance.append(row["node_uid"])
-            else:
-                provenance.append(bid)
-
-        # Fetch events to extract method changes and results notes
-        event_rows = self._fetch_events(branch_chain, 200)
-        method_changes = []
-        results_notes = []
-        for row in event_rows:
-            kind = str(row["kind"]).lower()
-            if kind == "node_created":
-                # Full content if no_budget_limit
-                if no_budget_limit:
-                    method_changes.append(row["text"] or "")
-                else:
-                    method_changes.append(self._compress(row["text"] or "", 800, "method change note", branch_id=best_branch))
-            if kind == "node_result":
-                if no_budget_limit:
-                    results_notes.append(row["text"] or "")
-                else:
-                    results_notes.append(self._compress(row["text"] or "", 800, "results note", branch_id=best_branch))
-
-        # === Collect 3-tier memory from best branch (with limits and compression) ===
-        # Core Memory (short-term / always-injected context) - all keys, compressed values
-        core_memory_data: dict[str, Any] = {}
-        for bid in branch_chain:
-            core_rows = self._conn.execute(
-                "SELECT key, value, updated_at FROM core_kv WHERE branch_id=?",
-                (bid,),
-            ).fetchall()
-            meta_rows = self._conn.execute(
-                "SELECT key, importance FROM core_meta WHERE branch_id=?",
-                (bid,),
-            ).fetchall()
-            importance_map = {r["key"]: r["importance"] for r in meta_rows}
-            for row in core_rows:
-                key = row["key"]
-                if key not in core_memory_data:
-                    value = row["value"] or ""
-                    # Compress value if over limit (unless no_budget_limit)
-                    if not no_budget_limit and len(value) > self.writeup_core_value_max_chars:
-                        value = self._compress(value, self.writeup_core_value_max_chars, f"core memory: {key}", branch_id=best_branch)
-                    core_memory_data[key] = {
-                        "value": value,
-                        "importance": importance_map.get(key, 3),
-                    }
-
-        # Recall Memory (event timeline) - limited entries, compressed text
-        recall_memory_data: list[dict[str, Any]] = []
-        recall_subset = event_rows[:self.writeup_recall_limit] if not no_budget_limit else event_rows
-        for row in recall_subset:
-            text = row["text"] or ""
-            if not no_budget_limit and len(text) > self.writeup_recall_text_max_chars:
-                text = self._compress(text, self.writeup_recall_text_max_chars, "recall event", branch_id=best_branch)
-            recall_memory_data.append({
-                "ts": row["created_at"],
-                "kind": row["kind"],
-                "text": text,
-            })
-
-        # Archival Memory (long-term) - limited entries, compressed text
-        archival_k = 100 if no_budget_limit else self.writeup_archival_limit
-        archival_memory_data = self.retrieve_archival(
-            branch_id=best_branch,
-            query="",
-            k=archival_k,
-            include_ancestors=True,
-            log_event=False,
-        )
-        archival_memory_list: list[dict[str, Any]] = []
-        for row in archival_memory_data:
-            text = _row_get(row, "text", "") or ""
-            if not no_budget_limit and len(text) > self.writeup_archival_text_max_chars:
-                text = self._compress(text, self.writeup_archival_text_max_chars, "archival entry", branch_id=best_branch)
-            archival_memory_list.append({
-                "id": _row_get(row, "id"),
-                "text": text,
-                "tags": _row_get(row, "tags"),
-            })
-
-        writeup_memory = {
-            "run_id": self.run_id or run_dir.name,
-            "idea": {
-                "summary": idea_summary,
-                "path": str(idea_path) if idea_path and idea_path.exists() else "",
-                "content": idea_text if no_budget_limit else self._compress(idea_text or "", 4000, "idea content", branch_id=best_branch),
-            },
-            "phase0_env": {
-                "summary": phase0_summary,
-                "path": str(phase0_path) if phase0_path.exists() else "",
-                "raw": phase0_payload,
-            },
-            "resources": resources_section,
-            "method_changes": method_changes,
-            "experiments": {
-                "phase0_plan": phase0_payload.get("phase0_payload", {}),
-                "phase0_command": phase0_payload.get("command", ""),
-                "workspace_dir": str(run_dir),
-            },
-            "results": {
-                "core_snapshot": core_snapshot,
-                "notes": results_notes,
-                "artifacts": artifacts_index or {},
-            },
-            "negative_results": failure_notes,
-            "provenance": provenance,
-            # 3-tier memory from best branch
-            "core_memory": core_memory_data,
-            "recall_memory": recall_memory_data,
-            "archival_memory": archival_memory_list,
-        }
-        writeup_path = memory_dir / "final_writeup_memory.json"
-        writeup_path.write_text(json.dumps(writeup_memory, indent=2), encoding="utf-8")
-
         # Extract best node data from artifacts_index
         best_node_data = artifacts_index.get("best_node_data") if artifacts_index else None
         top_nodes_data = artifacts_index.get("top_nodes_data", []) if artifacts_index else []
@@ -5818,12 +5612,10 @@ Return a JSON array: ["keyword1", "keyword2", ...]"""
 
         # Write outputs
         md_path = memory_dir / str(_cfg_get(self.config, "final_memory_filename_md", "final_memory_for_paper.md"))
-        json_path = memory_dir / str(_cfg_get(self.config, "final_memory_filename_json", "final_memory_for_paper.json"))
 
-        # Add node data to sections for JSON output
+        # Add node data to sections for return value
         sections["best_node_data"] = best_node_data
         sections["top_nodes_data"] = top_nodes_data
 
         md_path.write_text("\n".join(md_sections), encoding="utf-8")
-        json_path.write_text(json.dumps(sections, indent=2), encoding="utf-8")
         return sections

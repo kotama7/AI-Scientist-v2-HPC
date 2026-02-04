@@ -9,6 +9,18 @@ We have the following experiment summaries (JSON):
 {summaries}
 ```
 
+We also have comprehensive memory from the research process:
+```json
+{writeup_memory}
+```
+
+This memory includes:
+- Best node implementation details (code, plan, phase artifacts)
+- VLM analysis and visual feedback
+- Top nodes comparison for ablation analysis
+- Phase 0 environment and experimental setup information
+- Resource usage and execution details
+
 We also have a script used to produce the final plots (use this to see how the plots are generated and what names are used in the legend):
 ```python
 {aggregator_code}

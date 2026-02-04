@@ -105,7 +105,6 @@ class MemoryConfig:
     use_fts: str = "auto"
     final_memory_enabled: bool = True
     final_memory_filename_md: str = "final_memory_for_paper.md"
-    final_memory_filename_json: str = "final_memory_for_paper.json"
     redact_secrets: bool = True
     memory_budget_chars: int = 4000
     root_branch_id: str | None = None

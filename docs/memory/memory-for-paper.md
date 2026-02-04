@@ -14,13 +14,11 @@ After the tree search completes, the system generates a final memory document th
 
 ## Output Files
 
-The function generates the following files in `<workspace>/memory/`:
+The function generates the following file in `<workspace>/memory/`:
 
 | File | Description |
 |------|-------------|
-| `final_memory_for_paper.md` | Human-readable markdown for paper writeup |
-| `final_memory_for_paper.json` | Structured JSON for programmatic access |
-| `final_writeup_memory.json` | Complete writeup memory payload |
+| `final_memory_for_paper.md` | Comprehensive markdown document used for both human review and automated paper generation |
 
 ## Markdown Structure
 
@@ -240,11 +238,10 @@ if vlm_feedback:
                                  │
                                  ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│                    Generate Markdown & JSON                         │
+│                    Generate Markdown                               │
 │                                                                     │
 │  - final_memory_for_paper.md (human-readable)                      │
-│  - final_memory_for_paper.json (structured data)                   │
-│  - final_writeup_memory.json (complete payload)                    │
+│  - sections dict returned in-memory (not persisted)                │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -429,7 +426,6 @@ The following configuration options affect output:
 memory:
   final_memory_enabled: true           # Enable/disable final memory generation
   final_memory_filename_md: "final_memory_for_paper.md"
-  final_memory_filename_json: "final_memory_for_paper.json"
 
   # Section generation mode
   paper_section_mode: "memory_summary"  # or "idea_then_memory"
@@ -571,25 +567,14 @@ c. **Generates sections with LLM** (`memgpt_store.py:4184`):
 - Get results from core memory
 - Get failure notes from recall events
 
-**4. Build Writeup Memory Payload** (`memgpt_store.py:5146-5183`)
-```python
-writeup_memory = {
-    "run_id": run_id,
-    "idea": idea_text,
-    "phase0_env": phase0_summary,
-    "resources": resources_section,
-    "method_changes": method_changes,
-    "experiments": core_snapshot,
-    "results": results_notes,
-    "negative_results": failure_notes,
-    "provenance": provenance,  # Branch chain
-}
-```
+**4. Attach artifacts index (optional)** (`memgpt_store.py:5335-5343`)
+- If `artifacts_index` is provided, it is added to the `sections` dict
+- `best_node_data` and `top_nodes_data` are injected into `sections` for return
 
-**5. Write Output Files** (`memgpt_store.py:5186-5215`)
-- `final_memory_for_paper.json`: Sections + artifacts_index
-- `final_memory_for_paper.md`: Human-readable markdown
-- `final_writeup_memory.json`: Complete writeup payload
+**5. Write Output File** (`memgpt_store.py:5614-5623`)
+- `final_memory_for_paper.md`: Human-readable markdown (only persisted output)
+- The full `sections` dict is returned to the caller (serialize it yourself if
+  you need JSON)
 
 ### Critical Functions
 
@@ -864,9 +849,7 @@ After generation, you can find the output files at:
 
 ```
 <run_dir>/memory/
-├── final_memory_for_paper.md         # Human-readable markdown
-├── final_memory_for_paper.json       # Structured sections
-├── final_writeup_memory.json         # Complete writeup payload
+├── final_memory_for_paper.md         # Comprehensive markdown for review and paper generation
 ├── memory.sqlite                     # Memory database (source data)
 └── phase0_internal_info.json         # Phase 0 environment data (if exists)
 ```
@@ -900,17 +883,14 @@ After generation, you can find the output files at:
 
 ### Checking Generated Sections
 
-You can inspect what sections were generated:
+You can inspect the generated markdown file:
 
 ```bash
-# List all section keys in the JSON output
-jq 'keys' <run_dir>/memory/final_memory_for_paper.json
+# View the generated markdown
+cat <run_dir>/memory/final_memory_for_paper.md
 
-# View a specific section
-jq '.experimental_setup' <run_dir>/memory/final_memory_for_paper.json
-
-# Check if artifacts_index is included
-jq '.artifacts_index.best_node_data.id' <run_dir>/memory/final_memory_for_paper.json
+# Search for specific sections
+grep -A 10 "## Experimental Setup" <run_dir>/memory/final_memory_for_paper.md
 ```
 
 ## Related Documentation

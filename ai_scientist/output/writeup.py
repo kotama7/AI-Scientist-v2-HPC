@@ -81,6 +81,36 @@ def load_exp_summaries(base_folder: str) -> dict:
     return loaded_summaries
 
 
+def load_writeup_memory(base_folder: str) -> str:
+    """Load the final writeup memory from the memory folder.
+
+    Args:
+        base_folder: Path to the project folder.
+
+    Returns:
+        String containing writeup memory content (markdown format), or empty string if not found.
+    """
+    # Try multiple possible locations for memory files (markdown first for comprehensive content)
+    memory_paths = [
+        osp.join(base_folder, "0-run/memory/final_memory_for_paper.md"),
+        osp.join(base_folder, "logs/0-run/memory/final_memory_for_paper.md"),
+        osp.join(base_folder, "memory/final_memory_for_paper.md"),
+    ]
+
+    for memory_path in memory_paths:
+        if osp.exists(memory_path):
+            try:
+                with open(memory_path, "r", encoding="utf-8") as f:
+                    memory_content = f.read()
+                print(f"Loaded writeup memory from: {memory_path}")
+                return memory_content
+            except Exception as e:
+                print(f"Warning: Error loading {memory_path}: {e}")
+
+    print("Warning: final_memory_for_paper.md not found in expected locations")
+    return ""
+
+
 def filter_experiment_summaries(exp_summaries: dict, step_name: str) -> dict:
     """Filter experiment summaries based on the step name.
 
@@ -199,6 +229,9 @@ def perform_writeup(
         )
         combined_summaries_str = json.dumps(filtered_summaries_for_writeup, indent=2)
 
+        # Load writeup memory from final_memory_for_paper.md
+        writeup_memory_str = load_writeup_memory(base_folder)
+
         # Prepare a new fresh latex folder
         if not osp.exists(osp.join(latex_folder, "template.tex")):
             shutil.copytree(
@@ -314,6 +347,7 @@ def perform_writeup(
         combined_prompt = WRITEUP_PROMPT_TEMPLATE.format(
             idea_text=idea_text,
             summaries=combined_summaries_str,
+            writeup_memory=writeup_memory_str,
             aggregator_code=aggregator_code,
             plot_list=", ".join(plot_names),
             latex_writeup=writeup_text,

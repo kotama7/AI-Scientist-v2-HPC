@@ -246,18 +246,19 @@ track_resource_usage(resource_id, usage_type)
 SQLite database at `experiments/<run>/memory/memory.sqlite`:
 
 **Tables**:
-- `core_kv`: Core entries (key, value, branch_id, updated_at)
-- `core_meta`: Core metadata (importance, ttl)
-- `recall_events`: Recall events (ts, kind, text, tags, branch_id)
-- `archival`: Archival records (id, text, tags, created_at)
-- `branches`: Branch hierarchy (branch_id, parent_branch_id, node_uid, created_at)
+- `branches`: Branch hierarchy (`id`, `parent_id`, `node_uid`, `created_at`)
+- `core_kv`: Core entries (`branch_id`, `key`, `value`, `updated_at`)
+- `core_meta`: Core metadata (`branch_id`, `key`, `importance`, `ttl`, `updated_at`)
+- `events`: Recall events (`id`, `branch_id`, `kind`, `text`, `tags`, `created_at`, `task_hint`, `memory_size`)
+- `archival`: Archival records (`id`, `branch_id`, `text`, `tags`, `created_at`)
 - `archival_fts`: FTS5 virtual table for full-text search (if enabled)
+- `inherited_exclusions`: Copy-on-write exclusions for inherited recall events (optional)
+- `inherited_summaries`: Consolidated summaries of inherited events (optional)
 
 ### Output Files
 
 End-of-run memory exports:
-- `experiments/<run>/memory/final_memory_for_paper.md`: Human-readable summary
-- `experiments/<run>/memory/final_memory_for_paper.json`: Structured JSON
+- `experiments/<run>/memory/final_memory_for_paper.md`: Human-readable summary (used for writeup)
 - `experiments/<run>/memory/resource_snapshot.json`: Resource tracking data (only if a snapshot was created)
 
 ## Configuration Reference
@@ -272,12 +273,11 @@ memory:
   core_max_chars: 2000
   recall_max_events: 5
   retrieval_k: 4
-  use_fts: auto                     # auto/true/false
+  use_fts: auto                     # auto/on/off
 
   # Persistence toggles
   final_memory_enabled: true
   final_memory_filename_md: final_memory_for_paper.md
-  final_memory_filename_json: final_memory_for_paper.json
   redact_secrets: true
 
   # LLM compression
@@ -308,7 +308,7 @@ memory:
 
   # Logging
   memory_log_enabled: true
-  memory_log_dir: null              # Auto: experiments/<run>/memory/
+  memory_log_dir: null              # Auto: experiments/<run>/logs/memory/
   memory_log_max_chars: 1000
 
   # Memory Pressure Management

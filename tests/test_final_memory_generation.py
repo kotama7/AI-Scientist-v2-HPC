@@ -32,11 +32,7 @@ class TestFinalMemoryGeneration(unittest.TestCase):
                 artifacts_index={"log_dir": "logs"},
             )
             md_path = run_dir / "memory" / "final_memory_for_paper.md"
-            json_path = run_dir / "memory" / "final_memory_for_paper.json"
-            writeup_path = run_dir / "memory" / "final_writeup_memory.json"
             self.assertTrue(md_path.exists())
-            self.assertTrue(json_path.exists())
-            self.assertTrue(writeup_path.exists())
             md_text = md_path.read_text(encoding="utf-8")
             # Check for section headings (snake_case keys converted to Title Case)
             for heading in (

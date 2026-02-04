@@ -46,8 +46,6 @@ memory:
   final_memory_enabled: true
   # 最終メモリのMarkdownファイル名
   final_memory_filename_md: final_memory_for_paper.md
-  # 最終メモリのJSONファイル名
-  final_memory_filename_json: final_memory_for_paper.json
   # 機密情報を編集（マスク）
   redact_secrets: true
   # メモリ予算の文字数上限

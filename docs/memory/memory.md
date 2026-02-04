@@ -21,7 +21,7 @@ overridden with `--memory_db`.
 
 ## Behavior when MemGPT is disabled (MemGPT Off)
 
-When `memory.enabled=false` (or `--enable_memgpt` is not passed), the system
+When `memory.enabled=false` (via config or run-specific overrides), the system
 operates **without any context management**. This has significant implications:
 
 ### What happens without MemGPT
@@ -33,7 +33,7 @@ operates **without any context management**. This has significant implications:
 | **Execution output** | LLM compression + truncation | Fixed truncation only |
 | **Branch inheritance** | Child nodes inherit parent memory | None (each node is independent) |
 | **Long-term memory** | SQLite persistence | None |
-| **Final memory export** | `final_memory_for_paper.*` generated | Not generated |
+| **Final memory export** | `final_memory_for_paper.md` generated | Not generated |
 
 ### Context overflow risk
 
@@ -102,7 +102,7 @@ memory:
 
 - Phase 0 internal info, idea summaries, and other long-term notes are
   **LLM-managed** via `<memory_update>` (not auto-saved).
-- Run end generates `experiments/<run>/memory/final_memory_for_paper.md|json`.
+- Run end generates `experiments/<run>/memory/final_memory_for_paper.md`.
 
 ## Phase 1-4 Memory Operations
 

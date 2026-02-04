@@ -645,10 +645,8 @@ memory_manager.generate_final_memory_for_paper(
 )
 ```
 
-**Output Files**:
-- `final_memory_for_paper.md` - Comprehensive markdown for paper writeup
-- `final_memory_for_paper.json` - Structured data with node information
-- `final_writeup_memory.json` - Complete writeup payload
+**Output File**:
+- `final_memory_for_paper.md` - Comprehensive markdown for paper writeup and automated generation
 
 **Contents**:
 - Executive summary with best metric

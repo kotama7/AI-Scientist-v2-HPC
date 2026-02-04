@@ -141,7 +141,7 @@ For implementing or debugging memory features:
 | Prompts | [prompt/](../prompt/) |
 | Memory | [ai_scientist/memory/](../ai_scientist/memory/) |
 | Tree search | [ai_scientist/treesearch/](../ai_scientist/treesearch/) |
-| Visualization | [ai_scientist/visualization/](../ai_scientist/visualization/) |
+| Visualization | [ai_scientist/treesearch/utils/](../ai_scientist/treesearch/utils/) |
 | Ideas | [ai_scientist/ideas/](../ai_scientist/ideas/) |
 | Tests | [tests/](../tests/) |
 

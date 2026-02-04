@@ -123,8 +123,7 @@ The HTML visualization of the search tree in `unified_tree_viz.html`.
 Tracks LLM API token usage and writes to `token_tracker.json`.
 
 ### Final Memory
-The end-of-run memory summary: `final_memory_for_paper.md` and
-`final_memory_for_paper.json`.
+The end-of-run memory summary: `final_memory_for_paper.md`.
 
 ## Paper Generation Concepts
 

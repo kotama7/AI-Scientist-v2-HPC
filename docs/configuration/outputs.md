@@ -101,9 +101,7 @@ These paths are referenced by the HTML visualizers using relative URLs.
 
 - `experiments/<run>/memory/memory.sqlite`
 - `experiments/<run>/memory/resource_snapshot.json` (only if a snapshot was created)
-- `experiments/<run>/memory/final_memory_for_paper.md`
-- `experiments/<run>/memory/final_memory_for_paper.json`
-- `experiments/<run>/memory/final_writeup_memory.json`
+- `experiments/<run>/memory/final_memory_for_paper.md` (used for paper generation)
 
 ## Split-mode runtime assets (runs/)
 

@@ -773,9 +773,9 @@ class TestFinalMemoryForPaper(unittest.TestCase):
     """Test final_memory_for_paper generation for visualization.
 
     Per docs/memory/memory-for-paper.md:
-    - Output files: final_memory_for_paper.md, final_memory_for_paper.json, final_writeup_memory.json
-    - Contains best node details, top nodes comparison, 3-tier memory, resources
-    - Used for paper writeup generation
+    - Output file: final_memory_for_paper.md
+    - Contains best node details, top nodes comparison, LLM-generated sections, resources
+    - Used for both human review and automated paper generation
     """
 
     def setUp(self):
@@ -791,7 +791,6 @@ class TestFinalMemoryForPaper(unittest.TestCase):
             memory_log_enabled=False,
             auto_consolidate=False,
             final_memory_filename_md="final_memory_for_paper.md",
-            final_memory_filename_json="final_memory_for_paper.json",
         )
         self.memory_manager = MemoryManager(self.db_path, self.cfg)
 
@@ -801,12 +800,10 @@ class TestFinalMemoryForPaper(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_final_memory_generates_required_files(self):
-        """Verify final memory generates all required output files.
+        """Verify final memory generates the required output file.
 
         Per memory-for-paper.md:
-        - final_memory_for_paper.md (human-readable)
-        - final_memory_for_paper.json (structured data)
-        - final_writeup_memory.json (complete payload)
+        - final_memory_for_paper.md (comprehensive markdown for paper generation)
         """
         root = self.memory_manager.create_branch(None, node_uid="root")
         self.memory_manager.set_core(root, "phase0_summary", "Test environment setup")
@@ -820,24 +817,18 @@ class TestFinalMemoryForPaper(unittest.TestCase):
             artifacts_index={"log_dir": "logs"},
         )
 
-        # Check all output files exist
+        # Check output file exists
         md_path = Path(self.tmpdir) / "memory" / "final_memory_for_paper.md"
-        json_path = Path(self.tmpdir) / "memory" / "final_memory_for_paper.json"
-        writeup_path = Path(self.tmpdir) / "memory" / "final_writeup_memory.json"
 
         self.assertTrue(md_path.exists(), "MD file should be created")
-        self.assertTrue(json_path.exists(), "JSON file should be created")
-        self.assertTrue(writeup_path.exists(), "Writeup JSON file should be created")
 
-    def test_final_memory_json_contains_required_sections(self):
-        """Verify JSON output contains all required paper sections.
+    def test_final_memory_md_contains_required_sections(self):
+        """Verify markdown output contains required paper sections.
 
         Per memory-for-paper.md, required sections include:
-        - title_candidates, abstract_material, problem_statement
-        - hypothesis, method, experimental_setup
-        - results, ablations_negative, failure_modes_timeline
-        - threats_to_validity, reproducibility_checklist
-        - narrative_bullets, resources_used
+        - Executive Summary, Best Node Details
+        - LLM-generated sections (varies based on mode)
+        - Resources Used, Provenance Chain
         """
         root = self.memory_manager.create_branch(None, node_uid="root")
         self.memory_manager.set_core(root, "phase0_summary", "Test setup")
@@ -849,65 +840,20 @@ class TestFinalMemoryForPaper(unittest.TestCase):
             artifacts_index={"log_dir": "logs"},
         )
 
-        json_path = Path(self.tmpdir) / "memory" / "final_memory_for_paper.json"
-        data = json.loads(json_path.read_text(encoding="utf-8"))
+        md_path = Path(self.tmpdir) / "memory" / "final_memory_for_paper.md"
+        md_content = md_path.read_text(encoding="utf-8")
 
-        # Required sections per documentation
-        required_sections = [
-            "title_candidates",
-            "abstract_material",
-            "problem_statement",
-            "hypothesis",
-            "method",
-            "experimental_setup",
-            "results",
-            "ablations_negative",
-            "failure_modes_timeline",
-            "threats_to_validity",
-            "reproducibility_checklist",
-            "narrative_bullets",
-            "resources_used",
+        # Check for required markdown headings
+        required_headings = [
+            "# Final Memory For Paper",
+            "## Executive Summary",
+            "## Best Node Details",
+            "## Resources Used",
+            "## Provenance Chain",
         ]
 
-        for section in required_sections:
-            self.assertIn(section, data, f"JSON should contain '{section}' section")
-
-    def test_final_memory_writeup_contains_required_keys(self):
-        """Verify writeup JSON contains required keys for paper generation.
-
-        Per memory-for-paper.md, writeup should include:
-        - run_id, idea, phase0_env, resources
-        - method_changes, experiments, results
-        - negative_results, provenance
-        """
-        root = self.memory_manager.create_branch(None, node_uid="root")
-        self.memory_manager.set_core(root, "phase0_summary", "Test setup")
-
-        self.memory_manager.generate_final_memory_for_paper(
-            run_dir=Path(self.tmpdir),
-            root_branch_id=root,
-            best_branch_id=root,
-            artifacts_index={"log_dir": "logs"},
-        )
-
-        writeup_path = Path(self.tmpdir) / "memory" / "final_writeup_memory.json"
-        writeup = json.loads(writeup_path.read_text(encoding="utf-8"))
-
-        # Required keys per documentation
-        required_keys = [
-            "run_id",
-            "idea",
-            "phase0_env",
-            "resources",
-            "method_changes",
-            "experiments",
-            "results",
-            "negative_results",
-            "provenance",
-        ]
-
-        for key in required_keys:
-            self.assertIn(key, writeup, f"Writeup should contain '{key}' key")
+        for heading in required_headings:
+            self.assertIn(heading, md_content, f"Markdown should contain '{heading}' heading")
 
     def test_final_memory_markdown_contains_section_headings(self):
         """Verify markdown output contains expected section headings.
@@ -1488,7 +1434,6 @@ class TestGenerateFinalMemoryForPaperTypeValidation(unittest.TestCase):
             memory_log_enabled=False,
             auto_consolidate=False,
             final_memory_filename_md="final_memory_for_paper.md",
-            final_memory_filename_json="final_memory_for_paper.json",
         )
         self.memory_manager = MemoryManager(self.db_path, self.cfg)
         self.root = self.memory_manager.create_branch(None, node_uid="root")

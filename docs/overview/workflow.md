@@ -246,7 +246,7 @@ When `--enable_memgpt` is set, memory management is active in each phase:
 │     └── Other important facts saved as LLM decides                │
 │                                                                  │
 │  4. End of run                                                   │
-│     └── final_memory_for_paper.md/json generated                  │
+│     └── final_memory_for_paper.md generated                       │
 │                                                                  │
 │  Note: idea_md_summary and phase0_summary are not auto-injected.  │
 │        The LLM must save them via <memory_update>.               │
